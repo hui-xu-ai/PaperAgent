@@ -108,7 +108,8 @@ def scan_history() -> list:
             pos = nl + 1 + size + 1
             scan_text("blob " + head[0][:8], body, hits)
             path = dict(chunk).get(head[0], "")
-            if path and FORBIDDEN_PATH_RX.search(path):
+            # 与工作树扫描同一豁免：黄金夹具是**故意入库**的（已脱敏），不算违禁
+            if path and not path.startswith("tests/fixtures/") and FORBIDDEN_PATH_RX.search(path):
                 hits.append({"where": f"history:{head[0][:8]}", "kind": "history_forbidden_path",
                              "value": path})
     return hits
