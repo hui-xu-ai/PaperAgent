@@ -8,6 +8,27 @@
 
 ## [未发布] — 2026-09-12（设置中心批1–批5；**需重建分发版才生效**）
 
+**批7（2026-09-12 深夜，GitHub 首次公开发布；CI 在干净环境实测暴露的 3 个真问题）**
+- **CI 连红三次，全是真缺陷**（不是 CI 配置问题；本地 venv 因"恰好装过/早先装过"而全部掩盖）：
+  1. **根包根本装不上**：`pip install -e .` 报
+     `error: Multiple top-level packages discovered in a flat-layout: ['rules','assets','backend',…]`
+     —— 本仓库是多顶层目录布局（backend/frontend/packages/tools/rules/…），README 的安装指令在
+     **干净机器上跑不通**。修：`pyproject.toml` 显式声明打包范围（`package-dir = backend` +
+     `packages.find include app*`），并给 pytest 加 `pythonpath=[backend, packages/*]` 双保险。
+  2. **三处依赖漏声明**：`paperparse` 用了 `pyvalem` / `pylatexenc` / `latex2mathml` 却**从未声明**
+     （危险点是**不崩而静默降级**：化学式校验、LaTeX 合法性校验永远不通过）；
+     `paperkb` 漏 `pymupdf` / `python-docx`（附件文本抽取）；后端漏 `PyYAML`（插件清单）/`requests`。
+     修：补齐声明 + 新增守卫测试 `backend/tests/test_declared_deps.py`（AST 扫 import ↔ 比对 pyproject，
+     三包参数化）⇒ 以后同类漏声明直接在 CI 变红。
+  3. **发布闸门在全新克隆上误判失败**：`check_data_compat.py` 把「`data/` 尚未初始化」当成不兼容
+     （报 4 项），把 CI 与新贡献者全挡在门外，而 `CONTRIBUTING.md` 恰恰要求跑这条命令。
+     修：判定为全新克隆时明确跳过实库检查（有 manifest/库文件时行为不变）。
+- **公开发布**：<https://github.com/hui-xu-ai/PaperAgent>（MIT；Release `v1.0.0` 附 win64 zip + SHA256）。
+  发布前做了泄漏审计并沉淀成闸门 `tools/publish_prescan.py`：夹具里的**真实 API Key** 已脱敏
+  （`tools/sanitize_fixtures.py`，冻结夹具时自动跑）、历史里的 `.edge-debug/`（整个 Edge profile：
+  Cookies/History/Cache）与含密钥 blob 通过**重造历史**清除、`.gitignore` 补本地凭据模式。
+  CI（`.github/workflows/ci.yml`）在 windows-latest 上跑「安装 → 1012 单测 → 发布闸门」，当前全绿。
+
 **批6（2026-09-12 夜，用户实测：识别复核页两处报障）**
 - **修掉复核页「加载失败：Cannot set properties of null (setting 'src')」**：`openReviewModal` 在
   「零差异仲裁点」分支用 `$('review-pdf').innerHTML = …` **覆盖销毁了 `<img id="review-page-img">`**，

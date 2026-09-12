@@ -1,5 +1,6 @@
 # PaperAgent 📄
 
+[![CI](https://github.com/hui-xu-ai/PaperAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/hui-xu-ai/PaperAgent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](pyproject.toml)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078d4.svg)](#环境要求)
