@@ -18,6 +18,12 @@ dependencies = [
     "rich>=13",
     "python-dotenv>=1.0",
     "tqdm>=4.66",
+    # 化学式校验（core/consensus_scan.py）/ LaTeX 合法性（core/latex_util.py）——**一直漏声明**：
+    # CI 首次在干净环境跑才暴露（本地 venv 恰好装过）。缺了不会崩，而是**静默降级**成
+    # "校验永远不通过"，属于会悄悄毁掉解析质量的坑。
+    "pyvalem>=2.6",
+    "pylatexenc>=2.10",
+    "latex2mathml>=3.77",
 ]
 
 [project.optional-dependencies]

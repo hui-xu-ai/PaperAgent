@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](pyproject.toml)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078d4.svg)](#环境要求)
-[![Tests](https://img.shields.io/badge/tests-1009%20passed-brightgreen.svg)](#测试与验证)
+[![Tests](https://img.shields.io/badge/tests-1012%20passed-brightgreen.svg)](#测试与验证)
 
 **把一篇英文 PDF 变成"能读、能查、能问"的中文知识库**：本机单用户的文献 AI 阅读 / 翻译 / 知识库应用。
 导入 → 精准解析（MinerU v4 + 双通道字符仲裁）→ 三级知识编译（L1/L2/L3 笔记）→ 可选全文翻译 → 阅读 / 检索 / 问答。
@@ -166,7 +166,7 @@ release/ dist/      【生成物】分发版 zip 与 PyInstaller 产物（不入
 .\.venv\Scripts\python.exe -m pytest backend/tests packages/paperkb/tests packages/paperparse/tests -q --basetemp=work\pytest-tmp-x
 ```
 
-- 当前基线：**1009 passed / 0 failed / 3 skipped**（2026-09-12 实测；`skipped` = 缺真实样本的用例）
+- 当前基线：**1012 passed / 0 failed / 3 skipped**（2026-09-12 实测；`skipped` = 缺真实样本的用例）
 - 主要依赖 mock LLM，**不联网**；`--basetemp` 指向 `work/` 以便统一清理
 - `packages/paperparse/tests/conftest.py` 的 `tmp_work` 改为「用完即清」；测试被中断时可能残留 `packages/paperparse/work/pytest-tmp2`，可直接删
 - 发布前另跑闸门：`& '.venv\Scripts\python.exe' tools\release_check.py --full`（版本一致性 / 数据兼容 / 打包自检 / 文档齐备）

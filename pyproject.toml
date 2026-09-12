@@ -10,6 +10,10 @@ dependencies = [
     "python-dotenv>=1.0",
     "python-multipart>=0.0.9",
     "pydantic>=2.6,<3",
+    # 后端直接 import 的（先前靠"本地恰好装过"掩盖，干净环境会 ImportError）：
+    "PyYAML>=6",       # app/services/plugin_registry.py（插件清单）
+    "pymupdf>=1.24",   # app/services/review_service.py（复核页 PDF 页图）
+    "requests>=2.31",  # 后端直连 MinerU/LLM 的 HTTP 调用
 ]
 
 [project.optional-dependencies]
@@ -17,6 +21,12 @@ dev = [
     "pytest>=8",
     "httpx>=0.27",
     "ruff>=0.6",
+]
+# 桌面窗口/托盘模式（app/desktop.py 里**懒加载**：不装只影响打包版窗口，不影响 Web 模式）
+desktop = [
+    "pywebview>=5",
+    "pystray>=0.19",
+    "Pillow>=10",
 ]
 
 [project.scripts]
