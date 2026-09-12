@@ -20,6 +20,15 @@ Import → precise parsing (MinerU v4 + dual-channel character arbitration) → 
 
 A single-user, local-first **AI reading / translation / knowledge-base management** web app for papers: import PDF → precise parsing → compile knowledge-base notes (L1/L2/L3) → (optional) AI translation and summarization → read, search, ask questions.
 
+## Demo (30 seconds)
+
+![Demo](assets/screenshots/demo.gif)
+
+> Importing a PDF → parsing → three-level knowledge compilation → reading / Q&A, recorded from the real app
+> (compressed GIF; the original capture is 1906×1016).
+> If an image does not show up, it is usually the GitHub image proxy being blocked/throttled on your network —
+> the very same files live in `assets/screenshots/` in this repository.
+
 ## UI at a glance
 
 **Overall UI**: left = sessions + paper library (type chips / search syntax sugar / attachment entry points), middle = reading and notes (compiled output is directly readable, and you can ask follow-up questions in place),

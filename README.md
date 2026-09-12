@@ -8,10 +8,21 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078d4.svg)](#环境要求)
 [![Tests](https://img.shields.io/badge/tests-1012%20passed-brightgreen.svg)](#测试与验证)
 
+`MIT` · `Python 3.12+` · `Windows` · `1012 测试通过 / 0 失败` · `CI 全绿`
+<!-- 上面这行是徽章的文字兜底：徽章图走 GitHub 的图片代理（camo），国内网络时常显示不出来，文字始终可见 -->
+
 > **一句话**：把一堆英文 PDF 变成**能读、能查、能问的中文知识库** ——
 > MinerU v4 精准解析 + 双通道字符仲裁（识别复核可人工仲裁）→ L1/L2/L3 三级知识编译 →
 > 可选全文翻译/总结 → 多标签阅读 + FTS5 检索问答。**Windows 免装包一键可用，数据与密钥全在本机。**
 > 关键词：literature-review · paper-translation · knowledge-base · RAG · MinerU · Zotero 之外的本地替代
+
+## 🎬 30 秒演示
+
+![操作演示](assets/screenshots/demo.gif)
+
+> 导入 PDF → 解析 → 三级知识编译 → 阅读/问答的实际操作（GIF 为压缩版，原片 1906×1016）。
+> 若图片显示不出来：多半是 GitHub 图片代理被网络干扰，**同一份图就在仓库 `assets/screenshots/` 目录里**，可直接打开看。
+
 
 **把一篇英文 PDF 变成"能读、能查、能问"的中文知识库**：本机单用户的文献 AI 阅读 / 翻译 / 知识库应用。
 导入 → 精准解析（MinerU v4 + 双通道字符仲裁）→ 三级知识编译（L1/L2/L3 笔记）→ 可选全文翻译 → 阅读 / 检索 / 问答。
