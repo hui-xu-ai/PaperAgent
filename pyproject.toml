@@ -22,8 +22,22 @@ dev = [
 [project.scripts]
 paperagent = "app.main:run"
 
+# 本仓库是"多顶层目录"布局（backend/ frontend/ packages/ tools/ rules/ …），
+# 不声明打包范围时 setuptools 会直接报错：
+#   error: Multiple top-level packages discovered in a flat-layout: ['rules','assets','backend',…]
+# ⇒ 显式声明：Python 包只有 backend/app（CI/干净机器上 `pip install -e .` 必须能装）。
+[tool.setuptools]
+package-dir = { "" = "backend" }
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+include = ["app*"]
+namespaces = false
+
 [tool.pytest.ini_options]
 # 三包全跑（旧配置只跑 backend/tests → 519 个解析/知识库测试默认不执行，
 # 改善无法证明；2026-09-12 起默认全量，基线见 README/SHORT-TERM）。
 testpaths = ["backend/tests", "packages/paperkb/tests", "packages/paperparse/tests"]
+# CI/干净环境：即使没装 editable 根包，测试也能 import app（双保险）
+pythonpath = ["backend", "packages/paperparse", "packages/paperkb"]
 addopts = "-q"
