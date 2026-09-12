@@ -1,3 +1,5 @@
+**[English](README.en.md)** · 中文文档如下
+
 # PaperAgent 📄 本机文献 AI 工作台（解析 · 三级知识编译 · 翻译 · 问答）
 
 [![CI](https://github.com/hui-xu-ai/PaperAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/hui-xu-ai/PaperAgent/actions/workflows/ci.yml)

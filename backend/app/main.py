@@ -52,7 +52,39 @@ _last_activity = _time.time()
 # 并保留一个**兜底**：GRACEFUL_EXIT_GRACE 秒宽限窗用尽后硬退出（防挂死）。
 _server_ref = None               # uvicorn.Server（run() 里赋值；dev/frozen 都赋）
 _exit_requested = threading.Event()
+_shell_teardown_done = threading.Event()     # 桌面壳（托盘 + WebView2 窗口）拆卸完成信号
 GRACEFUL_EXIT_GRACE = float(os.environ.get("PAPERAGENT_GRACE_SECONDS", "30"))  # 秒：宽限窗
+SHELL_TEARDOWN_WAIT = float(os.environ.get("PAPERAGENT_TEARDOWN_WAIT", "8"))   # 秒：等壳拆完
+
+
+def _mark_shell_teardown_done() -> None:
+    """桌面壳拆卸完成（由 `desktop.Shell.quit` 在窗口销毁后调用）。见 watchdog 里的说明。"""
+    _shell_teardown_done.set()
+
+
+def _release_listen_sockets(srv) -> int:
+    """主动关闭 uvicorn 的监听 socket ⇒ **端口立刻可用**（不依赖进程是否退出）。
+
+    2026-09-12 实测（打包版，用户与我的验证实例各一次）：退出后进程偶发停在"半死"态——
+    只剩 1 个线程、LISTEN socket 仍活（TCP 能连但 `/api/health` 超时）、`taskkill /F` 报
+    `There is no running instance of the task`、端口 `bind` 报 **WinError 10013** ⇒ 用户下次
+    双击直接报"端口被占用"，只能重启系统或换端口。
+    成因：`os._exit` / `ExitProcess` 撞上 **WebView2 拆卸**（COM/内核态等待）⇒ 进程终止
+    无法完成，socket 随进程对象一起被吊住。
+    因此：**在进入任何重拆卸之前先关监听 socket**，即使进程卡住，端口也不再被占。
+    """
+    closed = 0
+    try:
+        inner = getattr(srv, "_server", None)        # uvicorn: Server._server 是 asyncio.Server
+        for sock in list(getattr(inner, "sockets", None) or []):
+            try:
+                sock.close()
+                closed += 1
+            except Exception:  # noqa: BLE001 - 单个 socket 关闭失败不影响其它
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    return closed
 
 
 def _request_graceful_exit(reason: str = "") -> bool:
@@ -86,7 +118,16 @@ def _graceful_exit_watchdog() -> None:
             srv.should_exit = True          # 停止接收新请求
         except Exception:  # noqa: BLE001
             pass
+        closed = _release_listen_sockets(srv)
+        if closed:
+            logger.info("已主动关闭 %d 个监听 socket（端口立即释放，不依赖进程退出）", closed)
     _graceful_wait()
+    # 等桌面壳把托盘 + WebView2 窗口拆干净**再**退出：在 COM 拆卸中途 ExitProcess 会让
+    # 进程停在"半死"态（占住端口、taskkill 都杀不掉）——见 `_release_listen_sockets` 实测记录。
+    # 有界等待：窗口真卡住时也要能退出（socket 已释放，端口不会再被占）。
+    if not _shell_teardown_done.wait(SHELL_TEARDOWN_WAIT):
+        logger.warning("桌面壳拆卸未在 %.0fs 内完成（窗口可能卡住）→ 照常退出",
+                       SHELL_TEARDOWN_WAIT)
     logger.warning("优雅关停完成，进程退出")
     os._exit(0)
 
@@ -486,11 +527,14 @@ def run() -> None:
     try:
         if use_desktop and desktop.native_window_supported():
             desktop.run(server, url, _request_graceful_exit,
-                        storage_dir=_desktop_storage_dir())
+                        storage_dir=_desktop_storage_dir(),
+                        on_teardown_done=_mark_shell_teardown_done)
             # 窗口已关：等任务收尾（watchdog 兜底硬退），再让进程结束
             _graceful_wait()
             logger.warning("优雅关停完成（桌面壳收尾），进程退出")
-            return
+            # 硬退出：正常 return 会进入解释器 finalize，若有线程卡在 COM/内核态会挂住
+            # （表现就是"进程不退出、端口仍占"，实测过）。socket 已在 watchdog 里释放。
+            os._exit(0)
         if use_desktop:
             logger.warning("桌面壳不可用（WebView2/pywebview）→ 回退浏览器 app 窗口")
             desktop.open_app_window(url)

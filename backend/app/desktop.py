@@ -296,9 +296,10 @@ def show_window() -> bool:
 class Shell:
     """窗口 + 托盘的协调者（关窗=隐藏；退出=唯一真正的结束路径）。"""
 
-    def __init__(self, url: str, request_quit) -> None:
+    def __init__(self, url: str, request_quit, on_teardown_done=None) -> None:
         self.url = url
         self.request_quit = request_quit
+        self.on_teardown_done = on_teardown_done
         self.win = None
         self.icon = None
         self.quitting = False
@@ -319,7 +320,13 @@ class Shell:
         open_app_window(self.url)
 
     def quit(self, *_a) -> None:
-        """唯一真正退出：优雅关停后端 → 停托盘 → 销毁窗口 → 主线程返回。"""
+        """唯一真正退出：优雅关停后端 → 停托盘 → 销毁窗口 → **报告拆卸完成** → 主线程返回。
+
+        2026-09-12 实测（打包版）：进程退出（watchdog 的 `os._exit`）可能发生在
+        `self.win.destroy()` 的 **WebView2/COM 拆卸途中** ⇒ 终止卡在内核态，进程停在
+        "半死"态（占住端口、`taskkill` 都杀不掉）。所以这里在窗口销毁**之后**显式回报，
+        让 watchdog 等拆卸完成再退（另见 `main._release_listen_sockets`：端口会先被释放）。
+        """
         if self.quitting:
             return
         self.quitting = True
@@ -338,6 +345,12 @@ class Shell:
                 self.win.destroy()
         except Exception:  # noqa: BLE001
             logger.exception("销毁窗口失败")
+        finally:
+            try:
+                if self.on_teardown_done is not None:
+                    self.on_teardown_done()
+            except Exception:  # noqa: BLE001
+                logger.debug("拆卸完成回报失败（不影响退出）", exc_info=True)
 
     # -- 事件
     def on_closing(self) -> bool:
@@ -368,15 +381,18 @@ def native_window_supported() -> bool:
     return True
 
 
-def run(server, url: str, request_quit, storage_dir: Path | None = None) -> None:
+def run(server, url: str, request_quit, storage_dir: Path | None = None,
+        on_teardown_done=None) -> None:
     """主线程跑 GUI：后端 uvicorn 在后台线程；返回时后端已请求关停。
 
     窗口起不来时**不重复起后端**：保留托盘、回退浏览器窗口，主线程阻塞到后端退出。
+    `on_teardown_done`：托盘 + 窗口**真的拆完**时回调（供 `main` 的 watchdog 等它，
+    避免在 WebView2 拆卸途中终止进程 —— 那会留下占端口的"半死"进程）。
     """
     import webview
 
     global _active_shell
-    shell = Shell(url, request_quit)
+    shell = Shell(url, request_quit, on_teardown_done=on_teardown_done)
     _active_shell = shell
     t = threading.Thread(target=server.run, name="uvicorn-server", daemon=True)
     t.start()
