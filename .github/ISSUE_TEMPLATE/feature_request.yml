@@ -1,0 +1,24 @@
+name: 功能建议
+description: 想要的能力 / 使用场景
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 场景
+      description: 你在做什么事时觉得别扭？（"手怎么动、看到什么"比抽象描述更有用）
+    validations:
+      required: true
+  - type: textarea
+    id: want
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: alt
+    attributes:
+      label: 现在怎么绕过的 / 备选方案
+    validations:
+      required: false

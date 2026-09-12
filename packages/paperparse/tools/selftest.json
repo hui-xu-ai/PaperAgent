@@ -1,0 +1,39 @@
+{
+  "name": "selftest",
+  "description": "环境自检：Python/依赖/MinerU 连通性/模板清单，返回结构化结果。",
+  "when_to_use": "环境迁移后、MinerU 相关报错排查时。",
+  "cost_estimate": "零 token。",
+  "input_schema": {
+    "type": "object",
+    "properties": {}
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "python": {
+        "type": "string"
+      },
+      "deps": {
+        "type": "object"
+      },
+      "mineru_api_key_configured": {
+        "type": "boolean"
+      },
+      "mineru_base_url": {
+        "type": "string"
+      },
+      "mineru_dns_ok": {
+        "type": "boolean"
+      },
+      "templates": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "errors": [],
+  "example": "selftest()",
+  "usage": "dev"
+}

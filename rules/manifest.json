@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "levels": {
+    "builtin": 1,
+    "learned": 0,
+    "user": 0
+  }
+}

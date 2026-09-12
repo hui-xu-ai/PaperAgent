@@ -1,0 +1,52 @@
+name: Bug 报告
+description: 报告一个可复现的问题（请尽量按模板填，能大幅加快定位）
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！**提交前请先删掉任何 API Key、DOI 以外的私人信息与截图里的个人数据。**
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 程序「设置 → 关于」里的 APP_VERSION，或 `dist/PaperAgent/VERSION.txt`
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: 运行方式
+      options:
+        - 打包版（Release 里的 PaperAgent-*-win64.zip）
+        - 源码运行（start.ps1 / python -m app.main）
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 你做了什么、看到什么、期望什么（截图/贴报错原文更好）
+      placeholder: |
+        1. 打开「识别复核」…
+        2. 看到「加载失败：…」
+        3. 期望…
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 打包版为 exe 同目录 `logs/paperagent.log`（崩溃看 `logs/crash.log`），请贴出错前后 20 行
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      placeholder: "Windows 11 / Python 3.12 / 只用 MinerU 主通道"
+    validations:
+      required: false

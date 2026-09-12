@@ -1,0 +1,49 @@
+---
+title: "{{ doc.metadata.title }}"
+authors: {{ doc.metadata.authors | tojson }}
+{% if doc.metadata.article_type %}type: "{{ doc.metadata.article_type }}"
+{% endif %}year: {{ doc.metadata.year if doc.metadata.year else "" }}
+journal: "{{ doc.metadata.journal or "" }}"
+doi: "{{ doc.metadata.doi or "" }}"
+keywords: {{ doc.metadata.keywords | tojson }}
+tags: {{ tags_json }}
+source: pdf
+created: {{ doc.metadata.extraction_time }}
+---
+
+# {{ doc.metadata.title }}
+
+> [!info] 文献信息
+> - **作者**: {{ doc.metadata.authors | join("; ") if doc.metadata.authors else "—" }}
+{% if doc.metadata.article_type %}> - **类型**: {{ doc.metadata.article_type }}
+{% endif %}> - **期刊**: {{ doc.metadata.journal or "—" }} | **年份**: {{ doc.metadata.year if doc.metadata.year else "—" }} | **DOI**: {{ doc.metadata.doi or "—" }}
+
+> [!summary] AI 阅读总结
+{% if doc.ai_summary and doc.ai_summary|length > 0 %}{% for sec, txt in doc.ai_summary.items() if txt %}
+> **{{ sec }}**: {{ txt }}
+{% endfor %}{% else %}> 研究背景 / 方法 / 结果 / 结论 / 创新点 / 局限 —— 由 AI 总结阶段（M5）填充
+{% endif %}
+{% for item in items %}
+{%- if item.type == "heading" %}
+
+## {{ item.text }}
+{%- elif item.type == "figure" %}
+
+![]({{ item.file }})
+{%- elif item.text_zh %}
+
+{{ item.text_zh }}
+
+{{ item.text_en }}
+{%- else %}
+
+{{ item.text_en }}
+{%- endif %}
+{% endfor %}
+
+
+## References
+{% for r in doc.references %}
+{{ r.number }}. {{ r.raw_text | strip_ref_num }}
+{% else %}（参考文献未解析）
+{% endfor %}

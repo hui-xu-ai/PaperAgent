@@ -1,0 +1,38 @@
+[
+  {
+    "category": "formula",
+    "pattern_type": "regex",
+    "pattern": "\\\\mathsf\\s*\\{\\s*A\\s*\\}\\s*\\\\mathsf\\s*\\{\\s*m\\s*\\}\\s*\\^\\s*\\{\\s*\\\\bar\\s*\\{\\s*2\\s*\\}\\s*\\}",
+    "replacement": "\\\\mathsf { A } \\\\mathsf { m } ^ { 2 }",
+    "source": "builtin",
+    "confidence": 1.0,
+    "auto_apply": true,
+    "note": "Am^{\\bar{2}} 应为 Am^{2}",
+    "rule_id": "R-20260821-004",
+    "enabled": true,
+    "hits": 0,
+    "version": 1,
+    "evidence": [],
+    "scope": "global",
+    "created": "2026-08-21T17:28:08+00:00",
+    "updated": "2026-08-21T17:28:08+00:00"
+  },
+  {
+    "category": "formula",
+    "pattern_type": "regex",
+    "pattern": "\\\\mathsf\\s*\\{\\s*A\\s*\\}\\s*\\\\mathsf\\s*\\{\\s*m\\s*\\}\\s*\\^\\s*\\{\\s*[\\x00-\\x1f]?ar\\s*\\{\\s*2\\s*\\}\\s*\\}",
+    "replacement": "\\\\mathsf { A } \\\\mathsf { m } ^ { 2 }",
+    "source": "builtin",
+    "confidence": 1.0,
+    "auto_apply": true,
+    "note": "Am^{bar{2}} 控制字符污染 → Am^{2}",
+    "rule_id": "R-20260821-005",
+    "enabled": true,
+    "hits": 0,
+    "version": 1,
+    "evidence": [],
+    "scope": "global",
+    "created": "2026-08-21T17:28:08+00:00",
+    "updated": "2026-08-21T17:28:08+00:00"
+  }
+]

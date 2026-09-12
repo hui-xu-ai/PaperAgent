@@ -1,0 +1,113 @@
+{
+  "name": "convert_pdf",
+  "description": "将英文 PDF 转换为 Obsidian 兼容 Markdown（双栏拼接、元数据、大图保留、审计监督），输出到 output/<DOI>/。",
+  "when_to_use": "用户提供本地 PDF 文献并希望生成阅读版 Markdown 时使用（单篇）。",
+  "cost_estimate": "零 LLM token（代码优先拼接 + 本地解析）；耗时约 5~30 秒/篇。",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "pdf_path"
+    ],
+    "properties": {
+      "pdf_path": {
+        "type": "string",
+        "description": "PDF 文件路径"
+      },
+      "parser": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "pymupdf",
+          "mineru"
+        ],
+        "default": "auto",
+        "description": "解析器：auto=本地解析（推荐）；mineru 需公网 URL 通道"
+      },
+      "dpi": {
+        "type": "integer",
+        "default": 300,
+        "description": "图片渲染分辨率"
+      },
+      "calibration_md": {
+        "type": "string",
+        "description": "校准 MD 路径（默认自动探测）"
+      },
+      "template": {
+        "type": "string",
+        "enum": [
+          "obsidian_bilingual",
+          "obsidian_bilingual_alt",
+          "plain"
+        ],
+        "default": "obsidian_bilingual"
+      },
+      "out_dir": {
+        "type": "string",
+        "default": "output"
+      },
+      "resume": {
+        "type": "boolean",
+        "default": false,
+        "description": "断点续跑"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "run_id": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "success",
+          "partial",
+          "failed"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "md": {
+            "type": "string"
+          },
+          "images_dir": {
+            "type": "string"
+          },
+          "document_json": {
+            "type": "string"
+          },
+          "audit_dir": {
+            "type": "string"
+          }
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "error": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "stats": {
+        "type": "object"
+      }
+    }
+  },
+  "errors": [
+    "PAPER-0001",
+    "PAPER-0002",
+    "PAPER-0003",
+    "PAPER-0010~15",
+    "PAPER-0101~04",
+    "PAPER-0501"
+  ],
+  "example": "convert_pdf(pdf_path='input/10.1002_adma.202407106.pdf', template='obsidian_bilingual')",
+  "usage": "dev"
+}

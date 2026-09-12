@@ -1,0 +1,7 @@
+{
+ "layout": "v1",
+ "data_format": 2,
+ "created_at": "2026-09-12T12:15:00",
+ "fixture": true,
+ "note": "冻结自 data-v2（每表 ≤3 行；供升级兼容测试）"
+}

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题 / 讨论
+    url: https://github.com/hui-xu-ai/PaperAgent/discussions
+    about: 装不上、怎么配 Key、想聊聊用法 → 走 Discussions（Issue 留给可复现的 bug 与明确的功能建议）
+  - name: 安全与密钥
+    url: https://github.com/hui-xu-ai/PaperAgent/security/advisories/new
+    about: 发现密钥泄露/越权读取本地文件等问题请走私密报告，不要开公开 Issue

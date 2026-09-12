@@ -1,0 +1,30 @@
+# packages/paperparse/pyproject.toml
+# PaperAgent 统一算法包：PDF 解析 + HTML 识别 + HTML 辅助 PDF 解析自我训练
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paperparse"
+version = "2.3.0"
+description = "PaperAgent 统一算法包：PDF 解析 + HTML 识别 + HTML 辅助 PDF 解析自我训练（主 agent 经 api 门面调用）"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pymupdf>=1.24",
+    "requests>=2.31",
+    "pydantic>=2.6,<3",
+    "jinja2>=3.1",
+    "rich>=13",
+    "python-dotenv>=1.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+web = ["beautifulsoup4>=4.12", "markdownify>=0.12", "lxml>=5"]
+llm = ["openai>=1.30"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["paperparse*", "paper_reader*"]

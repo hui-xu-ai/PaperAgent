@@ -1,0 +1,46 @@
+{
+  "name": "help",
+  "description": "获取单个工具的完整详情（输入/输出 JSON Schema、错误码、示例）——渐进式加载，按需取详情降 token。",
+  "when_to_use": "已选定工具但需要完整参数 schema 时。",
+  "cost_estimate": "每工具约 300~800 token。",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "tool"
+    ],
+    "properties": {
+      "tool": {
+        "type": "string",
+        "description": "工具名，如 convert_pdf"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "input_schema": {
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "errors": {
+        "type": "array"
+      },
+      "example": {
+        "type": "string"
+      }
+    }
+  },
+  "errors": [
+    "PAPER-0501"
+  ],
+  "example": "help(tool='convert_pdf')",
+  "usage": "advanced"
+}

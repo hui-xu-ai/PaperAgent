@@ -1,0 +1,97 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build
+dist/
+build/
+# 干净分发版 zip（构建产物，79MB 级，不入库）
+release/
+*.egg-info/
+*.spec
+
+# IDE
+.idea/
+.vscode/
+
+# Runtime data
+input/
+output/
+work/
+*.db
+*.db-journal
+# 应用数据（五库物理隔离：data/{system,chat,diary,biblio,reference}，见 docs/DATA-LAYOUT.md）
+# 注意：锚定根目录 `/data/`，否则会连测试夹具 tests/fixtures/**/data/ 一起忽略
+/data/
+# 环境/密钥文件（含任何备份变体，防止带密钥的 .env.bak-* 被提交）
+.env
+.env.*
+!.env.example
+
+# 零散用户资料（无父资源的 SI/审稿意见等，用户数据不入库）
+attachments/
+
+# 黄金数据夹具：升级兼容测试的**历史格式快照**，必须入库（上面的 *.db 规则对它不生效）
+!tests/fixtures/**
+
+# 杩愯鏃剁敤鎴锋彃浠剁洰褰曪紙USER_PLUGINS_DIR锛屽惈鐢ㄦ埛鏀惧叆鐨?skill 瀹夎鍖咃級
+/plugins/
+
+# 娴兼俺鐦界拋鏉跨箓娴犳挸绨遍敍鍫㈠缁?git閿涘奔绗夐梾蹇庡敩閻焦褰佹禍銈忕礆.dsh-memory/
+
+# 浼氳瘽璁板繂浠撳簱锛堢嫭绔?git锛屼笉闅忎唬鐮佹彁浜わ級
+.dsh-memory/
+
+# 统一规范库（T01）
+library/
+
+# 学习工作区（独立 git，学习数据与主项目分离）
+learning_workspace/
+
+# 测试日志
+*.log
+
+# 知识库（运行时生成，可指向 Obsidian vault）
+knowledge_base/
+
+# 测试 PDF（根目录散放）
+/*.pdf
+.edge-debug/
+.edge-debug-*/
+
+# 语料基线：图片与中间检查点可再生成（tools/parse_offline.py），不入库
+corpus/baseline/**/images/
+corpus/baseline/**/intermediate/S*.json
+corpus/baseline/**/intermediate/mineru_*.md
+corpus/baseline/**/intermediate/mineru_*.json
+
+# 用户提供的文献（原始数据，不入库）
+用户提供的文献/
+
+# 剥离归档（用户单独迁移备份，不入主仓库）
+archive/
+
+# browser-verify 无头浏览器 profile（工作区内）
+.edge-debug/
+.edge-debug-*/
+work/.edge-test*/
+work/.edge-verify*/
+
+logs/
+
+# ── 本地凭据（绝不可入库）─────────────────────────────────────────
+# 2026-09-12 发布期实证：临时 PAT 落到了仓库根 `.gh-pat`（差点被 untracked 状态误提交）。
+.gh-pat
+.gh-pat*
+.gh-token
+*.ghpat
+.pat
+.github-token
+gh-token.txt
+

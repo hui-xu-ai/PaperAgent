@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ title }} - {{ run_id }}</title>
+<style>
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; color: #222; }
+  h1 { font-size: 20px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 12px; font-size: 13px; }
+  th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f5; }
+  .kind-error { background: #fdecea; }
+  .kind-warning, .kind-degrade { background: #fff8e1; }
+  .code { font-family: Consolas, monospace; font-size: 12px; color: #555; }
+  pre { white-space: pre-wrap; word-break: break-all; margin: 0; }
+</style>
+</head>
+<body>
+<h1>{{ title }}</h1>
+<p>Run ID: <span class="code">{{ run_id }}</span></p>
+<table>
+  <thead>
+    <tr><th>时间 (UTC)</th><th>阶段</th><th>类型</th><th>摘要</th><th>数据摘要</th><th>token</th><th>耗时(ms)</th></tr>
+  </thead>
+  <tbody>
+  {% for e in events %}
+    <tr class="kind-{{ e.kind }}">
+      <td>{{ e.ts }}</td>
+      <td>{{ e.stage }}</td>
+      <td>{{ e.kind }}</td>
+      <td>{{ e.summary }}</td>
+      <td><pre>{{ e.payload | tojson }}</pre></td>
+      <td>{{ e.tokens if e.tokens is not none else "" }}</td>
+      <td>{{ e.duration_ms if e.duration_ms is not none else "" }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7">暂无事件</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</body>
+</html>

@@ -1,0 +1,77 @@
+{
+  "name": "audit",
+  "description": "监督查询：返回指定运行的审计事件（阶段/类型/摘要/token/耗时），观察中间数据传输过程。",
+  "when_to_use": "需要向用户展示管线各阶段产物摘要、定位失败阶段时。",
+  "cost_estimate": "零 token；详情按需渐进加载（audit_detail 未实现时用 stage 过滤）。",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "run_id"
+    ],
+    "properties": {
+      "run_id": {
+        "type": "string"
+      },
+      "out_dir": {
+        "type": "string",
+        "default": "output"
+      },
+      "stage": {
+        "type": "string",
+        "description": "按阶段过滤，如 S3_stitch"
+      },
+      "level": {
+        "type": "string",
+        "enum": [
+          "input",
+          "output",
+          "error",
+          "warning",
+          "degrade",
+          "info"
+        ]
+      }
+    }
+  },
+  "output_schema": {
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "errors": [],
+  "example": "audit(run_id='...', level='error')",
+  "usage": "dev"
+}

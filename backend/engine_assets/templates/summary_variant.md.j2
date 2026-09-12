@@ -1,0 +1,21 @@
+---
+title: "{{ doc.metadata.title }}"
+authors: {{ doc.metadata.authors | tojson }}
+type: "summary"
+year: {{ doc.metadata.year if doc.metadata.year else "" }}
+journal: "{{ doc.metadata.journal or "" }}"
+doi: "{{ doc.metadata.doi or "" }}"
+tags: {{ tags_json }}
+created: {{ doc.metadata.extraction_time }}
+---
+
+# {{ doc.metadata.title }}
+
+> [!summary] AI 阅读总结
+{% if doc.ai_summary and doc.ai_summary|length > 0 %}
+{% for sec, txt in doc.ai_summary.items() if txt %}
+> **{{ sec }}**: {{ txt }}
+{% endfor %}
+{% else %}
+> （AI 总结未生成）
+{% endif %}

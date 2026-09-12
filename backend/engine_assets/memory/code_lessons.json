@@ -1,0 +1,58 @@
+[
+  {
+    "lesson_id": "L001",
+    "date": "2026-08-18",
+    "pattern": "标题行被 reading_order 按块中心分列拆散",
+    "root_cause": "reading_order 按块中心 x 分列，全宽标题行中心落在列间隙",
+    "fix": "全宽行按 y 插入窄行流；窄行用 x0 分列",
+    "module": "stitch_code/layout"
+  },
+  {
+    "lesson_id": "L002",
+    "date": "2026-08-18",
+    "pattern": "标题续行不合并 / 独立编号标题误合并",
+    "root_cause": "stitch 每行独立 emit，缺标题合并保护",
+    "fix": "连续标题行合并；编号标题不合并；字号差>0.4pt 不合并；标题前先 flush 正文",
+    "module": "stitch_code"
+  },
+  {
+    "lesson_id": "L003",
+    "date": "2026-08-18",
+    "pattern": "正文引文句 'Figure 4g shows...' 误判图注",
+    "root_cause": "CAPTION_RE 过宽",
+    "fix": "图注首行要求编号后带 . 或 :",
+    "module": "block_classify"
+  },
+  {
+    "lesson_id": "L004",
+    "date": "2026-08-18",
+    "pattern": "有编号图注被并入上一图注",
+    "root_cause": "有编号图注进 pending 延迟合并",
+    "fix": "图注延迟插入 + flush_pending 按编号分组",
+    "module": "stitch_code"
+  },
+  {
+    "lesson_id": "L005",
+    "date": "2026-08-18",
+    "pattern": "MinerU 高精度文本融合段落错排（如 Electro-ionic 段被放摘要区）",
+    "root_cause": "full.md 段序与本地阅读顺序不一致",
+    "fix": "合并段拼接顺序按本地段内出现位置排序（段落守恒，每 full 段只归属一个本地段）",
+    "module": "mineru_doc_builder"
+  },
+  {
+    "lesson_id": "L006",
+    "date": "2026-08-18",
+    "pattern": "拉TeX 公式识别异常（\\Nu_2、'�'、poly(�-)）",
+    "root_cause": "OCR 将希腊字母/替换字符误识别",
+    "fix": "anomaly_detect 检测 → AI 确认 → 追加 KNOWN_FIXES 确定性替换库",
+    "module": "anomaly_detect"
+  },
+  {
+    "lesson_id": "L007",
+    "date": "2026-08-18",
+    "pattern": "前言尾句带引文编号 '... Based on previous...[61]' 被吞断",
+    "root_cause": "_ends_sentence 未剥离尾部引文编号 [n]",
+    "fix": "_ends_sentence 先剥离尾部引文编号与括号再判句尾",
+    "module": "stitch_code"
+  }
+]

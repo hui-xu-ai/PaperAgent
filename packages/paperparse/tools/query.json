@@ -1,0 +1,89 @@
+{
+  "name": "query",
+  "description": "局部查询 document.json 的指定段落/章节（默认只回英文、每段限长，**不返回全文**）：供追加问答时定位引用具体段落，避免重读全文浪费 token。",
+  "when_to_use": "追加问答需要引用论文具体段落/章节时；或任何需要'看某一段原文/译文'而非全文的场景。",
+  "cost_estimate": "本地查询，零 AI token（输出仅为局部片段）。",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "document_json"
+    ],
+    "properties": {
+      "document_json": {
+        "type": "string",
+        "description": "document.json 路径"
+      },
+      "para_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "段落 ID 列表（如 [\"P008\",\"P012\"]）"
+      },
+      "section": {
+        "type": "string",
+        "description": "按章节名过滤（精确匹配）"
+      },
+      "include": {
+        "type": "string",
+        "enum": [
+          "en",
+          "zh",
+          "both"
+        ],
+        "default": "en",
+        "description": "返回语言"
+      },
+      "limit_chars": {
+        "type": "integer",
+        "default": 2000,
+        "description": "每段返回上限字符数"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "found": {
+        "type": "integer"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "idx": {
+              "type": "integer"
+            },
+            "para_id": {
+              "type": "string"
+            },
+            "section": {
+              "type": "string"
+            },
+            "is_heading": {
+              "type": "boolean"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "sections": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "note": {
+        "type": "string"
+      }
+    }
+  },
+  "errors": [
+    "PAPER-0001"
+  ],
+  "example": "query(document_json='output/10.1002_adma.202407106/intermediate/document.json', section='3. Results')",
+  "usage": "advanced"
+}

@@ -1,0 +1,36 @@
+[
+  {
+    "category": "spacing",
+    "pattern_type": "regex",
+    "pattern": "(?<![a-z])(of)([A-Za-z]{7,})(?![a-z])",
+    "replacement": "\\1 \\2",
+    "exclude": [
+      "offspring",
+      "offsprings",
+      "often",
+      "offset",
+      "office",
+      "official",
+      "officer",
+      "officials",
+      "offer",
+      "offers",
+      "offering",
+      "offerings",
+      "offered",
+      "offshore"
+    ],
+    "source": "builtin",
+    "confidence": 1.0,
+    "auto_apply": true,
+    "enabled": true,
+    "hits": 0,
+    "version": 2,
+    "evidence": [],
+    "scope": "global",
+    "note": "MinerU 空格缺失：of+长词粘连（the ofconductivity → the of conductivity）；实测 15 词全真，exclude 保护合法 of-词",
+    "rule_id": "R-20260821-006",
+    "created": "2026-08-21T17:31:22+00:00",
+    "updated": "2026-08-22T00:00:00+00:00"
+  }
+]

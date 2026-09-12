@@ -1,0 +1,2240 @@
+{
+ "schema_version": 1,
+ "generated": "2026-08-26T11:39:12+00:00",
+ "source": "build_domain_dict.py + seed_base.json (pyvalem/pint/periodictable 校验, PubChem 交叉验证)",
+ "elements": [
+  "Ac",
+  "Ag",
+  "Al",
+  "Am",
+  "Ar",
+  "As",
+  "At",
+  "Au",
+  "B",
+  "Ba",
+  "Be",
+  "Bh",
+  "Bi",
+  "Bk",
+  "Br",
+  "C",
+  "Ca",
+  "Cd",
+  "Ce",
+  "Cf",
+  "Cl",
+  "Cm",
+  "Cn",
+  "Co",
+  "Cr",
+  "Cs",
+  "Cu",
+  "Db",
+  "Ds",
+  "Dy",
+  "Er",
+  "Es",
+  "Eu",
+  "F",
+  "Fe",
+  "Fl",
+  "Fm",
+  "Fr",
+  "Ga",
+  "Gd",
+  "Ge",
+  "H",
+  "He",
+  "Hf",
+  "Hg",
+  "Ho",
+  "Hs",
+  "I",
+  "In",
+  "Ir",
+  "K",
+  "Kr",
+  "La",
+  "Li",
+  "Lr",
+  "Lu",
+  "Lv",
+  "Mc",
+  "Md",
+  "Mg",
+  "Mn",
+  "Mo",
+  "Mt",
+  "N",
+  "Na",
+  "Nb",
+  "Nd",
+  "Ne",
+  "Nh",
+  "Ni",
+  "No",
+  "Np",
+  "O",
+  "Og",
+  "Os",
+  "P",
+  "Pa",
+  "Pb",
+  "Pd",
+  "Pm",
+  "Po",
+  "Pr",
+  "Pt",
+  "Pu",
+  "Ra",
+  "Rb",
+  "Re",
+  "Rf",
+  "Rg",
+  "Rh",
+  "Rn",
+  "Ru",
+  "S",
+  "Sb",
+  "Sc",
+  "Se",
+  "Sg",
+  "Si",
+  "Sm",
+  "Sn",
+  "Sr",
+  "Ta",
+  "Tb",
+  "Tc",
+  "Te",
+  "Th",
+  "Ti",
+  "Tl",
+  "Tm",
+  "Ts",
+  "U",
+  "V",
+  "W",
+  "Xe",
+  "Y",
+  "Yb",
+  "Zn",
+  "Zr"
+ ],
+ "chemistry": [
+  {
+   "id": "DOM-CHEM-001",
+   "formula": "H+",
+   "elements": {
+    "H": 1
+   },
+   "charge": 1,
+   "unicode": "H⁺",
+   "latex": "\\mathrm{H}^{+}",
+   "name": "proton",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-002",
+   "formula": "Na+",
+   "elements": {
+    "Na": 1
+   },
+   "charge": 1,
+   "unicode": "Na⁺",
+   "latex": "\\mathrm{Na}^{+}",
+   "name": "sodium",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-003",
+   "formula": "K+",
+   "elements": {
+    "K": 1
+   },
+   "charge": 1,
+   "unicode": "K⁺",
+   "latex": "\\mathrm{K}^{+}",
+   "name": "potassium",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-004",
+   "formula": "Li+",
+   "elements": {
+    "Li": 1
+   },
+   "charge": 1,
+   "unicode": "Li⁺",
+   "latex": "\\mathrm{Li}^{+}",
+   "name": "lithium",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-005",
+   "formula": "Ag+",
+   "elements": {
+    "Ag": 1
+   },
+   "charge": 1,
+   "unicode": "Ag⁺",
+   "latex": "\\mathrm{Ag}^{+}",
+   "name": "silver",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-006",
+   "formula": "Mg(2+)",
+   "elements": {
+    "Mg": 1
+   },
+   "charge": 2,
+   "unicode": "Mg²⁺",
+   "latex": "\\mathrm{Mg}^{2+}",
+   "name": "magnesium",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-007",
+   "formula": "Ca(2+)",
+   "elements": {
+    "Ca": 1
+   },
+   "charge": 2,
+   "unicode": "Ca²⁺",
+   "latex": "\\mathrm{Ca}^{2+}",
+   "name": "calcium",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-008",
+   "formula": "Ba(2+)",
+   "elements": {
+    "Ba": 1
+   },
+   "charge": 2,
+   "unicode": "Ba²⁺",
+   "latex": "\\mathrm{Ba}^{2+}",
+   "name": "barium",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-009",
+   "formula": "Zn(2+)",
+   "elements": {
+    "Zn": 1
+   },
+   "charge": 2,
+   "unicode": "Zn²⁺",
+   "latex": "\\mathrm{Zn}^{2+}",
+   "name": "zinc",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-010",
+   "formula": "Cu(2+)",
+   "elements": {
+    "Cu": 1
+   },
+   "charge": 2,
+   "unicode": "Cu²⁺",
+   "latex": "\\mathrm{Cu}^{2+}",
+   "name": "copper",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-011",
+   "formula": "Cu(1+)",
+   "elements": {
+    "Cu": 1
+   },
+   "charge": 1,
+   "unicode": "Cu⁺",
+   "latex": "\\mathrm{Cu}^{+}",
+   "name": "copper(1+)",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-012",
+   "formula": "Fe(2+)",
+   "elements": {
+    "Fe": 1
+   },
+   "charge": 2,
+   "unicode": "Fe²⁺",
+   "latex": "\\mathrm{Fe}^{2+}",
+   "name": "iron",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-013",
+   "formula": "Fe(3+)",
+   "elements": {
+    "Fe": 1
+   },
+   "charge": 3,
+   "unicode": "Fe³⁺",
+   "latex": "\\mathrm{Fe}^{3+}",
+   "name": "iron(3+)",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-014",
+   "formula": "Al(3+)",
+   "elements": {
+    "Al": 1
+   },
+   "charge": 3,
+   "unicode": "Al³⁺",
+   "latex": "\\mathrm{Al}^{3+}",
+   "name": "aluminum",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-015",
+   "formula": "NH4+",
+   "elements": {
+    "N": 1,
+    "H": 4
+   },
+   "charge": 1,
+   "unicode": "NH₄⁺",
+   "latex": "\\mathrm{N}\\mathrm{H}_{4}^{+}",
+   "name": "ammonium",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-016",
+   "formula": "Ni(2+)",
+   "elements": {
+    "Ni": 1
+   },
+   "charge": 2,
+   "unicode": "Ni²⁺",
+   "latex": "\\mathrm{Ni}^{2+}",
+   "name": "nickel",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-017",
+   "formula": "Co(2+)",
+   "elements": {
+    "Co": 1
+   },
+   "charge": 2,
+   "unicode": "Co²⁺",
+   "latex": "\\mathrm{Co}^{2+}",
+   "name": "cobalt",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-018",
+   "formula": "Mn(2+)",
+   "elements": {
+    "Mn": 1
+   },
+   "charge": 2,
+   "unicode": "Mn²⁺",
+   "latex": "\\mathrm{Mn}^{2+}",
+   "name": "manganese",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-019",
+   "formula": "Cr(3+)",
+   "elements": {
+    "Cr": 1
+   },
+   "charge": 3,
+   "unicode": "Cr³⁺",
+   "latex": "\\mathrm{Cr}^{3+}",
+   "name": "chromium",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-020",
+   "formula": "Sn(2+)",
+   "elements": {
+    "Sn": 1
+   },
+   "charge": 2,
+   "unicode": "Sn²⁺",
+   "latex": "\\mathrm{Sn}^{2+}",
+   "name": "tin",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-021",
+   "formula": "Pb(2+)",
+   "elements": {
+    "Pb": 1
+   },
+   "charge": 2,
+   "unicode": "Pb²⁺",
+   "latex": "\\mathrm{Pb}^{2+}",
+   "name": "lead",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-022",
+   "formula": "H3O+",
+   "elements": {
+    "H": 3,
+    "O": 1
+   },
+   "charge": 1,
+   "unicode": "H₃O⁺",
+   "latex": "\\mathrm{H}_{3}\\mathrm{O}^{+}",
+   "name": "hydronium",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-023",
+   "formula": "F-",
+   "elements": {
+    "F": 1
+   },
+   "charge": -1,
+   "unicode": "F⁻",
+   "latex": "\\mathrm{F}^{-}",
+   "name": "fluoride",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-024",
+   "formula": "Cl-",
+   "elements": {
+    "Cl": 1
+   },
+   "charge": -1,
+   "unicode": "Cl⁻",
+   "latex": "\\mathrm{Cl}^{-}",
+   "name": "chloride",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-025",
+   "formula": "Br-",
+   "elements": {
+    "Br": 1
+   },
+   "charge": -1,
+   "unicode": "Br⁻",
+   "latex": "\\mathrm{Br}^{-}",
+   "name": "bromide",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-026",
+   "formula": "I-",
+   "elements": {
+    "I": 1
+   },
+   "charge": -1,
+   "unicode": "I⁻",
+   "latex": "\\mathrm{I}^{-}",
+   "name": "iodide",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-027",
+   "formula": "OH-",
+   "elements": {
+    "O": 1,
+    "H": 1
+   },
+   "charge": -1,
+   "unicode": "OH⁻",
+   "latex": "\\mathrm{O}\\mathrm{H}^{-}",
+   "name": "hydroxide",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-028",
+   "formula": "NO3-",
+   "elements": {
+    "N": 1,
+    "O": 3
+   },
+   "charge": -1,
+   "unicode": "NO₃⁻",
+   "latex": "\\mathrm{N}\\mathrm{O}_{3}^{-}",
+   "name": "nitrate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-029",
+   "formula": "NO2-",
+   "elements": {
+    "N": 1,
+    "O": 2
+   },
+   "charge": -1,
+   "unicode": "NO₂⁻",
+   "latex": "\\mathrm{N}\\mathrm{O}_{2}^{-}",
+   "name": "nitrite",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-030",
+   "formula": "SO4(2-)",
+   "elements": {
+    "S": 1,
+    "O": 4
+   },
+   "charge": -2,
+   "unicode": "SO₄²⁻",
+   "latex": "\\mathrm{S}\\mathrm{O}_{4}^{2-}",
+   "name": "sulfate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-031",
+   "formula": "SO3(2-)",
+   "elements": {
+    "S": 1,
+    "O": 3
+   },
+   "charge": -2,
+   "unicode": "SO₃²⁻",
+   "latex": "\\mathrm{S}\\mathrm{O}_{3}^{2-}",
+   "name": "sulfite",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-032",
+   "formula": "CO3(2-)",
+   "elements": {
+    "C": 1,
+    "O": 3
+   },
+   "charge": -2,
+   "unicode": "CO₃²⁻",
+   "latex": "\\mathrm{C}\\mathrm{O}_{3}^{2-}",
+   "name": "carbonate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-033",
+   "formula": "PO4(3-)",
+   "elements": {
+    "P": 1,
+    "O": 4
+   },
+   "charge": -3,
+   "unicode": "PO₄³⁻",
+   "latex": "\\mathrm{P}\\mathrm{O}_{4}^{3-}",
+   "name": "phosphate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-034",
+   "formula": "ClO-",
+   "elements": {
+    "Cl": 1,
+    "O": 1
+   },
+   "charge": -1,
+   "unicode": "ClO⁻",
+   "latex": "\\mathrm{Cl}\\mathrm{O}^{-}",
+   "name": "hypochlorite",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-035",
+   "formula": "ClO2-",
+   "elements": {
+    "Cl": 1,
+    "O": 2
+   },
+   "charge": -1,
+   "unicode": "ClO₂⁻",
+   "latex": "\\mathrm{Cl}\\mathrm{O}_{2}^{-}",
+   "name": "chlorite",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-036",
+   "formula": "ClO3-",
+   "elements": {
+    "Cl": 1,
+    "O": 3
+   },
+   "charge": -1,
+   "unicode": "ClO₃⁻",
+   "latex": "\\mathrm{Cl}\\mathrm{O}_{3}^{-}",
+   "name": "chlorate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-037",
+   "formula": "ClO4-",
+   "elements": {
+    "Cl": 1,
+    "O": 4
+   },
+   "charge": -1,
+   "unicode": "ClO₄⁻",
+   "latex": "\\mathrm{Cl}\\mathrm{O}_{4}^{-}",
+   "name": "perchlorate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-038",
+   "formula": "MnO4-",
+   "elements": {
+    "Mn": 1,
+    "O": 4
+   },
+   "charge": -1,
+   "unicode": "MnO₄⁻",
+   "latex": "\\mathrm{Mn}\\mathrm{O}_{4}^{-}",
+   "name": "permanganate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-039",
+   "formula": "CrO4(2-)",
+   "elements": {
+    "Cr": 1,
+    "O": 4
+   },
+   "charge": -2,
+   "unicode": "CrO₄²⁻",
+   "latex": "\\mathrm{Cr}\\mathrm{O}_{4}^{2-}",
+   "name": "chromate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-040",
+   "formula": "Cr2O7(2-)",
+   "elements": {
+    "Cr": 2,
+    "O": 7
+   },
+   "charge": -2,
+   "unicode": "Cr₂O₇²⁻",
+   "latex": "\\mathrm{Cr}_{2}\\mathrm{O}_{7}^{2-}",
+   "name": "dichromate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-041",
+   "formula": "S(2-)",
+   "elements": {
+    "S": 1
+   },
+   "charge": -2,
+   "unicode": "S²⁻",
+   "latex": "\\mathrm{S}^{2-}",
+   "name": "sulfide",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-042",
+   "formula": "CN-",
+   "elements": {
+    "C": 1,
+    "N": 1
+   },
+   "charge": -1,
+   "unicode": "CN⁻",
+   "latex": "\\mathrm{C}\\mathrm{N}^{-}",
+   "name": "cyanide",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-043",
+   "formula": "SCN-",
+   "elements": {
+    "S": 1,
+    "C": 1,
+    "N": 1
+   },
+   "charge": -1,
+   "unicode": "SCN⁻",
+   "latex": "\\mathrm{S}\\mathrm{C}\\mathrm{N}^{-}",
+   "name": "thiocyanate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-044",
+   "formula": "HCO3-",
+   "elements": {
+    "H": 1,
+    "C": 1,
+    "O": 3
+   },
+   "charge": -1,
+   "unicode": "HCO₃⁻",
+   "latex": "\\mathrm{H}\\mathrm{C}\\mathrm{O}_{3}^{-}",
+   "name": "bicarbonate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-045",
+   "formula": "HSO4-",
+   "elements": {
+    "H": 1,
+    "S": 1,
+    "O": 4
+   },
+   "charge": -1,
+   "unicode": "HSO₄⁻",
+   "latex": "\\mathrm{H}\\mathrm{S}\\mathrm{O}_{4}^{-}",
+   "name": "bisulfate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-046",
+   "formula": "H2PO4-",
+   "elements": {
+    "H": 2,
+    "P": 1,
+    "O": 4
+   },
+   "charge": -1,
+   "unicode": "H₂PO₄⁻",
+   "latex": "\\mathrm{H}_{2}\\mathrm{P}\\mathrm{O}_{4}^{-}",
+   "name": "dihydrogen phosphate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-047",
+   "formula": "HPO4(2-)",
+   "elements": {
+    "H": 1,
+    "P": 1,
+    "O": 4
+   },
+   "charge": -2,
+   "unicode": "HPO₄²⁻",
+   "latex": "\\mathrm{H}\\mathrm{P}\\mathrm{O}_{4}^{2-}",
+   "name": "hydrogen phosphate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-048",
+   "formula": "BF4-",
+   "elements": {
+    "B": 1,
+    "F": 4
+   },
+   "charge": -1,
+   "unicode": "BF₄⁻",
+   "latex": "\\mathrm{B}\\mathrm{F}_{4}^{-}",
+   "name": "tetrafluoroborate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-049",
+   "formula": "PF6-",
+   "elements": {
+    "P": 1,
+    "F": 6
+   },
+   "charge": -1,
+   "unicode": "PF₆⁻",
+   "latex": "\\mathrm{P}\\mathrm{F}_{6}^{-}",
+   "name": "hexafluorophosphate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-050",
+   "formula": "CF3SO3-",
+   "elements": {
+    "C": 1,
+    "F": 3,
+    "S": 1,
+    "O": 3
+   },
+   "charge": -1,
+   "unicode": "CF₃SO₃⁻",
+   "latex": "\\mathrm{C}\\mathrm{F}_{3}\\mathrm{S}\\mathrm{O}_{3}^{-}",
+   "name": "triflate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-051",
+   "formula": "CH3COO-",
+   "elements": {
+    "C": 2,
+    "H": 3,
+    "O": 2
+   },
+   "charge": -1,
+   "unicode": "C₂H₃O₂⁻",
+   "latex": "\\mathrm{C}\\mathrm{H}_{3}\\mathrm{C}\\mathrm{O}\\mathrm{O}^{-}",
+   "name": "acetate",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": "match"
+  },
+  {
+   "id": "DOM-CHEM-052",
+   "formula": "N2",
+   "elements": {
+    "N": 2
+   },
+   "charge": 0,
+   "unicode": "N₂",
+   "latex": "\\mathrm{N}_{2}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-053",
+   "formula": "O2",
+   "elements": {
+    "O": 2
+   },
+   "charge": 0,
+   "unicode": "O₂",
+   "latex": "\\mathrm{O}_{2}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-054",
+   "formula": "H2",
+   "elements": {
+    "H": 2
+   },
+   "charge": 0,
+   "unicode": "H₂",
+   "latex": "\\mathrm{H}_{2}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-055",
+   "formula": "CO2",
+   "elements": {
+    "C": 1,
+    "O": 2
+   },
+   "charge": 0,
+   "unicode": "CO₂",
+   "latex": "\\mathrm{C}\\mathrm{O}_{2}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-056",
+   "formula": "H2O",
+   "elements": {
+    "H": 2,
+    "O": 1
+   },
+   "charge": 0,
+   "unicode": "H₂O",
+   "latex": "\\mathrm{H}_{2}\\mathrm{O}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-057",
+   "formula": "NH3",
+   "elements": {
+    "N": 1,
+    "H": 3
+   },
+   "charge": 0,
+   "unicode": "NH₃",
+   "latex": "\\mathrm{N}\\mathrm{H}_{3}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-058",
+   "formula": "CH4",
+   "elements": {
+    "C": 1,
+    "H": 4
+   },
+   "charge": 0,
+   "unicode": "CH₄",
+   "latex": "\\mathrm{C}\\mathrm{H}_{4}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-059",
+   "formula": "C2H5OH",
+   "elements": {
+    "C": 2,
+    "H": 6,
+    "O": 1
+   },
+   "charge": 0,
+   "unicode": "C₂H₆O",
+   "latex": "\\mathrm{C}_{2}\\mathrm{H}_{5}\\mathrm{O}\\mathrm{H}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-060",
+   "formula": "CH3OH",
+   "elements": {
+    "C": 1,
+    "H": 4,
+    "O": 1
+   },
+   "charge": 0,
+   "unicode": "CH₄O",
+   "latex": "\\mathrm{C}\\mathrm{H}_{3}\\mathrm{O}\\mathrm{H}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-061",
+   "formula": "H2O2",
+   "elements": {
+    "H": 2,
+    "O": 2
+   },
+   "charge": 0,
+   "unicode": "H₂O₂",
+   "latex": "\\mathrm{H}_{2}\\mathrm{O}_{2}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-062",
+   "formula": "C6H6",
+   "elements": {
+    "C": 6,
+    "H": 6
+   },
+   "charge": 0,
+   "unicode": "C₆H₆",
+   "latex": "\\mathrm{C}_{6}\\mathrm{H}_{6}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-063",
+   "formula": "H2SO4",
+   "elements": {
+    "H": 2,
+    "S": 1,
+    "O": 4
+   },
+   "charge": 0,
+   "unicode": "H₂SO₄",
+   "latex": "\\mathrm{H}_{2}\\mathrm{S}\\mathrm{O}_{4}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-064",
+   "formula": "HNO3",
+   "elements": {
+    "H": 1,
+    "N": 1,
+    "O": 3
+   },
+   "charge": 0,
+   "unicode": "HNO₃",
+   "latex": "\\mathrm{H}\\mathrm{N}\\mathrm{O}_{3}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-065",
+   "formula": "HCl",
+   "elements": {
+    "H": 1,
+    "Cl": 1
+   },
+   "charge": 0,
+   "unicode": "HCl",
+   "latex": "\\mathrm{H}\\mathrm{Cl}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-066",
+   "formula": "NaOH",
+   "elements": {
+    "Na": 1,
+    "O": 1,
+    "H": 1
+   },
+   "charge": 0,
+   "unicode": "NaOH",
+   "latex": "\\mathrm{Na}\\mathrm{O}\\mathrm{H}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-067",
+   "formula": "KOH",
+   "elements": {
+    "K": 1,
+    "O": 1,
+    "H": 1
+   },
+   "charge": 0,
+   "unicode": "KOH",
+   "latex": "\\mathrm{K}\\mathrm{O}\\mathrm{H}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-068",
+   "formula": "CaCO3",
+   "elements": {
+    "Ca": 1,
+    "C": 1,
+    "O": 3
+   },
+   "charge": 0,
+   "unicode": "CaCO₃",
+   "latex": "\\mathrm{Ca}\\mathrm{C}\\mathrm{O}_{3}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-069",
+   "formula": "Na2CO3",
+   "elements": {
+    "Na": 2,
+    "C": 1,
+    "O": 3
+   },
+   "charge": 0,
+   "unicode": "Na₂CO₃",
+   "latex": "\\mathrm{Na}_{2}\\mathrm{C}\\mathrm{O}_{3}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-070",
+   "formula": "NaHCO3",
+   "elements": {
+    "Na": 1,
+    "H": 1,
+    "C": 1,
+    "O": 3
+   },
+   "charge": 0,
+   "unicode": "NaHCO₃",
+   "latex": "\\mathrm{Na}\\mathrm{H}\\mathrm{C}\\mathrm{O}_{3}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-071",
+   "formula": "NaCl",
+   "elements": {
+    "Na": 1,
+    "Cl": 1
+   },
+   "charge": 0,
+   "unicode": "NaCl",
+   "latex": "\\mathrm{Na}\\mathrm{Cl}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-072",
+   "formula": "Na2SO4",
+   "elements": {
+    "Na": 2,
+    "S": 1,
+    "O": 4
+   },
+   "charge": 0,
+   "unicode": "Na₂SO₄",
+   "latex": "\\mathrm{Na}_{2}\\mathrm{S}\\mathrm{O}_{4}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-073",
+   "formula": "Fe2O3",
+   "elements": {
+    "Fe": 2,
+    "O": 3
+   },
+   "charge": 0,
+   "unicode": "Fe₂O₃",
+   "latex": "\\mathrm{Fe}_{2}\\mathrm{O}_{3}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-074",
+   "formula": "Fe3O4",
+   "elements": {
+    "Fe": 3,
+    "O": 4
+   },
+   "charge": 0,
+   "unicode": "Fe₃O₄",
+   "latex": "\\mathrm{Fe}_{3}\\mathrm{O}_{4}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-075",
+   "formula": "Al2O3",
+   "elements": {
+    "Al": 2,
+    "O": 3
+   },
+   "charge": 0,
+   "unicode": "Al₂O₃",
+   "latex": "\\mathrm{Al}_{2}\\mathrm{O}_{3}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-076",
+   "formula": "SiO2",
+   "elements": {
+    "Si": 1,
+    "O": 2
+   },
+   "charge": 0,
+   "unicode": "SiO₂",
+   "latex": "\\mathrm{Si}\\mathrm{O}_{2}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-077",
+   "formula": "TiO2",
+   "elements": {
+    "Ti": 1,
+    "O": 2
+   },
+   "charge": 0,
+   "unicode": "TiO₂",
+   "latex": "\\mathrm{Ti}\\mathrm{O}_{2}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-078",
+   "formula": "ZnO",
+   "elements": {
+    "Zn": 1,
+    "O": 1
+   },
+   "charge": 0,
+   "unicode": "ZnO",
+   "latex": "\\mathrm{Zn}\\mathrm{O}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-079",
+   "formula": "CuO",
+   "elements": {
+    "Cu": 1,
+    "O": 1
+   },
+   "charge": 0,
+   "unicode": "CuO",
+   "latex": "\\mathrm{Cu}\\mathrm{O}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-080",
+   "formula": "MnO2",
+   "elements": {
+    "Mn": 1,
+    "O": 2
+   },
+   "charge": 0,
+   "unicode": "MnO₂",
+   "latex": "\\mathrm{Mn}\\mathrm{O}_{2}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-081",
+   "formula": "CoO",
+   "elements": {
+    "Co": 1,
+    "O": 1
+   },
+   "charge": 0,
+   "unicode": "CoO",
+   "latex": "\\mathrm{Co}\\mathrm{O}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-082",
+   "formula": "Co3O4",
+   "elements": {
+    "Co": 3,
+    "O": 4
+   },
+   "charge": 0,
+   "unicode": "Co₃O₄",
+   "latex": "\\mathrm{Co}_{3}\\mathrm{O}_{4}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-083",
+   "formula": "CoP",
+   "elements": {
+    "Co": 1,
+    "P": 1
+   },
+   "charge": 0,
+   "unicode": "CoP",
+   "latex": "\\mathrm{Co}\\mathrm{P}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-084",
+   "formula": "Co2P",
+   "elements": {
+    "Co": 2,
+    "P": 1
+   },
+   "charge": 0,
+   "unicode": "Co₂P",
+   "latex": "\\mathrm{Co}_{2}\\mathrm{P}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-085",
+   "formula": "PI",
+   "elements": {
+    "P": 1,
+    "I": 1
+   },
+   "charge": 0,
+   "unicode": "PI",
+   "latex": "\\mathrm{P}\\mathrm{I}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  },
+  {
+   "id": "DOM-CHEM-086",
+   "formula": "PVDF",
+   "elements": {
+    "P": 1,
+    "V": 1,
+    "2H": 1,
+    "F": 1
+   },
+   "charge": 0,
+   "unicode": "PV2HF",
+   "latex": "\\mathrm{P}\\mathrm{V}{}^{2}\\mathrm{H}\\mathrm{F}",
+   "name": "",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": "seed ion/compound",
+   "pubchem": null
+  }
+ ],
+ "variable_formulas": [
+  {
+   "id": "DOM-VAR-001",
+   "formula": "CoOx",
+   "elements": {
+    "Co": 1,
+    "O": 1
+   },
+   "charge": 0,
+   "unicode": "CoOx",
+   "latex": "\\mathrm{Co}\\mathrm{O}_{x}",
+   "variable": "x",
+   "confidence": 0.9,
+   "enabled": true,
+   "note": "variable subscript",
+   "pubchem": null
+  }
+ ],
+ "units": [
+  {
+   "id": "DOM-UNIT-001",
+   "symbol": "°C",
+   "aliases": [
+    "℃"
+   ],
+   "ascii": "degC",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-002",
+   "symbol": "K",
+   "aliases": [],
+   "ascii": "K",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-003",
+   "symbol": "Hz",
+   "aliases": [],
+   "ascii": "Hz",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-004",
+   "symbol": "kHz",
+   "aliases": [],
+   "ascii": "kHz",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-005",
+   "symbol": "MHz",
+   "aliases": [],
+   "ascii": "MHz",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-006",
+   "symbol": "GHz",
+   "aliases": [],
+   "ascii": "GHz",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-007",
+   "symbol": "s",
+   "aliases": [],
+   "ascii": "s",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-008",
+   "symbol": "ms",
+   "aliases": [],
+   "ascii": "ms",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-009",
+   "symbol": "μs",
+   "aliases": [
+    "µs"
+   ],
+   "ascii": "us",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-010",
+   "symbol": "ns",
+   "aliases": [],
+   "ascii": "ns",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-011",
+   "symbol": "min",
+   "aliases": [],
+   "ascii": "min",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-012",
+   "symbol": "h",
+   "aliases": [],
+   "ascii": "h",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-013",
+   "symbol": "m",
+   "aliases": [],
+   "ascii": "m",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-014",
+   "symbol": "cm",
+   "aliases": [],
+   "ascii": "cm",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-015",
+   "symbol": "mm",
+   "aliases": [],
+   "ascii": "mm",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-016",
+   "symbol": "μm",
+   "aliases": [
+    "µm"
+   ],
+   "ascii": "um",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-017",
+   "symbol": "nm",
+   "aliases": [],
+   "ascii": "nm",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-018",
+   "symbol": "A",
+   "aliases": [],
+   "ascii": "A",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-019",
+   "symbol": "L",
+   "aliases": [],
+   "ascii": "L",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-020",
+   "symbol": "mL",
+   "aliases": [],
+   "ascii": "mL",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-021",
+   "symbol": "μL",
+   "aliases": [
+    "µL"
+   ],
+   "ascii": "uL",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-022",
+   "symbol": "m³",
+   "aliases": [
+    "m3"
+   ],
+   "ascii": "m3",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-023",
+   "symbol": "cm³",
+   "aliases": [
+    "cm3"
+   ],
+   "ascii": "cm3",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-024",
+   "symbol": "g",
+   "aliases": [],
+   "ascii": "g",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-025",
+   "symbol": "kg",
+   "aliases": [],
+   "ascii": "kg",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-026",
+   "symbol": "mg",
+   "aliases": [],
+   "ascii": "mg",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-027",
+   "symbol": "μg",
+   "aliases": [
+    "µg"
+   ],
+   "ascii": "ug",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-028",
+   "symbol": "mol",
+   "aliases": [],
+   "ascii": "mol",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-029",
+   "symbol": "mmol",
+   "aliases": [],
+   "ascii": "mmol",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-030",
+   "symbol": "μmol",
+   "aliases": [
+    "µmol"
+   ],
+   "ascii": "umol",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-031",
+   "symbol": "mol/L",
+   "aliases": [],
+   "ascii": "mol/L",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-032",
+   "symbol": "g/cm3",
+   "aliases": [],
+   "ascii": "g/cm3",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-033",
+   "symbol": "g/L",
+   "aliases": [],
+   "ascii": "g/L",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-034",
+   "symbol": "mg/mL",
+   "aliases": [],
+   "ascii": "mg/mL",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-035",
+   "symbol": "V",
+   "aliases": [],
+   "ascii": "V",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-036",
+   "symbol": "mV",
+   "aliases": [],
+   "ascii": "mV",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-037",
+   "symbol": "kV",
+   "aliases": [],
+   "ascii": "kV",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-038",
+   "symbol": "W",
+   "aliases": [],
+   "ascii": "W",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-039",
+   "symbol": "mW",
+   "aliases": [],
+   "ascii": "mW",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-040",
+   "symbol": "mA",
+   "aliases": [],
+   "ascii": "mA",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-041",
+   "symbol": "Ω",
+   "aliases": [
+    "Ohm"
+   ],
+   "ascii": "ohm",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-042",
+   "symbol": "kΩ",
+   "aliases": [
+    "kOhm"
+   ],
+   "ascii": "kohm",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-043",
+   "symbol": "MΩ",
+   "aliases": [
+    "MOhm"
+   ],
+   "ascii": "Mohm",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-044",
+   "symbol": "S",
+   "aliases": [],
+   "ascii": "S",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-045",
+   "symbol": "mS",
+   "aliases": [],
+   "ascii": "mS",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-046",
+   "symbol": "F",
+   "aliases": [],
+   "ascii": "F",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-047",
+   "symbol": "mF",
+   "aliases": [],
+   "ascii": "mF",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-048",
+   "symbol": "μF",
+   "aliases": [
+    "µF"
+   ],
+   "ascii": "uF",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-049",
+   "symbol": "J",
+   "aliases": [],
+   "ascii": "J",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-050",
+   "symbol": "kJ",
+   "aliases": [],
+   "ascii": "kJ",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-051",
+   "symbol": "Wh",
+   "aliases": [],
+   "ascii": "Wh",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-052",
+   "symbol": "kWh",
+   "aliases": [],
+   "ascii": "kWh",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-053",
+   "symbol": "Pa",
+   "aliases": [],
+   "ascii": "Pa",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-054",
+   "symbol": "kPa",
+   "aliases": [],
+   "ascii": "kPa",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-055",
+   "symbol": "MPa",
+   "aliases": [],
+   "ascii": "MPa",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-056",
+   "symbol": "GPa",
+   "aliases": [],
+   "ascii": "GPa",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-057",
+   "symbol": "bar",
+   "aliases": [],
+   "ascii": "bar",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-058",
+   "symbol": "atm",
+   "aliases": [],
+   "ascii": "atm",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-059",
+   "symbol": "N",
+   "aliases": [],
+   "ascii": "N",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-060",
+   "symbol": "mN",
+   "aliases": [],
+   "ascii": "mN",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-061",
+   "symbol": "T",
+   "aliases": [],
+   "ascii": "T",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-062",
+   "symbol": "mT",
+   "aliases": [],
+   "ascii": "mT",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-063",
+   "symbol": "rpm",
+   "aliases": [],
+   "ascii": "rpm",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-064",
+   "symbol": "cm⁻¹",
+   "aliases": [
+    "cm−1"
+   ],
+   "ascii": "cm-1",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-065",
+   "symbol": "cm⁻²",
+   "aliases": [
+    "cm−2"
+   ],
+   "ascii": "cm-2",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-066",
+   "symbol": "m⁻¹",
+   "aliases": [
+    "m−1"
+   ],
+   "ascii": "m-1",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-067",
+   "symbol": "m⁻²",
+   "aliases": [
+    "m−2"
+   ],
+   "ascii": "m-2",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-068",
+   "symbol": "cm²",
+   "aliases": [
+    "cm2"
+   ],
+   "ascii": "cm2",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-069",
+   "symbol": "cm⁻³",
+   "aliases": [
+    "cm−3"
+   ],
+   "ascii": "cm-3",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-070",
+   "symbol": "C",
+   "aliases": [],
+   "ascii": "C",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-071",
+   "symbol": "mC",
+   "aliases": [],
+   "ascii": "mC",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  },
+  {
+   "id": "DOM-UNIT-072",
+   "symbol": "μC",
+   "aliases": [
+    "µC"
+   ],
+   "ascii": "uC",
+   "confidence": 0.95,
+   "enabled": true,
+   "note": ""
+  }
+ ],
+ "protected_names": [
+  "DLW",
+  "EMIM",
+  "FTO",
+  "ITO",
+  "LIG",
+  "Nafion",
+  "P-LIG",
+  "P.LIG",
+  "P.P",
+  "P3HT",
+  "PAA",
+  "PAN",
+  "PANI",
+  "PBI",
+  "PCBM",
+  "PCL",
+  "PDMS",
+  "PEDOT",
+  "PEDOT:PSS",
+  "PEEK",
+  "PEG",
+  "PEI",
+  "PES",
+  "PET",
+  "PHA",
+  "PI",
+  "PLGA",
+  "PMMA",
+  "PPy",
+  "PS",
+  "PSS",
+  "PTFE",
+  "PU",
+  "PVA",
+  "PVDF",
+  "PVP"
+ ]
+}

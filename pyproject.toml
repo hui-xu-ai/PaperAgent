@@ -1,0 +1,29 @@
+[project]
+name = "paperagent"
+version = "1.0.0"
+description = "轻量文献 AI 阅读与翻译 Web 应用（FastAPI + paper-reader 引擎 + DeepSeek API）"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "openai>=1.30",
+    "python-dotenv>=1.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.6,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+paperagent = "app.main:run"
+
+[tool.pytest.ini_options]
+# 三包全跑（旧配置只跑 backend/tests → 519 个解析/知识库测试默认不执行，
+# 改善无法证明；2026-09-12 起默认全量，基线见 README/SHORT-TERM）。
+testpaths = ["backend/tests", "packages/paperkb/tests", "packages/paperparse/tests"]
+addopts = "-q"

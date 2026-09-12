@@ -1,0 +1,56 @@
+{
+  "name": "study",
+  "description": "自我学习三维修炼：聚合读取（summary）或追加代码层/指令层经验。",
+  "when_to_use": "解决异常/修复缺陷后沉淀经验，或新会话启动时加载既往经验。",
+  "cost_estimate": "零 token。",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "summary": {
+        "type": "boolean",
+        "description": "聚合三维修炼经验"
+      },
+      "code": {
+        "type": "string",
+        "description": "代码层经验 pattern"
+      },
+      "root_cause": {
+        "type": "string",
+        "description": "代码层根因"
+      },
+      "fix": {
+        "type": "string",
+        "description": "代码层确定性修复"
+      },
+      "module": {
+        "type": "string",
+        "description": "所属模块"
+      },
+      "prompt_title": {
+        "type": "string",
+        "description": "指令层经验标题"
+      },
+      "prompt_body": {
+        "type": "string",
+        "description": "指令层经验正文"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "lesson_id": {
+        "type": "string"
+      },
+      "file": {
+        "type": "string"
+      },
+      "total": {
+        "type": "integer"
+      }
+    }
+  },
+  "errors": [],
+  "example": "study(summary=true)  # 或 study(code='...', root_cause='...', fix='...', module='...')",
+  "usage": "dev"
+}

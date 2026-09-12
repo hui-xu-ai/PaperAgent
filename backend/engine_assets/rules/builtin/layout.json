@@ -1,0 +1,39 @@
+[
+  {
+    "category": "layout",
+    "pattern_type": "regex",
+    "pattern": "\\bofInterest\\b",
+    "replacement": "of Interest",
+    "source": "builtin",
+    "confidence": 1.0,
+    "auto_apply": true,
+    "note": "标题 Conflict ofInterest → Conflict of Interest（MinerU 空格缺失）",
+    "rule_id": "R-20260821-007",
+    "enabled": true,
+    "hits": 0,
+    "version": 1,
+    "evidence": [],
+    "scope": "global",
+    "created": "2026-08-21T17:31:22+00:00",
+    "updated": "2026-08-21T17:31:22+00:00"
+  },
+  {
+    "category": "layout",
+    "pattern_type": "regex",
+    "pattern": "^Chemical Engineering Journal\\s*$",
+    "replacement": "",
+    "source": "builtin",
+    "confidence": 1.0,
+    "auto_apply": true,
+    "note": "R10：Elsevier 首页裸期刊名行混入正文 → 删除（精确模式防误伤；同类期刊名经学习积累）",
+    "rule_id": "R-20260822-010",
+    "enabled": true,
+    "hits": 0,
+    "version": 1,
+    "evidence": [{"paper": "10.1016/j.cej.2025.167798", "before": "Chemical Engineering Journal",
+                 "after": "", "review": "manual"}],
+    "scope": "global",
+    "created": "2026-08-22T13:00:00+00:00",
+    "updated": "2026-08-22T13:00:00+00:00"
+  }
+]

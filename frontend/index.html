@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PaperAgent · 文献 AI 阅读与翻译</title>
+  <link rel="icon" href="/icon.ico" type="image/x-icon">
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="/vendor/github.min.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- ══════════ 顶栏（Header）══════════ -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="logo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+        PaperAgent
+      </span>
+    </div>
+    <div class="topbar-right">
+      <button id="import-btn" class="btn btn-sm primary" title="导入：PDF（全流水线/仅解析）/ Markdown / Bib 引用">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        ＋ 导入
+      </button>
+      <button id="float-win-btn" class="btn btn-sm" title="新建阅读窗口（最多 5 个，可对比阅读图片/英文/笔记）">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+        新建窗口
+      </button>
+      <button id="read-mode-btn" class="btn btn-sm" title="阅读模式：隐藏侧边栏，左对话 + 右侧双阅读器（平分桌面）">📖 进入阅读</button>
+      <button id="eye-care-btn" class="btn btn-sm" title="护眼模式（暖色背景，减轻疲劳）">👁 护眼</button>
+      <button id="kb-admin-btn" class="btn btn-sm" title="知识库管理：导入（markdown/bib）/ 编译 / 元数据 / 问答 / 期刊（M5）">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        知识库管理
+      </button>
+      <button id="settings-btn" class="btn btn-sm">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        设置
+      </button>
+    </div>
+  </header>
+
+  <!-- ══════════ 主工作区：左栏侧边栏 + 桌面（G15）══════════ -->
+  <div class="workspace" id="workspace">
+
+    <!-- ── 左栏：会话 / 文献 / 知识库（tab 切换，可折叠）── -->
+    <aside class="sidebar" id="sidebar">
+      <div class="side-tabs">
+        <button class="side-tab active" data-panel="sessions">会话</button>
+        <button class="side-tab" data-panel="papers">文献库</button>
+        <button class="side-tab" data-panel="kb">知识库</button>
+        <button class="side-tab" data-panel="diary">阅读日记</button>
+        <button class="icon-btn side-pin" id="side-pin" title="点击钉住（左栏常驻，不自动折叠）">📌</button>
+      </div>
+      <div class="side-panel" id="panel-sessions">
+        <div class="side-actions">
+          <button class="btn btn-sm primary side-new-session" id="new-session-btn" title="新建会话（普通聊天/知识库问答）">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            新建会话
+          </button>
+        </div>
+        <!-- P5-E1：会话批量管理（全选/批量删除/清空已归档） -->
+        <div class="session-batch" id="session-batch">
+          <label class="s-batch-check" title="选择全部未归档会话"><input type="checkbox" id="sess-select-all"> 全选</label>
+          <span class="muted" id="sess-selected">已选 0</span>
+          <button class="btn small" id="sess-batch-del" disabled title="删除所选会话（不可恢复）">批量删除</button>
+          <button class="btn small" id="sess-purge-arch" title="永久删除全部已归档会话">清空已归档</button>
+        </div>
+        <!-- O批2：会话按创建日期过滤（日期分组） -->
+        <div class="sess-dates" id="sess-dates"></div>
+        <div class="session-list" id="session-list"><div class="empty">暂无会话，点「新建会话」开始</div></div>
+      </div>
+      <div class="side-panel" id="panel-papers" style="display:none">
+        <div class="side-hint" id="papers-hint">📥 导入工作区：上传/解析/翻译任务队列。阅读与知识库操作请到「知识库」详情。</div>
+        <!-- P0-A：失效记录提示条（记录还在 DB，但磁盘上的解析产物已被删/移走） -->
+        <div class="papers-lost" id="papers-lost" style="display:none"></div>
+        <!-- E3：文献库搜索（q 过滤，与分页一起传参） -->
+        <!-- P0-B step3（F1）：类型筛选芯片——全部/论文/书/学位论文/标准/专利/无编号/有附件（JS 填，带计数） -->
+        <div class="type-chips" id="papers-kind-chips"></div>
+        <div class="papers-search">
+          <input id="papers-search-input" placeholder="🔍 搜索标题 / 文件名…（可用「书 电化学」「kind:thesis 磁性」）" autocomplete="off">
+          <button class="btn small" id="papers-search-clear" title="清除搜索">✕</button>
+        </div>
+        <div class="papers-wrap">
+          <div class="papers-dates" id="papers-dates"></div>
+          <div class="papers" id="papers-list"><div class="empty">暂无文献，请用顶栏「上传」</div></div>
+        </div>
+        <!-- O2：按导入日期分组+左侧日期条跳转；此处仅显示总量 -->
+        <div class="papers-pager" id="papers-pager"></div>
+      </div>
+      <div class="side-panel" id="panel-kb" style="display:none">
+        <!-- P5-E2：编译进度全局可见（/api/kb-meta/stats → compile） -->
+        <div class="kb-compile" id="kb-compile" style="display:none">
+          <div class="kb-compile-head">
+            <span class="kb-compile-title">⚙ 编译进度</span>
+            <span class="kb-compile-state" id="kb-compile-state"></span>
+          </div>
+          <div class="kb-compile-bar"><div class="kb-compile-fill" id="kb-compile-fill"></div></div>
+          <div class="kb-compile-nums" id="kb-compile-nums"></div>
+        </div>
+        <div class="kb-search">
+          <input id="kb-search-input" placeholder="🔍 搜索标题 / 作者 / DOI…">
+          <!-- P0-B step3（F1）：类型芯片（服务端过滤 + 计数） -->
+          <div class="type-chips" id="kb-kind-chips"></div>
+          <div class="kb-filter-row">
+            <select id="kb-filter-compile" title="按编译层级过滤（知识库只收录已编译的文献；未编译的留在文献库）">
+              <option value="done">已编译（全部）</option>
+              <option value="L1">L1 完成</option>
+              <option value="L2">L2 完成</option>
+              <option value="L3">L3 完成</option>
+            </select>
+            <select id="kb-filter-journal" title="按期刊过滤（选项取自当前页）"><option value="">期刊:全部</option></select>
+            <button class="btn small" id="kb-view-toggle" title="切换 列表 / 目录树">📁 目录</button>
+            <!-- P0-A：磁盘为准——手动对账入口（列出"盘有库无/库有盘无"，并重拉列表与文件树） -->
+            <button class="btn small" id="kb-sync-btn" title="重新扫描磁盘：与你手改过的文件（在资源管理器里增删/移动）对齐，并列出不一致项">🔄 同步磁盘</button>
+            <!-- 2026-09-12 用户需求：移除到回收站（产物全保留、退出检索）+ 主界面一键恢复 -->
+            <button class="btn small" id="kb-trash-btn" title="回收站：已移出知识库的文献（产物全部保留、不再被检索）。可在此恢复。">🗑 回收站 <span id="kb-trash-count"></span></button>
+          </div>
+          <div class="kb-sync-info muted" id="kb-sync-info"></div>
+        </div>
+        <div class="kb-list-wrap" id="kb-list-wrap"><div class="empty">加载中…</div></div>
+        <div class="kb-pager" id="kb-pager"></div>
+        <div class="kb-tree" id="kb-tree" style="display:none"><div class="empty">加载中…</div></div>
+      </div>
+      <div class="side-panel" id="panel-diary" style="display:none">
+        <div class="diary-tabs">
+          <button class="btn small dtab active" data-dview="calendar">🗓 日历</button>
+          <button class="btn small dtab" data-dview="log">📝 日志</button>
+          <button class="btn small" id="diary-export" title="导出整本阅读日记 markdown">⬇ 导出</button>
+        </div>
+        <div id="diary-body"><div class="empty">加载中…</div></div>
+      </div>
+    </aside>
+    <div class="drag-handle" id="drag-left" title="拖拽调整左栏宽度"></div>
+
+    <!-- ── 桌面：对话面板 + 阅读面板（统一面板系统：并排停靠/弹出/放回/调宽）── -->
+    <div class="desk" id="desk">
+      <div class="desk-panel chat-panel" id="chat-panel">
+        <div class="panel-head">
+          <span class="panel-title">💬 对话</span>
+          <span class="panel-ops">
+            <button class="btn btn-sm" id="chat-pop" title="弹出为悬浮问答助手 / 放回桌面">⧉ 弹出</button>
+          </span>
+        </div>
+        <main class="main" id="main">
+          <div class="chat-head" id="chat-head">
+            <select id="chat-switch" title="最近对话快速切换（含弹出后的问答助手）"></select>
+            <span id="chat-title">选择左侧文献开始阅读</span>
+            <span class="chat-sub" id="chat-sub"></span>
+          </div>
+          <div class="messages" id="messages">
+            <div class="empty">👈 选择左侧论文/会话，或点「＋新建会话」</div>
+          </div>
+          <div class="input-row">
+            <div class="input-context" id="input-context"></div>
+            <div class="chat-toolbar">
+              <!-- 2026-09-12 用户反馈：提问时无法设置思考强度、也没有思考过程反馈。
+                   思考强度 = 发给供应商的 reasoning_effort（auto=不发，用供应商默认）。 -->
+              <label class="chat-effort-wrap" title="思考强度（reasoning_effort）：auto = 不发送，用供应商默认；仅对支持推理的模型生效">
+                <span class="muted">🧠 思考强度</span>
+                <select id="chat-effort">
+                  <option value="auto">自动（供应商默认）</option>
+                  <option value="low">低（快，少推理）</option>
+                  <option value="high">高（慢，深推理）</option>
+                </select>
+              </label>
+              <span class="chat-status muted" id="chat-status"></span>
+            </div>
+            <div class="resizer-h" id="input-resizer" title="拖拽调整输入框高度"></div>
+            <div class="input-flex">
+              <textarea id="question-input" rows="3" spellcheck="false"
+                placeholder="就论文/知识库内容提问（Enter 发送，Shift+Enter 换行）"></textarea>
+              <button id="send-btn" class="btn primary" disabled title="发送 (Enter)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+              </button>
+            </div>
+          </div>
+        </main>
+        <div class="desk-rz" title="拖拽调整对话区宽度"></div>
+      </div>
+
+      <!-- 默认阅读面板（与新建阅读窗同构：.float-head/.fw-tabs/.fw-body 统一外壳） -->
+      <div class="desk-panel desk-reader reader-panel" id="reader">
+        <div class="float-head reader-head">
+          <span class="fw-title" id="reader-title">阅读器</span>
+          <span class="fw-src" id="reader-source">
+            <button class="src-btn active" data-src="kb" title="知识库：笔记+纳入文件">知识库</button>
+            <button class="src-btn" data-src="lib" title="解析库：解析/翻译全部产物">解析库</button>
+          </span>
+          <span class="fw-btns">
+            <span id="reader-actions"></span>
+            <button class="icon-btn" id="tab-manage-btn" title="卡片管理（显示/隐藏/排序）">☰</button>
+            <button class="fw-dock" id="reader-pop" title="弹出为浮动窗口 / 放回桌面">⧉ 弹出</button>
+          </span>
+        </div>
+        <div class="fw-tabs" id="reader-panel-tabs"></div>
+        <div class="tab-manage" id="tab-manage" style="display:none"></div>
+        <div class="fw-tabs kb-tabs" id="kb-tabs" style="display:none"></div>
+        <div class="fw-body" id="reader-body">
+          <div class="empty">选中文献后在此预览笔记/原文</div>
+        </div>
+        <div class="desk-rz" title="拖拽调整阅读区宽度"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 底部信息面板（事件流）══════════ -->
+  <div class="event-bar" id="event-panel">
+    <div class="event-header" id="event-toggle">
+      <span class="event-title">⚙ 信息面板</span>
+      <span class="event-badge" id="event-badge"></span>
+      <span class="event-msg" id="event-last">—</span>
+      <!-- P12F 复核门控汇总条：待复核 X · 就绪 Z + 确认翻译 -->
+      <span class="rv-gate-bar" id="rv-gate-bar" style="display:none">
+        <span class="rv-gate-info" id="rv-gate-info"></span>
+        <button class="btn small" id="rv-gate-start" title="对已复核完（就绪）的文献启动翻译（串行，依次进行）">▶ 开始翻译</button>
+        <button class="btn small" id="rv-gate-force" title="批量跳过待复核项，用当前主文本直接翻译（设置中可默认开启）">⏭ 跳过审核翻译</button>
+      </span>
+      <span class="tb-stats" id="tb-stats" title="点击面板查看明细">
+        <span class="tb-item" id="tb-session" title="本会话：调用次数/总token/费用">会话 —</span>
+        <span class="tb-sep">·</span>
+        <span class="tb-item" id="tb-global" title="累计：输入(含缓存命中)/输出 token">累计 —</span>
+        <span class="tb-sep">·</span>
+        <span class="tb-item tb-cost" id="tb-cost" title="估算费用（输入1.5/缓存0.05/输出4.5 元每百万）">≈¥—</span>
+        <span class="tb-sep">·</span>
+        <button class="btn btn-sm tb-reset" id="tb-reset" title="清零 token 累计（重新统计当前用量）">清零</button>
+      </span>
+      <span class="event-filter">
+        <select id="event-filter">
+          <option value="all">全部</option>
+          <option value="error">仅错误</option>
+          <option value="task">任务</option>
+          <option value="llm">LLM</option>
+          <option value="system">系统</option>
+        </select>
+      </span>
+      <button class="btn btn-sm" id="event-clear" title="清空信息面板日志（仅前端显示，不影响记录）">清空日志</button>
+      <span class="event-arrow" id="event-arrow">▲</span>
+    </div>
+    <div class="event-body" id="event-body">
+      <div class="resizer-h" id="event-resizer" title="拖拽调整信息面板高度"></div>
+      <div class="event-list" id="event-list"></div>
+    </div>
+  </div>
+
+  <!-- ══════════ 新建会话菜单（P2-6：文献会话在文献区建立，不在此列）══════════ -->
+  <div class="menu-mask" id="new-session-menu" style="display:none">
+    <div class="menu">
+      <div class="menu-item" data-kind="chat">💬 普通聊天 <span class="muted">不绑定论文，日常问答</span></div>
+      <div class="menu-item" data-kind="global" data-mode="qa">📚 知识库问答 <span class="muted">精简模式 · 基于编译产物问答（省 token，推荐）</span></div>
+      <div class="menu-item" data-kind="global" data-mode="manage">⚙️ 知识库管理 <span class="muted">管理模式 · 问答 + 编译/元数据/期刊等工具调用</span></div>
+    </div>
+  </div>
+
+  <!-- ══════════ 设置中心模态（V11：分区 tab）══════════ -->
+  <div class="modal-mask" id="settings-modal" role="dialog" aria-modal="true"
+       aria-labelledby="settings-title" style="display:none">
+    <div class="modal settings-modal">
+      <div class="modal-header">
+        <h3 id="settings-title">⚙ 设置中心</h3>
+        <button class="btn small" id="settings-close" type="button" aria-label="关闭设置中心">✕</button>
+      </div>
+      <div class="settings-body">
+      <!-- 2026-09-13 IA 重排：7 tab → 6 tab（display+appearance 合并为 ui）。
+           tab 键名冻结：model / parse / kb / ui / plugin / about
+           ⚠️ .stab 类名在设置中心·知识库管理·导入向导三处复用，绑定时必须限定 #settings-modal -->
+      <div class="settings-nav" role="tablist" aria-label="设置分区">
+        <button class="stab active" type="button" data-stab="model"><span class="snav-ico">🤖</span>模型</button>
+        <button class="stab" type="button" data-stab="parse"><span class="snav-ico">📄</span>解析</button>
+        <button class="stab" type="button" data-stab="kb"><span class="snav-ico">📚</span>知识库</button>
+        <button class="stab" type="button" data-stab="ui"><span class="snav-ico">🖥️</span>界面</button>
+        <button class="stab" type="button" data-stab="plugin"><span class="snav-ico">🧩</span>插件</button>
+        <button class="stab" type="button" data-stab="about"><span class="snav-ico">ℹ️</span>关于</button>
+      </div>
+      <div class="settings-pages">
+        <!-- 模型 -->
+        <div class="stab-page" id="stab-model">
+          <section class="scard wide">
+            <h4>AI模型</h4>
+            <table class="provider-table" id="provider-table">
+              <thead><tr><th>名称</th><th>Base URL</th><th>模型</th><th>单价</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div class="form-actions">
+              <button class="btn small" id="provider-add">＋ 新建</button>
+            </div>
+            <div class="provider-form modal-mask" id="provider-form" style="display:none">
+              <div class="pform-modal modal">
+                <div class="pform-head">AI 模型供应商</div>
+                <label class="pform-row">名称 <input id="pf-name" placeholder="如 硅基流动"></label>
+                <label class="pform-row">Base URL <input id="pf-base" placeholder="https://api.siliconflow.cn/v1"></label>
+                <label class="pform-row">模型 <input id="pf-model" placeholder="deepseek-ai/DeepSeek-V3"></label>
+                <label class="pform-row">API Key
+                  <span style="display:flex;gap:6px;align-items:center">
+                    <input id="pf-key" type="password" placeholder="sk-..." style="flex:1">
+                    <button type="button" class="btn small" id="pf-key-toggle" title="显示/隐藏密钥">显示</button>
+                  </span>
+                </label>
+                <label class="pform-row">输出上限 max_tokens（翻译单次输出上限，留空=64000）
+                  <input id="pf-max" type="number" step="1" min="1" placeholder="16384"></label>
+                <span class="pform-price-label muted">单价（元/百万 token，留空=0）</span>
+                <label class="pform-row">输入 <input id="pf-price-in" type="number" step="0.1" min="0" placeholder="0"></label>
+                <label class="pform-row">缓存命中 <input id="pf-price-cache" type="number" step="0.1" min="0" placeholder="0"></label>
+                <label class="pform-row">输出 <input id="pf-price-out" type="number" step="0.1" min="0" placeholder="0"></label>
+                <div class="pform-actions">
+                  <button class="btn small" id="pf-test">测试连接</button>
+                  <span id="pf-test-result" class="muted"></span>
+                  <button class="btn small" id="pf-cancel">取消</button>
+                  <button class="btn small primary" id="pf-save">保存</button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- 解析（自上而下：MinerU 状态条 → MinerU 参数 → PaddleOCR 参数 → AI 仲裁 → 统一保存）
+             2026-09-13：删除「单通道解析通道」#mineru-parser 与独立「保存 MinerU」#mineru-save，
+             MinerU 参数并入本 tab 的「保存解析设置」#parse-save。 -->
+        <div class="stab-page" id="stab-parse" style="display:none">
+          <!-- 1) MinerU 状态条（读 /api/health 的 mineru_ready） -->
+          <div class="parse-status" id="mineru-status" role="status" aria-live="polite">
+            <span class="parse-status-ico" id="mineru-status-ico">…</span>
+            <span id="mineru-status-text">正在检查 MinerU 配置…</span>
+          </div>
+
+          <!-- 2) MinerU 参数面板（Key 与参数同卡片，统一由 #parse-save 提交） -->
+          <section class="scard wide">
+            <h4>MinerU 精准解析（主通道）</h4>
+            <fieldset class="fgrid">
+              <legend class="sr-only">MinerU 主通道参数</legend>
+              <label class="fitem" for="mineru-key">API Key（必填：未配置则无法解析）
+                <input id="mineru-key" type="password" placeholder="sk-…（mineru.net 申请）"
+                       aria-describedby="mineru-key-desc">
+                <span class="hint" id="mineru-key-desc">写入 .env 的 MINERU_API_KEY；<b>未配置时解析功能被禁用</b>（免费/本地通道已按质量要求移除）。</span>
+              </label>
+              <label class="fitem" for="mineru-language">解析语言
+                <select id="mineru-language" aria-describedby="mineru-language-desc">
+                  <option value="auto">自动判定（默认）</option>
+                  <option value="en">英文</option>
+                  <option value="ch">中文</option>
+                </select>
+                <span class="hint" id="mineru-language-desc">自动判定适用于中英混排文献；纯英文/纯中文可指定以提速。</span>
+              </label>
+              <label class="fitem" for="mineru-is-ocr">扫描件 OCR
+                <select id="mineru-is-ocr" aria-describedby="mineru-is-ocr-desc">
+                  <option value="auto">自动（扫描件开启，默认）</option>
+                  <option value="on">强制开启</option>
+                  <option value="off">关闭</option>
+                </select>
+                <span class="hint" id="mineru-is-ocr-desc">文字层缺失的 PDF 需要开启 OCR；文本层完整的 PDF 关闭更快。</span>
+              </label>
+              <div class="fcheck-group">
+                <label class="fcheck" for="mineru-enable-table">
+                  <input type="checkbox" id="mineru-enable-table" checked>
+                  <span>表格识别（默认勾选）</span>
+                </label>
+                <span class="hint" id="mineru-table-desc">开启后表格转 Markdown 表格；关闭可减少错乱表格。</span>
+              </div>
+            </fieldset>
+          </section>
+
+          <!-- 3) PaddleOCR-VL 辅通道面板 -->
+          <section class="scard wide">
+            <h4>PaddleOCR-VL-1.6 辅通道（百度，已从 .env 预填）</h4>
+            <fieldset class="fgrid">
+              <legend class="sr-only">PaddleOCR-VL 辅通道参数</legend>
+              <label class="fitem" for="po-token">Access Token
+                <input id="po-token" type="password" placeholder="AI Studio Access Token"
+                       aria-describedby="po-token-desc">
+                <span class="hint" id="po-token-desc">写入 .env 的 PADDLEOCR_ACCESS_TOKEN，保存后即时生效。</span>
+              </label>
+              <label class="fitem" for="po-base">Base URL
+                <input id="po-base" placeholder="https://paddleocr.aistudio-app.com"
+                       aria-describedby="po-base-desc">
+                <span class="hint" id="po-base-desc">默认官方地址；私有化部署时改为自建服务地址。</span>
+              </label>
+              <label class="fitem" for="po-model">模型版本
+                <input id="po-model" placeholder="PaddleOCR-VL-1.6" aria-describedby="po-model-desc">
+                <span class="hint" id="po-model-desc">与 AI Studio 上开通的服务版本保持一致。</span>
+              </label>
+            </fieldset>
+            <fieldset class="fchecks">
+              <legend>辅通道增强（作用于双通道仲裁结果）</legend>
+              <label class="fcheck" for="po-restructure-pages">
+                <input type="checkbox" id="po-restructure-pages" checked>
+                <span>跨页表格 + 标题重整</span>
+              </label>
+              <label class="fcheck" for="po-merge-tables">
+                <input type="checkbox" id="po-merge-tables" checked>
+                <span>合并表格</span>
+              </label>
+              <label class="fcheck" for="po-relevel-titles">
+                <input type="checkbox" id="po-relevel-titles" checked>
+                <span>标题分级</span>
+              </label>
+              <span class="hint" id="po-options-desc">三项均默认开启；关闭后辅通道输出保持原样（可能影响跨页表格拼接）。</span>
+            </fieldset>
+          </section>
+
+          <!-- 4) AI 仲裁 / 复核门控 / 批量行为 -->
+          <section class="scard wide">
+            <h4>AI 仲裁与批量行为</h4>
+            <p class="muted" id="parse-mode-desc">双通道 = MinerU 精准（主）+ PaddleOCR-VL-1.6（辅）+ 字符仲裁
+              （走 P14 文本管线：本地骨架边界 + 双通道验证）；辅通道失败自动降级单通道。
+              对新上传的论文生效。</p>
+            <fieldset class="fgrid">
+              <legend class="sr-only">解析方式与批量行为</legend>
+              <label class="fitem" for="parse-mode">解析方式
+                <select id="parse-mode" aria-describedby="parse-mode-desc">
+                  <option value="dual">双通道（推荐：MinerU 精准 + PaddleOCR-VL + AI 仲裁）</option>
+                  <option value="single">单通道（原：MinerU / 本地）</option>
+                </select>
+              </label>
+              <label class="fitem" for="parse-gate">翻译时机（复核门控）
+                <select id="parse-gate" aria-describedby="parse-gate-desc">
+                  <option value="wait">等待复核（默认：有差异点先暂停翻译，审核完确认后再翻译）</option>
+                  <option value="auto">立即翻译（有差异点也直接翻译，不暂停）</option>
+                </select>
+                <span class="hint" id="parse-gate-desc">等待复核可先人工确认差异点，避免错字进入译文。</span>
+              </label>
+              <label class="fitem" for="parse-interval">批量解析篇间间隔（秒）
+                <input id="parse-interval" type="number" min="0" max="60" value="8"
+                       aria-describedby="parse-interval-desc">
+                <span class="hint" id="parse-interval-desc">0-60 秒，防云 API 限流；本地通道可设 0。</span>
+              </label>
+            </fieldset>
+            <fieldset class="fchecks">
+              <legend>开关（自动保存，改完即时生效）</legend>
+              <label class="fcheck" for="parse-ai-review">
+                <input type="checkbox" id="parse-ai-review" checked>
+                <span>AI 辅助识别（仲裁不确定点，按调用次数扣当前供应商额度）</span>
+              </label>
+              <label class="fcheck" for="parse-skip-review">
+                <input type="checkbox" id="parse-skip-review">
+                <span>批量跳过审核直接翻译（默认关；开启后挂起文献直接用当前主文本翻译）</span>
+              </label>
+              <label class="fcheck" for="auto-compile">
+                <input type="checkbox" id="auto-compile">
+                <span>解析后自动把该篇 L1 编译入队（默认开；关掉后「解析+编译」不再自动编译）</span>
+              </label>
+              <label class="fcheck" for="auto-exit">
+                <input type="checkbox" id="auto-exit">
+                <span>关闭主窗口后自动退出后台程序（关窗前通知 + 空闲超时兜底；取消则后台常驻）</span>
+              </label>
+            </fieldset>
+            <div class="form-actions">
+              <!-- 两个自动保存复选框的独立反馈（勿与 #parse-result 合并，否则互相覆盖） -->
+              <span id="parse-switch-result" class="muted" role="status" aria-live="polite"></span>
+            </div>
+          </section>
+
+          <!-- 5) 统一保存（MinerU Key + MinerU 参数 + PaddleOCR + 仲裁/门控/间隔） -->
+          <div class="tab-savebar">
+            <button class="btn primary" type="button" id="parse-save">保存解析设置</button>
+            <span class="dirty-flag" id="parse-dirty" hidden>● 未保存</span>
+            <span id="parse-result" role="status" aria-live="polite"></span>
+          </div>
+          <!-- 2026-09-12 批1：删除「待确认学习规则」僵尸卡片（P12 差异挖掘已归档，
+               清单恒空且批准不影响解析；端点 /api/settings/rules 一并删除）。
+               化学式领域词典的学习走「识别复核」页，不受影响。 -->
+        </div>
+
+        <!-- 知识库 -->
+        <div class="stab-page" id="stab-kb" style="display:none">
+          <section class="scard wide">
+            <h4>知识库路径</h4>
+            <div class="form-actions">
+              <label class="fitem fitem-inline" for="kb-path-input">Obsidian 知识库目录
+                <input id="kb-path-input" placeholder="留空=项目内 knowledge_base/"
+                       aria-describedby="kb-path-desc">
+              </label>
+              <button class="btn" type="button" id="kb-path-save">保存路径</button>
+            </div>
+            <p class="hint" id="kb-path-desc">留空则用项目内 knowledge_base/；路径需已存在且可写，保存后新建的知识库条目落到该目录。</p>
+          </section>
+          <section class="scard wide">
+            <h4>知识库生成方式</h4>
+            <fieldset class="fgrid">
+              <legend class="sr-only">知识库复制方式与检索权限</legend>
+              <label class="fitem" for="kb-copy-mode">复制方式
+                <select id="kb-copy-mode" aria-describedby="kb-copy-mode-desc">
+                  <option value="copy">复制副本（默认，稳妥）</option>
+                  <option value="link">硬链接（省空间，同盘）</option>
+                </select>
+                <span class="hint" id="kb-copy-mode-desc">硬链接仅在同一磁盘分区有效；跨盘时会自动回落为复制。</span>
+              </label>
+              <label class="fitem" for="retrieval-mode">文献会话检索范围
+                <select id="retrieval-mode" aria-describedby="retrieval-desc">
+                  <option value="notes">仅笔记（默认：只读该篇核心/详细笔记）</option>
+                  <option value="fragments">允许片段检索（授权后检索原文段落，限长）</option>
+                  <option value="full">允许全文阅读（授权后注入全文，截断）</option>
+                </select>
+                <span class="hint" id="retrieval-desc">授权越大越耗 token：仅笔记最省，全文最贵。L0 全局检索固定只读
+                  <code>_note.md</code> / <code>_details.md</code>。</span>
+              </label>
+            </fieldset>
+            <p class="muted">固定生成：<code>_note.md</code> / <code>_details.md</code>（一级/二级笔记）+
+              原文层 <code>en.md</code> / <code>document.json</code> / <code>images/</code>
+              （由数据布局契约固定，不再提供勾选）。</p>
+          </section>
+          <section class="scard wide">
+            <h4>编译 / 翻译策略（思考档位）</h4>
+            <fieldset class="fgrid">
+              <legend class="sr-only">编译与翻译的思考档位</legend>
+              <label class="fitem" for="compile-effort">编译思考档（L1 笔记 / L2 详解 / L3）
+                <select id="compile-effort" aria-describedby="compile-effort-desc">
+                  <option value="auto">自动（推荐，默认）：不发送档位，由服务端按其默认策略</option>
+                  <option value="none">不思考（none：最省输出，质量风险最高）</option>
+                  <option value="minimal">极少（minimal）</option>
+                  <option value="low">低（low：省输出，可能影响细节与引用）</option>
+                  <option value="medium">中（medium）</option>
+                  <option value="high">高（high：思考最多，最贵）</option>
+                </select>
+                <span class="hint" id="compile-effort-desc">「自动」= <b>不向服务端发送思考档位参数，完全由服务端按其默认策略决定</b>（第三方看不到它落到哪一档；实测该默认思考量很大）。<b>它不是我们本地算法动态调档，也不是"high"</b>。编译是思考型任务，<b>思考 token 按输出价计费</b>（实测一次 L2 输出 9,673 token 里约 7k 是思考）；想省 token 可显式选低档，但<b>可能影响六维完整性与段落引用质量</b>，建议先用同一篇做一次对比再定。</span>
+              </label>
+              <label class="fitem" for="translate-effort">翻译思考档（整篇/分批翻译）
+                <select id="translate-effort" aria-describedby="translate-effort-desc">
+                  <option value="auto">自动（推荐，默认）：不发送档位，由服务端按其默认策略</option>
+                  <option value="none">不思考（none：最省，最易丢术语/公式一致性）</option>
+                  <option value="minimal">极少（minimal）</option>
+                  <option value="low">低（low：省钱首选试这个）</option>
+                  <option value="medium">中（medium）</option>
+                  <option value="high">高（high：思考最多，最贵）</option>
+                </select>
+                <span class="hint" id="translate-effort-desc">「自动」= <b>不发送档位参数，由服务端默认策略决定</b>（= 你一直以来的行为，质量不变）。翻译里思考承担：<b>术语/缩略语前后一致、公式 [[MATHn]] 标签不被展开改写、长句结构判断</b>。想省输出 token 建议先试 <b>低（low）</b>，改完抽查一篇的术语一致性与公式标签完整性。</span>
+              </label>
+            </fieldset>
+            <p class="muted">两档只作用于 <b>编译（L1/L2/L3）</b> 与 <b>翻译</b>；文献问答不受影响。</p>
+          </section>
+          <div class="tab-savebar">
+            <button class="btn primary" type="button" id="kb-save">保存知识库设置</button>
+            <span class="dirty-flag" id="kb-dirty" hidden>● 未保存</span>
+            <span id="kb-result" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+
+        <!-- 界面（2026-09-13：原「显示」+「外观」合并为新 ui tab，控件 id / 事件绑定全部保留） -->
+        <div class="stab-page" id="stab-ui" style="display:none">
+          <section class="scard wide">
+            <h4>主题皮肤</h4>
+            <div class="form-actions">
+              <label class="fitem fitem-inline" for="theme-select">外观主题
+                <select id="theme-select" aria-describedby="theme-select-desc"></select>
+              </label>
+            </div>
+            <p class="hint" id="theme-select-desc">护眼米黄 / 夜间深色 / 纸质豆绿；顶栏 👁 按钮快速切换护眼。主题改动即时生效（本机保存）。</p>
+          </section>
+          <section class="scard wide">
+            <h4>字号与行宽</h4>
+            <fieldset class="fgrid">
+              <legend class="sr-only">阅读界面字号与字体</legend>
+              <label class="fitem" for="disp-chat">会话区字号
+                <select id="disp-chat" aria-describedby="disp-chat-desc">
+                  <option value="12">小 (12px)</option>
+                  <option value="13">中 (13px)</option>
+                  <option value="14">大 (14px)</option>
+                  <option value="15">特大 (15px)</option>
+                  <option value="16">超大 (16px)</option>
+                  <option value="18">18px</option>
+                  <option value="20">20px</option>
+                  <option value="22">22px</option>
+                </select>
+                <span class="hint" id="disp-chat-desc">只影响右侧对话区正文，不影响阅读器。</span>
+              </label>
+              <label class="fitem" for="disp-reader">阅读区字号
+                <select id="disp-reader" aria-describedby="disp-reader-desc">
+                  <option value="12">小 (12px)</option>
+                  <option value="13">中 (13px)</option>
+                  <option value="14">大 (14px)</option>
+                  <option value="15">特大 (15px)</option>
+                  <option value="16">超大 (16px)</option>
+                  <option value="18">18px</option>
+                  <option value="20">20px</option>
+                  <option value="22">22px</option>
+                </select>
+                <span class="hint" id="disp-reader-desc">阅读器正文与译文共用的字号。</span>
+              </label>
+              <label class="fitem" for="disp-margin">阅读区页边距
+                <select id="disp-margin" aria-describedby="disp-margin-desc">
+                  <option value="0">无 (0px)</option>
+                  <option value="24">窄 (24px)</option>
+                  <option value="48">中 (48px)</option>
+                  <option value="80">宽 (80px)</option>
+                  <option value="120">超宽 (120px)</option>
+                </select>
+                <span class="hint" id="disp-margin-desc">页边距 = 阅读内容左右留白；行宽由拖拽阅读器窗口控制（内容随面板宽度自适应）。</span>
+              </label>
+              <label class="fitem" for="disp-font">字体类型
+                <select id="disp-font" aria-describedby="disp-font-desc">
+                  <option value="system">系统默认</option>
+                  <option value="serif">衬线 (宋体风格)</option>
+                  <option value="sans">无衬线 (黑体风格)</option>
+                  <option value="mono">等宽 (代码风格)</option>
+                </select>
+                <span class="hint" id="disp-font-desc">同时作用于对话区与阅读区正文。</span>
+              </label>
+            </fieldset>
+            <p class="hint">字号/页边距/字体改动即时生效并保存在本机浏览器（无需点保存）。</p>
+          </section>
+          <section class="scard wide">
+            <h4>输出模板（中英对照 paper.md 的渲染样式）</h4>
+            <div class="form-actions">
+              <label class="fitem fitem-inline" for="disp-md-template">默认模板
+                <select id="disp-md-template" aria-describedby="disp-md-template-desc">
+                  <option value="obsidian_bilingual">Obsidian 双语（中文在上，默认）</option>
+                  <option value="obsidian_bilingual_alt">EN / ZH 交替式</option>
+                  <option value="plain">简洁版（无 &lt;details&gt; 折叠）</option>
+                </select>
+              </label>
+              <button class="btn primary" type="button" id="md-template-save">保存模板</button>
+            </div>
+            <p class="hint" id="disp-md-template-desc">作用于之后翻译/重渲染的论文；单篇可在左侧文献卡片上切换（本地重渲染，不耗 token）。</p>
+          </section>
+          <section class="scard wide">
+            <h4>系统提示词附加（对文献/知识库会话生效）</h4>
+            <label class="fitem" for="sys-prompt-input">附加提示词
+              <textarea id="sys-prompt-input" rows="4" aria-describedby="sys-prompt-desc"
+                placeholder="例如：回答时先给出结论，再展开论证；控制在 200 字内…"></textarea>
+              <span class="hint" id="sys-prompt-desc">追加到内置系统提示词之后，保存后对新的提问生效（进行中的会话不回溯）。</span>
+            </label>
+            <div class="form-actions">
+              <button class="btn primary" type="button" id="sys-prompt-save">保存提示词</button>
+              <span id="sys-prompt-result" role="status" aria-live="polite"></span>
+            </div>
+          </section>
+          <section class="scard wide">
+            <h4>外观 CSS（自定义界面样式，保存后即时生效）</h4>
+            <label class="fitem" for="custom-css-input">自定义样式表
+              <textarea id="custom-css-input" rows="10" spellcheck="false" aria-describedby="custom-css-desc"
+                placeholder="/* 例：调整主色调 */&#10;:root { --primary: #0d9488; }&#10;.msg.user { background: #f0fdfa; }"></textarea>
+              <span class="hint" id="custom-css-desc">直接注入页面 &lt;style&gt;，写错可能影响显示；清空并保存即可还原。</span>
+            </label>
+            <div class="form-actions">
+              <button class="btn primary" type="button" id="custom-css-save">保存 CSS</button>
+              <span id="custom-css-result" role="status" aria-live="polite"></span>
+            </div>
+          </section>
+          <div class="tab-savebar">
+            <button class="btn primary" type="button" id="ui-save-all" title="依次保存模板 / 提示词 / CSS 三项">保存本页三项</button>
+            <span class="dirty-flag" id="ui-dirty" hidden>● 未保存</span>
+            <span id="ui-result" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+
+        <!-- 插件 -->
+        <div class="stab-page" id="stab-plugin" style="display:none">
+          <section class="scard">
+            <h4>插件 / Skill 安装</h4>
+            <div class="plugin-toolbar">
+              <button class="btn small" id="plugin-install-btn">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+                安装 Skill（.zip）
+              </button>
+              <span class="muted">zip 内需含 plugin.yaml + plugin.py</span>
+            </div>
+            <input type="file" id="plugin-zip-input" accept=".zip" hidden>
+            <div id="plugin-list"></div>
+          </section>
+        </div>
+
+        <!-- 关于 -->
+        <div class="stab-page" id="stab-about" style="display:none">
+          <section class="scard wide">
+            <h4>关于</h4>
+            <div class="about-box">
+              <h3>📄 PaperAgent</h3>
+              <p class="about-line">应用版本 <b id="about-version">…</b> · 界面版本 <b id="about-frontend">…</b></p>
+              <p class="about-line" id="about-mismatch" style="display:none;color:#c0392b"></p>
+              <p class="about-line">解析引擎 <span id="about-engine">…</span> · 知识库库 <span id="about-kb">…</span></p>
+              <p class="about-line">数据格式 <span id="about-dataformat">…</span></p>
+              <p class="about-line">开发者：<b>Xu Hui</b></p>
+              <p class="about-line">版权 © 2026 Xu Hui · 保留所有权利</p>
+              <p class="about-line muted">文献 AI 阅读与翻译 · 知识库管理 · Token 透明记账</p>
+              <hr>
+              <p class="about-line muted">引擎：paperparse（MinerU 精准通道为主，PaddleOCR-VL 辅通道参与双通道仲裁；P14 文本管线）</p>
+              <p class="about-line muted">运行：<span id="about-host">…</span> · 数据保存在应用目录下 data/</p>
+            </div>
+          </section>
+        </div>
+      </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 知识库管理（M5：导入/编译/元数据/问答/期刊）══════════ -->
+  <div class="modal-mask" id="kb-admin-modal" style="display:none">
+    <div class="modal kb-admin-modal">
+      <div class="modal-header">
+        <h3>📚 知识库管理 <span id="kba-status" class="muted"></span></h3>
+        <button class="btn small" id="kba-close">✕</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-nav">
+          <button class="stab active" data-stab="overview"><span class="snav-ico">📊</span>总览</button>
+          <button class="stab" data-stab="compile"><span class="snav-ico">⚙️</span>编译管理</button>
+          <button class="stab" data-stab="meta"><span class="snav-ico">📄</span>元数据</button>
+          <button class="stab" data-stab="journals"><span class="snav-ico">🏛️</span>期刊</button>
+        </div>
+        <div class="settings-pages">
+          <!-- 总览（P4：统计 + 帮助） -->
+          <div class="stab-page" id="kba-overview" style="display:block">
+            <section class="scard wide" id="kba-overview-content"><div class="kba-msg">加载知识库总览…</div></section>
+          </div>
+
+          <!-- 编译管理 -->
+          <div class="stab-page" id="kba-compile" style="display:none">
+            <section class="scard wide">
+              <h4>⚙️ 编译队列（L1 全做 / L2 中上 / L3 高价值；结果链增量防重复）</h4>
+              <div class="form-actions">
+                <button class="btn small primary" id="kba-queue-all">按价值分批量入队</button>
+                <button class="btn small" id="kba-compile-process">处理队列 1 项</button>
+                <button class="btn small" id="kba-compile-process5">处理 5 项</button>
+                <button class="btn small" id="kba-jobs-refresh">刷新</button>
+                <button class="btn small" id="kba-fts-rebuild">重建 FTS 索引</button>
+              </div>
+              <div id="kba-compile-msg" class="kba-result"></div>
+              <table class="kba-table">
+                <thead><tr><th>DOI</th><th>级别</th><th>状态</th><th>价值分</th><th>错误</th><th>完成时间</th></tr></thead>
+                <tbody id="kba-jobs-body"></tbody>
+              </table>
+            </section>
+          </div>
+
+          <!-- 元数据 -->
+          <div class="stab-page" id="kba-meta" style="display:none">
+            <section class="scard wide">
+              <h4>📄 元数据浏览 / 检索（papers_meta=bib 权威）</h4>
+              <div class="form-grid kba-search-row">
+                <label>搜索 <input id="kba-meta-search" placeholder="标题 / 作者 / 期刊 / 关键词（Enter 搜索，空=全部）"></label>
+                <button class="btn small" id="kba-meta-go">搜索</button>
+              </div>
+              <div class="form-actions">
+                <button class="btn small primary" id="kba-backfill">补齐全部 kb 原文层四件</button>
+                <span class="muted">扫 library 自动纳入知识库（冻结原则：不覆盖已有内容）</span>
+              </div>
+              <div id="kba-meta-msg" class="kba-result"></div>
+              <table class="kba-table">
+                <thead><tr><th>标题</th><th>期刊 / 年</th><th>价值分</th><th>知识库原文层</th><th>操作</th></tr></thead>
+                <tbody id="kba-meta-body"></tbody>
+              </table>
+              <div id="kba-meta-detail" class="kba-detail"></div>
+            </section>
+          </div>
+
+          <!-- 期刊 -->
+          <div class="stab-page" id="kba-journals" style="display:none">
+            <section class="scard wide">
+              <h4>🏛️ 期刊表导入（JCR/中科院分区 xlsx → journals.db，可更新）</h4>
+              <div class="form-grid">
+                <label>xlsx 文件路径 <input id="kba-journals-path" placeholder="JCR 表格 .xlsx（只回摘要，不 dump 全文）"></label>
+              </div>
+              <div class="form-actions">
+                <button class="btn small" id="kba-journals-preview">预览</button>
+                <button class="btn small primary" id="kba-journals-import">确认导入（upsert）</button>
+                <button class="btn small" id="kba-journals-stats">统计</button>
+              </div>
+              <div id="kba-journals-result" class="kba-result"></div>
+            </section>
+            <section class="scard wide">
+              <h4>🛠 期刊名人工纠正（bib 写法与表内标准名不匹配时绑定）</h4>
+              <div class="form-grid">
+                <label>DOI <input id="kba-ov-doi" placeholder="10.xxxx/yyy"></label>
+                <label>期刊标准名 <input id="kba-ov-name" placeholder="journals.db 中的标准名称"></label>
+              </div>
+              <div class="form-actions">
+                <button class="btn small primary" id="kba-ov-save">保存纠正</button>
+              </div>
+              <div id="kba-ov-result" class="kba-result"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 统一导入向导（P5-E2：PDF / Markdown / Bib 引用三 tab）══════════ -->
+  <div class="modal-mask" id="import-modal" style="display:none">
+    <div class="modal import-modal">
+      <div class="modal-header">
+        <h3>＋ 导入</h3>
+        <button class="btn small" id="import-close">✕</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-nav">
+          <button class="stab active" data-itab="pdf"><span class="snav-ico">📄</span>PDF</button>
+          <button class="stab" data-itab="md"><span class="snav-ico">📝</span>Markdown</button>
+          <button class="stab" data-itab="bib"><span class="snav-ico">📚</span>Bib 引用</button>
+          <button class="stab" data-itab="att"><span class="snav-ico">📎</span>支撑信息·审稿意见</button>
+        </div>
+        <div class="settings-pages">
+          <!-- PDF：全流水线 / 解析+编译 / 仅解析 -->
+          <div class="stab-page imp-page" id="itab-pdf" style="display:block">
+            <section class="scard wide">
+              <h4>📄 PDF 导入</h4>
+              <p class="muted">上传 PDF 进入解析流水线。<b>解析 + 编译</b>（默认）= 解析 → 纳入知识库 → 编译 L1，跳过翻译（省 token）；<b>全流水线</b> = 再加翻译 + 总结（耗 token）；<b>仅解析</b> = 不纳库不编译不翻译，0 token。可多选批量。</p>
+              <div class="form-grid">
+                <label>模式
+                  <select id="imp-pdf-mode">
+                    <option value="parse_compile" selected>解析 + 编译（默认）：解析 → 纳入知识库 → 编译L1，跳过翻译</option>
+                    <option value="full">全流水线：解析 + 翻译 + 总结（同 PDF 自动去重）</option>
+                    <option value="parse">仅解析：不翻译，0 token</option>
+                  </select>
+                </label>
+              </div>
+              <div class="imp-file-row">
+                <input type="file" id="imp-pdf-input" accept=".pdf" multiple>
+                <button class="btn small primary" id="imp-pdf-go" disabled>导入</button>
+              </div>
+              <div class="imp-result" id="imp-pdf-result"></div>
+            </section>
+          </div>
+
+          <!-- Markdown -->
+          <div class="stab-page imp-page" id="itab-md" style="display:none">
+            <section class="scard wide">
+              <h4>📝 Markdown 导入</h4>
+              <p class="muted">官方 md 免重新解析 PDF，直接进知识库（同步笔记/详情/检索文件；冻结原则：不覆盖已有内容）。</p>
+              <div class="imp-file-row">
+                <input type="file" id="imp-md-input" accept=".md">
+                <button class="btn small primary" id="imp-md-go" disabled>导入</button>
+              </div>
+              <div class="imp-result" id="imp-md-result"></div>
+            </section>
+          </div>
+
+          <!-- Bib 引用 -->
+          <div class="stab-page imp-page" id="itab-bib" style="display:none">
+            <section class="scard wide">
+              <h4>📚 Bib 引用导入</h4>
+              <p class="muted">导入 .bib（WOS 导出格式）→ 元数据（papers_meta，bib 权威）+ 引用关系 + 检索索引。无 DOI 的条目会跳过并给出警告。</p>
+              <div class="imp-file-row">
+                <input type="file" id="imp-bib-input" accept=".bib">
+                <button class="btn small primary" id="imp-bib-go" disabled>导入</button>
+              </div>
+              <div class="imp-result" id="imp-bib-result"></div>
+            </section>
+          </div>
+
+          <!-- P0-B step3（F5）：依附资料（支撑信息 SI / 审稿意见 / 数据）——轻量管线，0 API 成本 -->
+          <div class="stab-page imp-page" id="itab-att" style="display:none">
+            <section class="scard wide">
+              <h4>📎 支撑信息 / 审稿意见 / 其他附件</h4>
+              <p class="muted">把 SI、审稿意见、原始数据挂到某篇文献下：落在
+                <code>library/&lt;该文献&gt;/attachments/&lt;类型&gt;/</code>，与该文献同生共死；
+                <b>纯本地处理（不调 AI、0 token）</b>，可读文本会自动进检索索引（可被「知识库问答」召回）。
+                不选父资源则按内容指纹（<code>nd-&lt;md5&gt;</code>）单独存放。</p>
+              <div class="form-grid">
+                <label>父资源（可选）
+                  <!-- 2026-09-12 重做：原生 <select> 全量罗列，文献上量后找不到 → 搜索型选择器。
+                       #imp-att-parent 仍是唯一的键载体（隐藏），提交逻辑不变。 -->
+                  <input id="imp-att-parent-q" placeholder="搜索文献（标题 / DOI / 文件名）…" autocomplete="off">
+                  <div class="attp-list" id="imp-att-parent-list" style="display:none"></div>
+                  <div class="attp-chosen" id="imp-att-parent-chosen">（不挂父资源：单独存放）</div>
+                  <input type="hidden" id="imp-att-parent" value="">
+                </label>
+                <label>类型
+                  <select id="imp-att-kind">
+                    <option value="si" selected>支撑信息 SI</option>
+                    <option value="review">审稿意见</option>
+                    <option value="data">原始数据/代码</option>
+                    <option value="note">笔记</option>
+                  </select>
+                </label>
+              </div>
+              <div class="imp-file-row">
+                <input type="file" id="imp-att-input" multiple>
+                <button class="btn small primary" id="imp-att-go" disabled>导入</button>
+              </div>
+              <div class="imp-result" id="imp-att-result"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 文献详情模态（T7：知识库列表行点击 → 单篇 kb 操作 + 知识库问答入口；提问分支/复核已移至文献库卡片）══════════ -->
+  <div class="modal-mask" id="kb-detail-modal" style="display:none">
+    <div class="modal kb-detail-modal">
+      <div class="modal-header">
+        <h3>📄 文献详情 <span id="kbd-sub" class="muted"></span></h3>
+        <button class="btn small" id="kbd-close">✕</button>
+      </div>
+      <div class="kbd-body" id="kbd-body"><div class="empty">加载中…</div></div>
+    </div>
+  </div>
+
+  <!-- ══════════ 识别复核模态（P12-6：双通道差异批注 + PDF 高亮 + 选择题）══════════ -->
+  <div class="modal-mask" id="review-modal" style="display:none">
+    <div class="modal review-modal">
+      <div class="modal-header">
+        <h3>🔍 识别复核 <span id="rv-paper-name" class="muted"></span></h3>
+        <button class="btn small" id="review-close">✕</button>
+      </div>
+      <div class="review-body">
+        <div class="review-left">
+          <div class="review-pdf-nav">
+            <button class="btn small" id="rv-prev">◀ 上一页</button>
+            <span id="rv-page-info">第 1 页</span>
+            <span class="rv-zoom">
+              <button class="btn small" id="rv-zoom-out" title="缩小">－</button>
+              <span id="rv-zoom-info">100%</span>
+              <button class="btn small" id="rv-zoom-in" title="放大">＋</button>
+              <button class="btn small" id="rv-zoom-fit" title="适应宽度">适</button>
+            </span>
+            <button class="btn small" id="rv-next">下一页 ▶</button>
+          </div>
+          <div class="review-pdf" id="review-pdf">
+            <img id="review-page-img" alt="PDF 页（高亮=仲裁点）">
+            <!-- F2（2026-09-12）：常驻空态节点——「无差异仲裁点」只切换它，**绝不 innerHTML
+                 覆盖 #review-pdf**（旧实现连 img 一起销毁 → 之后 loadReviewPage 抛
+                 "Cannot set properties of null (setting 'src')"，用户实测报障） -->
+            <div class="rv-pdf-empty" id="rv-pdf-empty" style="display:none"></div>
+          </div>
+          <p class="muted" id="rv-pdf-tip">点击右侧条目跳转 PDF 对应位置；高亮处即不确定区域</p>
+        </div>
+        <div class="review-right">
+          <div id="review-items" class="review-items"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- T7：知识库列表行悬停预览弹窗（fixed 定位贴近行下方；离开行/弹窗即消失） -->
+  <div id="kbl-preview" style="display:none"></div>
+
+  <!-- P0-B step3（F3）：依附资料清单模态（文献卡「📎 附件 N」打开） -->
+  <div class="modal-mask" id="att-modal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="att-modal-title">📎 附件</h3>
+        <button class="btn small" id="att-close">✕</button>
+      </div>
+      <div class="settings-body">
+        <div id="att-body"><div class="empty">加载中…</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2026-09-12：知识库回收站（移出知识库的文献，产物保留，可一键恢复） -->
+  <div class="modal-mask" id="trash-modal" style="display:none">
+    <div class="modal trash-modal">
+      <div class="modal-header">
+        <h3>🗑 回收站（已移出知识库）</h3>
+        <button class="btn small" id="trash-close">✕</button>
+      </div>
+      <div class="settings-body">
+        <div id="trash-body"><div class="empty">加载中…</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- P1（2026-09-12）：页内提示（snackbar）+ 确认弹层 + 离线提示条 -->
+  <div id="toast-wrap"></div>
+  <div class="modal-mask" id="confirm-modal" style="display:none">
+    <div class="modal confirm-modal">
+      <div class="modal-header"><h3 id="confirm-title">确认</h3></div>
+      <div class="settings-body">
+        <p id="confirm-msg" class="confirm-msg"></p>
+        <div class="confirm-actions">
+          <button class="btn" id="confirm-no">取消</button>
+          <button class="btn primary" id="confirm-yes">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="offline-bar" id="offline-bar" style="display:none"></div>
+
+  <script src="/vendor/marked.min.js"></script>
+  <script src="/vendor/katex/katex.min.js"></script>
+  <script src="/vendor/highlight.min.js"></script>
+  <script src="/vendor/pdfjs/pdf.min.js"></script>
+  <script src="/version.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

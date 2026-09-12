@@ -1,0 +1,63 @@
+{
+  "name": "process_pdf",
+  "usage": "core",
+  "description": "★ 主流程唯一工具（默认/解析模式）：解析 PDF → 翻译+总结+导出（默认模式），或只解析导出英文版（parse_only）。解析通道默认 mineru-v4（高精度，需 MINERU_API_KEY，无 key 报错停止）；可显式换 mineru（v1 免费低精度）或 pymupdf（本地）。云端失败中止并反馈用户选择，不静默降级。返回含 parse_source/latex_count 精度反馈。",
+  "when_to_use": "默认模式：用户提供英文 PDF 时调用（默认 mineru-v4 高精度，需密钥）；用户说'只解析'时加 parse_only=true。返回的 parse_source/latex_count 用于确认实际解析精度。",
+  "cost_estimate": "解析 0 AI token；默认模式翻译+总结由 agent 一次调用完成；parse_only 全程 0 AI token。",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "pdf_path"
+    ],
+    "properties": {
+      "pdf_path": {
+        "type": "string",
+        "description": "PDF 文件路径（绝对路径）"
+      },
+      "parser": {
+        "type": "string",
+        "enum": ["mineru", "mineru-v4", "pymupdf", "auto"],
+        "default": "mineru-v4",
+        "description": "解析通道：mineru-v4=付费云端高精度(需MINERU_API_KEY,默认) | mineru=v1免费云端低精度(无需密钥) | pymupdf=本地(无LaTeX) | auto=本地"
+      },
+      "parse_only": {
+        "type": "boolean",
+        "default": false,
+        "description": "true=只解析（导出 en.md+images+document.json 全套，不翻译不总结）"
+      },
+      "out_dir": {
+        "type": "string",
+        "default": "output",
+        "description": "输出根目录"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": ["success", "error", "failed"]
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["default", "parse_only"]
+      },
+      "run_id": {"type": "string"},
+      "document_json": {"type": "string"},
+      "prompt_path": {"type": "string"},
+      "prompt_chars": {"type": "integer"},
+      "export_dir": {"type": "string"},
+      "error": {"type": "string"},
+      "note": {"type": "string"}
+    }
+  },
+  "errors": [
+    "云端解析失败（中止，反馈用户选择：重试/换通道/本地）",
+    "mineru-v4 未配置 MINERU_API_KEY（提示改用 v1 免费或本地）",
+    "PAPER-0001",
+    "PAPER-0002",
+    "PAPER-0003"
+  ],
+  "example": "process_pdf(pdf_path='input/paper.pdf', parser='mineru')  →  默认模式（v1免费解析+翻译+总结+导出）\nprocess_pdf(pdf_path='input/paper.pdf', parser='pymupdf', parse_only=True)  →  只解析（本地，英文版全套）"
+}

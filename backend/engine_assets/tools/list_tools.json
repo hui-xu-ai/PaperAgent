@@ -1,0 +1,39 @@
+{
+  "name": "list_tools",
+  "description": "列出本 skill 全部可用工具（索引级：名称/用途/何时用/成本），供快速选型。",
+  "when_to_use": "首次接触本 skill 或不确定用哪个工具时（低 token 起步）。",
+  "cost_estimate": "约 200~400 token。",
+  "input_schema": {
+    "type": "object",
+    "properties": {}
+  },
+  "output_schema": {
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "when_to_use": {
+          "type": "string"
+        },
+        "cost_estimate": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "errors": [],
+  "example": "list_tools()",
+  "usage": "advanced"
+}

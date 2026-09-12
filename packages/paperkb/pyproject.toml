@@ -1,0 +1,24 @@
+# packages/paperkb/pyproject.toml
+# PaperAgent 知识库算法包：bib 元数据 / 期刊指标 / 编译 / 检索 / 卡片 / 翻译总结
+# 独立于 paperparse（纯 PDF 解析）；经 api.py 门面被 backend/agent 调用
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paperkb"
+version = "0.1.0"
+description = "PaperAgent 知识库算法包（卡帕西 LLM Wiki 风格）：bib 导入、期刊指标、选择性编译、FTS5 检索、卡片式笔记、翻译总结"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.6,<3",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["paperkb*"]

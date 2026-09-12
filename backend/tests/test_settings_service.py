@@ -1,0 +1,502 @@
+# -*- coding: utf-8 -*-
+"""设置服务测试（V03）：供应商脱敏 / env 兜底 / 激活。"""
+from __future__ import annotations
+
+import pytest
+
+from app.services.settings_service import SettingsService
+
+
+@pytest.fixture(autouse=True)
+def _clean_extra_env(monkeypatch):
+    """隔离真实 .env 的 SILICONFLOW_*/CUSTOM_PROVIDER_*（P12F：用户配置后 env presets
+    会多出 siliconflow 供应商，干扰本文件按预设数量断言的测试；
+    T3：根 .env 的 CUSTOM_PROVIDER_* 自定义供应商同样经 load_dotenv 注入 os.environ）。"""
+    import os
+    for k in ("SILICONFLOW_API_KEY", "SILICONFLOW_BASE_URL", "SILICONFLOW_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    for k in list(os.environ):
+        if k.startswith("CUSTOM_PROVIDER_"):
+            monkeypatch.delenv(k, raising=False)
+
+
+def _make_env_settings():
+    """显式官方端点：不依赖运行环境 .env（P12-4 后真实 .env 是魔塔 modelscope）。"""
+    from app.config import Settings
+    return Settings(deepseek_api_key="sk-real-1234567890abcdef",
+                    deepseek_base_url="https://api.deepseek.com",
+                    deepseek_model="deepseek-chat")
+
+
+def test_env_fallback(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    providers = svc.get_providers(masked=False)
+    assert len(providers) == 1
+    assert providers[0]["id"] == "deepseek"
+    assert providers[0]["api_key"].startswith("sk-")
+
+
+def test_mask_no_leak(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    masked = svc.get_providers(masked=True)
+    assert "sk-real" not in masked[0]["api_key"]  # 不泄露完整 key
+    assert "…" in masked[0]["api_key"]
+    raw = svc.get_providers(masked=False)
+    assert raw[0]["api_key"] == "sk-real-1234567890abcdef"  # 内部仍完整
+
+
+def test_save_preserves_key_when_masked(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    # 前端提交脱敏占位 → 保留原 key
+    svc.save_providers([{"id": "deepseek", "name": "DeepSeek 官方",
+                         "base_url": "https://api.deepseek.com",
+                         "model": "deepseek-chat",
+                         "api_key": "sk-rea…cdef"}])
+    raw = svc.get_providers(masked=False)
+    assert raw[0]["api_key"] == "sk-real-1234567890abcdef"
+
+
+def test_activate_and_fallback(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_providers([
+        {"id": "a", "name": "A", "base_url": "u1", "model": "m1", "api_key": "k1"},
+        {"id": "b", "name": "B", "base_url": "u2", "model": "m2", "api_key": "k2"},
+    ])
+    assert svc.get_active_id() == "a"  # 首激活
+    svc.set_active_provider("b")
+    assert svc.get_active_id() == "b"
+    svc.save_providers([{"id": "a", "name": "A", "base_url": "u1", "model": "m1",
+                         "api_key": "k1"}])
+    assert svc.get_active_id() == "a"  # active 被删 → 回退第一个
+
+
+def test_fallback_prefers_provider_with_key(store):
+    """P13：active 被删时回退"第一个有 key 的供应商"（无 key 供应商 LLM 不可用，
+    回退到它=静默失效——原实现固定回退 cleaned[0] 即魔塔在前）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_providers([
+        {"id": "m", "name": "魔塔", "base_url": "u1", "model": "m1", "api_key": ""},
+        {"id": "s", "name": "硅基", "base_url": "u2", "model": "m2", "api_key": "k2"},
+        {"id": "t", "name": "第三家", "base_url": "u3", "model": "m3", "api_key": "k3"},
+    ])
+    svc.set_active_provider("s")
+    # active=s 被删 → 回退第一个**有 key** 的（跳过无 key 的 m，选 t 而非 m）
+    svc.save_providers([
+        {"id": "m", "name": "魔塔", "base_url": "u1", "model": "m1", "api_key": ""},
+        {"id": "t", "name": "第三家", "base_url": "u3", "model": "m3", "api_key": "k3"},
+    ])
+    assert svc.get_active_id() == "t"   # 有 key 优先，不固定回退 [0]（魔塔）
+
+
+# ---------------------------------------------------------------- P12-4 供应商预填
+def test_env_presets_modelscope_and_seed(store):
+    """P12-4：.env 为魔塔 → 预填 id=modelscope；种子迁移默认激活魔塔。"""
+    from app.config import Settings
+    svc = SettingsService(store, app_settings=Settings(
+        deepseek_api_key="ms-real-key-1234567890",
+        deepseek_base_url="https://api-inference.modelscope.cn/v1",
+        deepseek_model="deepseek-ai/DeepSeek-V4-Flash"))
+    providers = svc.get_providers(masked=False)
+    ids = [p["id"] for p in providers]
+    assert "modelscope" in ids
+    assert svc.get_active_id() == "modelscope"   # 默认激活魔塔（用户决策）
+    # DB 已有供应商时合并（不丢既有）
+    svc.save_providers([{"id": "deepseek", "name": "DeepSeek 官方",
+                         "base_url": "https://api.deepseek.com",
+                         "model": "deepseek-chat", "api_key": "sk-abc"}])
+    providers2 = svc.get_providers(masked=False)
+    assert {p["id"] for p in providers2} >= {"deepseek", "modelscope"}
+    # 用户切走后不再被种子迁移覆盖
+    svc.set_active_provider("deepseek")
+    assert svc.get_active_id() == "deepseek"
+    svc.get_providers(masked=False)
+    assert svc.get_active_id() == "deepseek"
+
+
+def test_env_sync_writes_env(tmp_path, store, monkeypatch):
+    """P12-4：env_sync=True 时供应商保存按实际填写结果写回 .env（SILICONFLOW_*）。"""
+    from app.config import Settings
+    env_path = tmp_path / ".env"
+    env_path.write_text("DEEPSEEK_API_KEY=ms-old\nDEEPSEEK_BASE_URL=https://api-inference.modelscope.cn/v1\n"
+                        "# SILICONFLOW_API_KEY=commented\n", encoding="utf-8")
+    svc = SettingsService(store, app_settings=Settings(deepseek_api_key="ms-x"),
+                          env_sync=True, env_path=str(env_path))
+    svc.save_providers([
+        {"id": "siliconflow", "name": "硅基流动（备用）",
+         "base_url": "https://api.siliconflow.cn/v1",
+         "model": "deepseek-ai/DeepSeek-V4-Flash",
+         "api_key": "sk-silicon-new", "env": "SILICONFLOW"}])
+    text = env_path.read_text(encoding="utf-8")
+    assert "SILICONFLOW_API_KEY=sk-silicon-new" in text       # 新键写入
+    assert "# SILICONFLOW_API_KEY=commented" in text          # 注释行保留
+    assert "DEEPSEEK_API_KEY=ms-old" in text                   # 无关键不动
+
+
+# ---------------------------------------------------------------- P12-5 解析设置
+def test_parse_settings_store_overrides_env(store):
+    """P12-5：GUI 保存的解析设置优先于 env 默认；ai_review 可关。"""
+    from app.config import Settings
+    svc = SettingsService(store, app_settings=Settings(
+        parse_mode="dual", ai_review=True, deepseek_api_key="k"))
+    assert svc.get_parse()["mode"] == "dual"
+    assert svc.get_parse()["ai_review"] is True
+    # GUI 保存：关掉 AI 仲裁 + 单通道
+    svc.save_parse({"mode": "single", "ai_review": False,
+                    "paddleocr": {"access_token": "tok", "base_url": "u", "model_version": "m"}})
+    p = svc.get_parse()
+    assert p["mode"] == "single"
+    assert p["ai_review"] is False                     # env 默认不得覆盖 store
+    assert p["paddleocr"]["access_token"] == "tok"
+    # 再开回来
+    svc.save_parse({"mode": "dual", "ai_review": True,
+                    "paddleocr": {"access_token": "tok", "base_url": "u", "model_version": "m"}})
+    assert svc.get_parse()["ai_review"] is True
+
+
+# ---------------------------------------------------------------- kb 复制方式（T02）
+# 2026-09-12 批1：删除「知识库纳入清单」kb_include / 「AI 检索文件清单」retrieval_include
+# （全仓无消费点，勾选框纯装饰，用户拍板删除）——守卫见下方 test_decorative_include_keys_removed。
+def test_kb_copy_mode_default_and_save(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert svc.get_kb_copy_mode() == "copy"
+    svc.save_kb_copy_mode("link")
+    assert svc.get_kb_copy_mode() == "link"
+
+
+def test_kb_rules_invalid_mode_fallback(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_kb_copy_mode("weird")
+    assert svc.get_kb_copy_mode() == "copy"
+
+
+def test_kb_rules_in_get_all(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    all_cfg = svc.get_all()
+    assert all_cfg["kb_copy_mode"] == "copy"
+    assert "kb_include" not in all_cfg and "retrieval_include" not in all_cfg
+
+
+def test_decorative_include_keys_removed(store):
+    """批1 守卫：装饰性纳入/检索清单的读写方法必须已删（防止有人"顺手加回来"）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    for gone in ("get_kb_include", "save_kb_include",
+                 "get_retrieval_include", "save_retrieval_include"):
+        assert not hasattr(svc, gone), f"{gone} 应随装饰勾选框一并删除"
+
+
+# ---------------------------------------------------------------- 输出模板（T06）
+def test_md_template_default_and_save(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert svc.get_md_template() == "obsidian_bilingual"
+    svc.save_md_template("plain")
+    assert svc.get_md_template() == "plain"
+    svc.save_md_template("nope")  # 非法回退
+    assert svc.get_md_template() == "obsidian_bilingual"
+
+
+def test_md_template_in_get_all(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert svc.get_all()["md_template"] == "obsidian_bilingual"
+
+
+# ---------------------------------------------------------------- AI 检索分级（T05）
+def test_retrieval_mode_default_and_save(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert svc.get_retrieval_mode() == "notes"
+    svc.save_retrieval_mode("full")
+    assert svc.get_retrieval_mode() == "full"
+    svc.save_retrieval_mode("nope")  # 非法回退
+    assert svc.get_retrieval_mode() == "notes"
+
+
+# ---------------------------------------------------------------- 单价（T3：供应商-模型组合，M5：default=0）
+def test_prices_default_struct(store):
+    """未配置 → 返回完整结构（by_provider_model 空 + default 恒 0，M5 取消全局默认）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    p = svc.get_prices()
+    assert set(p) == {"by_provider_model", "default"}
+    assert p["by_provider_model"] == {}
+    assert p["default"]["input_per_m"] == 0.0
+    assert p["default"]["output_per_m"] == 0.0
+
+
+def test_prices_legacy_flat_read(store):
+    """旧扁平格式 → get_prices 封装为 default（M5：默认价恒 0）。"""
+    from app.services.settings_service import KEY_PRICES
+    store.set_setting(KEY_PRICES, '{"input_per_m": 2.5, "cached_input_per_m": 0.2, '
+                                  '"output_per_m": 6.0}')
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    p = svc.get_prices()
+    assert p["by_provider_model"] == {}
+    assert p["default"] == {"input_per_m": 0.0, "cached_input_per_m": 0.0,
+                            "output_per_m": 0.0}
+
+
+def test_prices_for_resolution(store):
+    """get_prices_for：by_provider_model 命中 → 用值；未命中/删项 → 回落 0（M5）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_prices({"provider_id": "siliconflow", "model": "deepseek-ai/DeepSeek-V4-Flash",
+                     "input_per_m": 3.0, "cached_input_per_m": 0.1, "output_per_m": 9.0})
+    hit = svc.get_prices_for("siliconflow", "deepseek-ai/DeepSeek-V4-Flash")
+    assert hit["input_per_m"] == 3.0 and hit["output_per_m"] == 9.0
+    fallback = svc.get_prices_for("deepseek", "deepseek-chat")
+    assert fallback["input_per_m"] == 0.0 and fallback["output_per_m"] == 0.0
+    # 单项全空保存 → 删除该项 → 回落 0
+    svc.save_prices({"provider_id": "siliconflow", "model": "deepseek-ai/DeepSeek-V4-Flash",
+                     "input_per_m": None, "cached_input_per_m": None, "output_per_m": None})
+    assert svc.get_prices_for("siliconflow", "deepseek-ai/DeepSeek-V4-Flash")["input_per_m"] == 0.0
+
+
+def test_prices_partial_default_update(store):
+    """缺字段保存不覆盖未提供字段（M5：default 恒 0，仅 per-model 计价生效）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_prices({"output_per_m": 7.0})
+    p = svc.get_prices()["default"]
+    assert p["input_per_m"] == 0.0 and p["output_per_m"] == 0.0  # default 恒 0
+    svc.save_prices({"provider_id": "a", "model": "m", "output_per_m": 7.0})
+    assert svc.get_prices_for("a", "m")["output_per_m"] == 7.0    # per-model 生效
+
+
+def test_prices_full_struct_save(store):
+    """完整结构保存：per-model 单价生效，default 恒 0（M5）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_prices({"by_provider_model": {"a::m": {"input_per_m": 1.0,
+                                                    "cached_input_per_m": 0.1,
+                                                    "output_per_m": 4.0}}})
+    p = svc.get_prices()
+    assert p["default"]["input_per_m"] == 0.0      # default 恒 0
+    assert p["default"]["output_per_m"] == 0.0
+    assert p["by_provider_model"] == {"a::m": {"input_per_m": 1.0,
+                                               "cached_input_per_m": 0.1,
+                                               "output_per_m": 4.0}}
+    assert svc.get_prices_for("a", "m")["input_per_m"] == 1.0
+
+
+# ---------------------------------------------------------------- P：供应商 max_tokens（翻译截断）
+def test_provider_max_tokens_default_and_configurable(store):
+    """P：供应商 max_tokens 可配置且默认 64000（≥16384 旧基线仍成立）。"""
+    from app.services.llm_service import DEFAULT_MAX_OUTPUT_TOKENS
+    assert DEFAULT_MAX_OUTPUT_TOKENS == 64000
+    assert DEFAULT_MAX_OUTPUT_TOKENS >= 16384
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    # 默认 env 预填 → max_tokens == 默认 64000
+    assert svc.get_providers(masked=False)[0]["max_tokens"] == 64000
+    # 可配置：保存自定义值 → 读回
+    svc.save_providers([{"id": "a", "name": "A", "base_url": "u", "model": "m",
+                         "api_key": "k", "max_tokens": 32000}])
+    got = [p for p in svc.get_providers(masked=False) if p["id"] == "a"][0]
+    assert got["max_tokens"] == 32000
+    # get_all（前端编辑回填读它，掩码版本也带 max_tokens）
+    a = [p for p in svc.get_all()["providers"] if p["id"] == "a"][0]
+    assert a["max_tokens"] == 32000
+
+
+def test_save_preserves_key_when_short_masked(store):
+    """P：短 key 被 _mask 成 '***'，保存时回传 '***'（未改动）应保留原 key。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_providers([{"id": "a", "name": "A", "base_url": "u", "model": "m",
+                         "api_key": "abc123"}])  # 短 key（≤12 → 掩码 '***'）
+    svc.save_providers([{"id": "a", "name": "A", "base_url": "u", "model": "m",
+                         "api_key": "***"}])     # 前端回传掩码占位（未改动）
+    raw = [p for p in svc.get_providers(masked=False) if p["id"] == "a"][0]
+    assert raw["api_key"] == "abc123"
+
+
+# ---------------------------------------------------------------- reasoning_effort（思考强度）
+def test_provider_reasoning_effort_default_none(store):
+    """内置供应商默认 reasoning_effort=None（走 context 自动映射）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    p = svc.get_providers(masked=False)[0]
+    assert p.get("reasoning_effort") is None
+
+
+def test_provider_reasoning_effort_custom_env_roundtrip(tmp_path, store, monkeypatch):
+    """供应商 reasoning_effort：DB 保存/读回 + CUSTOM .env 持久化（GLM 等思考型供应商配置）。"""
+    from app.config import Settings
+    # 清空可能干扰的 CUSTOM_* env 预设
+    import os
+    for k in list(os.environ):
+        if k.startswith("CUSTOM_PROVIDER_"):
+            monkeypatch.delenv(k, raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    svc = SettingsService(store, app_settings=Settings(deepseek_api_key="k"),
+                          env_sync=True, env_path=str(env_path))
+    svc.save_providers([{"id": "zhipu", "name": "智谱", "env": "",
+                         "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                         "model": "glm-5.3", "api_key": "sk-z",
+                         "reasoning_effort": "low"}])
+    # 读回（内部）：带 reasoning_effort
+    got = [p for p in svc.get_providers(masked=False) if p["id"] == "zhipu"][0]
+    assert got["reasoning_effort"] == "low"
+    # 掩码版本也带（前端编辑回填）
+    got_m = [p for p in svc.get_all()["providers"] if p["id"] == "zhipu"][0]
+    assert got_m["reasoning_effort"] == "low"
+    # .env 持久化 CUSTOM_PROVIDER_<id>_REASONING_EFFORT=low（id 原样 zhipu，前缀为 `CUSTOM_PROVIDER_zhipu_`）
+    text = env_path.read_text(encoding="utf-8")
+    assert "CUSTOM_PROVIDER_zhipu_REASONING_EFFORT=low" in text
+
+
+# ============================================================ 批1（2026-09-12）回归
+def test_parse_model_keeps_all_frontend_fields(store):
+    """批1 硬 bug：ParseModel 必须显式声明前端提交的全部字段。
+
+    pydantic 默认丢弃未声明字段 ⇒ 旧实现漏了 translate_gate/skip_review_batch/
+    parse_interval_sec，前端提交后被静默丢弃（svc.save_parse 明明会写这三个值）。
+    """
+    from app.api.settings import ParseModel
+    payload = {"mode": "single", "ai_review": False,
+               "translate_gate": "auto", "skip_review_batch": True,
+               "parse_interval_sec": 25, "paddleocr": {}}
+    dumped = ParseModel(**payload).model_dump()
+    for k in payload:
+        assert k in dumped, f"ParseModel 丢了字段 {k}（前端提交后会被静默丢弃）"
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_parse(dumped)
+    got = svc.get_parse()
+    assert got["translate_gate"] == "auto"
+    assert got["skip_review_batch"] is True
+    assert got["parse_interval_sec"] == 25
+
+
+def test_parse_model_defaults_match_service_defaults():
+    """契约：ParseModel 默认值必须与 get_parse 的默认值一致（前端不提交时行为可预期）。"""
+    from app.api.settings import ParseModel
+    d = ParseModel().model_dump()
+    assert d["translate_gate"] == "wait"
+    assert d["skip_review_batch"] is False
+    assert d["parse_interval_sec"] == 8
+
+
+def test_save_mineru_writes_env_and_reads_back(tmp_path, store, monkeypatch):
+    """批1 最严重项：MinerU 配置必须写 .env 并回读一致（旧实现只写 SQLite ⇒ UI 改动无效）。"""
+    from app.config import Settings, live_mineru_key
+    monkeypatch.delenv("MINERU_API_KEY", raising=False)
+    monkeypatch.delenv("MINERU_PARSER", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("DEEPSEEK_API_KEY=ms-old\n# MINERU_API_KEY=commented\n",
+                        encoding="utf-8")
+    svc = SettingsService(store, app_settings=Settings(mineru_api_key=""),
+                          env_sync=True, env_path=str(env_path))
+    res = svc.save_mineru({"api_key": "sk-mineru-new", "parser": "mineru-v4"})
+    assert res["api_key_set"] is True and res["parser"] == "mineru-v4"
+    assert res["readback"]["ok"] is True, res["readback"]
+    text = env_path.read_text(encoding="utf-8")
+    assert "MINERU_API_KEY=sk-mineru-new" in text
+    assert "MINERU_PARSER=mineru-v4" in text
+    assert "DEEPSEEK_API_KEY=ms-old" in text                  # 其他键不动
+    assert "# MINERU_API_KEY=commented" in text               # 注释行不动
+    assert live_mineru_key() == "sk-mineru-new"               # 运行中进程即时可见
+    assert svc.get_mineru()["api_key"] == "sk-mineru-new"     # 读回一致
+
+
+def test_save_mineru_empty_key_clears(tmp_path, store, monkeypatch):
+    """显式清空 Key（回落免费通道）必须生效，不得回退旧值。"""
+    from app.config import Settings, live_mineru_key
+    monkeypatch.setenv("MINERU_API_KEY", "sk-old")
+    env_path = tmp_path / ".env"
+    env_path.write_text("MINERU_API_KEY=sk-old\n", encoding="utf-8")
+    svc = SettingsService(store, app_settings=Settings(mineru_api_key="sk-old"),
+                          env_sync=True, env_path=str(env_path))
+    res = svc.save_mineru({"api_key": "", "parser": "auto"})
+    assert res["api_key_set"] is False
+    assert live_mineru_key("sk-old") == ""
+    assert "MINERU_API_KEY=\n" in env_path.read_text(encoding="utf-8")
+
+
+def test_save_mineru_rejects_unknown_parser(store):
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    with pytest.raises(ValueError):
+        svc.save_mineru({"api_key": "k", "parser": "nope"})
+
+
+def test_save_mineru_masked_key_keeps_existing(tmp_path, store, monkeypatch):
+    """掩码占位（前端回显脱敏）不得把占位串写进 .env。"""
+    from app.config import Settings, live_mineru_key
+    monkeypatch.setenv("MINERU_API_KEY", "sk-real-key-1234567890")
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    svc = SettingsService(store, app_settings=Settings(mineru_api_key=""),
+                          env_sync=True, env_path=str(env_path))
+    svc.save_mineru({"api_key": "sk-rea…7890", "parser": "auto"})
+    assert live_mineru_key() == "sk-real-key-1234567890"
+
+
+def test_get_parse_keeps_env_paddleocr_when_store_value_empty(tmp_path, store, monkeypatch):
+    """批1：store 里的空串不得覆盖 .env 非空值（否则只改解析模式会把辅通道 token 抹掉）。"""
+    from app.config import Settings
+    monkeypatch.setenv("PADDLEOCR_ACCESS_TOKEN", "tok-from-env")
+    monkeypatch.setenv("PADDLEOCR_BASE_URL", "https://po.example")
+    svc = SettingsService(store, app_settings=Settings())
+    svc.save_parse({"mode": "single", "ai_review": True,
+                    "paddleocr": {"access_token": "", "base_url": "",
+                                  "model_version": ""}})
+    po = svc.get_parse()["paddleocr"]
+    assert po["access_token"] == "tok-from-env"      # 空串不覆盖
+    assert po["base_url"] == "https://po.example"
+
+
+# ---------------------------------------------------------------- 批2：解析参数（.env 单一来源）
+_PARAM_KEYS = ("MINERU_LANGUAGE", "MINERU_IS_OCR", "MINERU_ENABLE_TABLE", "PADDLEOCR_OPTIONS")
+
+
+def _parse_svc(tmp_path, store, monkeypatch):
+    """带隔离 .env 的服务实例（env_sync=True 才写盘）。"""
+    from app.config import Settings
+    for k in _PARAM_KEYS:
+        monkeypatch.delenv(k, raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    return SettingsService(store, app_settings=Settings(mineru_api_key="sk-x"),
+                           env_sync=True, env_path=str(env_path)), env_path
+
+
+def _parse_body(**kw) -> dict:
+    body = {"mode": "dual", "ai_review": True, "translate_gate": "wait",
+            "skip_review_batch": False, "parse_interval_sec": 8,
+            "paddleocr": {"access_token": "", "base_url": "", "model_version": ""},
+            "mineru_params": {}, "mineru_api_key": None}
+    body.update(kw)
+    return body
+
+
+def test_parse_params_defaults(tmp_path, store, monkeypatch):
+    """无 .env 记录 → auto/auto/表格开 + PaddleOCR 三开关全开（论文解析推荐值）。"""
+    svc, _ = _parse_svc(tmp_path, store, monkeypatch)
+    p = svc.get_parse()
+    assert p["mineru_params"] == {"language": "auto", "is_ocr": "auto",
+                                  "enable_table": True}
+    assert p["paddleocr"]["options"] == {"restructurePages": True, "mergeTables": True,
+                                         "relevelTitles": True}
+
+
+def test_parse_params_env_roundtrip(tmp_path, store, monkeypatch):
+    """保存 → 写 .env → 回读断言 ok → get_parse 实时读回（含显式关掉 restructurePages）。"""
+    svc, env_path = _parse_svc(tmp_path, store, monkeypatch)
+    r = svc.save_parse(_parse_body(
+        mineru_params={"language": "ch", "is_ocr": "on", "enable_table": False},
+        paddleocr={"access_token": "", "base_url": "", "model_version": "",
+                   "options": {"restructurePages": False, "mergeTables": True,
+                               "relevelTitles": False}}))
+    assert r["readback"]["ok"] is True, r["readback"]
+    text = env_path.read_text(encoding="utf-8")
+    assert "MINERU_LANGUAGE=ch" in text
+    assert "MINERU_IS_OCR=on" in text
+    assert "MINERU_ENABLE_TABLE=0" in text
+    assert '"restructurePages": false' in text
+    got = svc.get_parse()
+    assert got["mineru_params"] == {"language": "ch", "is_ocr": "on",
+                                    "enable_table": False}
+    assert got["paddleocr"]["options"]["restructurePages"] is False
+    assert got["paddleocr"]["options"]["relevelTitles"] is False
+
+
+def test_parse_params_reject_invalid_values(tmp_path, store, monkeypatch):
+    """非法值一律 400（ValueError），不静默改写用户的输入。"""
+    svc, _ = _parse_svc(tmp_path, store, monkeypatch)
+    with pytest.raises(ValueError):
+        svc.save_parse(_parse_body(mineru_params={"language": "fr"}))
+    with pytest.raises(ValueError):
+        svc.save_parse(_parse_body(mineru_params={"is_ocr": "maybe"}))
+    with pytest.raises(ValueError):
+        svc.save_parse(_parse_body(paddleocr={"options": {"bogusSwitch": True}}))

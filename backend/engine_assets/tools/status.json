@@ -1,0 +1,50 @@
+{
+  "name": "status",
+  "description": "查询一次转换运行的状态（事件数/最后事件），用于监督与断点判断。",
+  "when_to_use": "convert_pdf 返回后或中断后，想确认运行结果与产物位置时。",
+  "cost_estimate": "零 token。",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "run_id"
+    ],
+    "properties": {
+      "run_id": {
+        "type": "string"
+      },
+      "out_dir": {
+        "type": "string",
+        "default": "output"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "run_id": {
+        "type": "string"
+      },
+      "found": {
+        "type": "boolean"
+      },
+      "audit_dirs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "event_count": {
+        "type": "integer"
+      },
+      "last_event": {
+        "type": [
+          "object",
+          "null"
+        ]
+      }
+    }
+  },
+  "errors": [],
+  "example": "status(run_id='20250818T101530-ab12cd34')",
+  "usage": "dev"
+}
