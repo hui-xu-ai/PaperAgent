@@ -56,6 +56,14 @@ def check_live() -> int:
 
     roots = _build_roots()
     man = read_manifest(roots)
+    dbs = {"system": roots.system_db, "chat": roots.chat_db, "diary": roots.diary_db,
+           "biblio": roots.biblio_db, "reference": roots.reference_db}
+    # 全新克隆/尚未启动过应用 ⇒ **没有可"不兼容"的对象**，跳过而不判失败
+    # （2026-09-12 CI 实测：干净 runner 上本闸门报 4 项失败，把贡献者/CI 全挡在门外）
+    if man is None and not any(p.exists() for p in dbs.values()):
+        print("[1] 清单契约  （数据目录未初始化：全新克隆 / 尚未启动过应用 → 跳过实库检查）")
+        print(f"    → 首次启动应用会自动按当前格式认领（data_format={DATA_FORMAT}）")
+        return 0
     bad = 0
     print(f"[1] 清单契约  data/manifest.json")
     if man is None:
@@ -70,8 +78,7 @@ def check_live() -> int:
         bad += 0 if df == DATA_FORMAT else 1
     print(f"[2] 结构自检")
     for name, tables in REQUIRED.items():
-        db = {"system": roots.system_db, "chat": roots.chat_db, "diary": roots.diary_db,
-              "biblio": roots.biblio_db, "reference": roots.reference_db}[name]
+        db = dbs[name]
         have = _tables(db)
         miss = tables - have
         if not db.exists():
