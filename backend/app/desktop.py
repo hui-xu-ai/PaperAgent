@@ -381,6 +381,18 @@ def native_window_supported() -> bool:
     return True
 
 
+def shell_is_active() -> bool:
+    """桌面壳是否真的活着（有窗口/托盘）——决定退出时要不要等"拆卸完成"信号。"""
+    shell = _active_shell
+    return bool(shell is not None and (shell.win is not None or shell.icon is not None))
+
+
+# ⚠️ 已废弃（2026-09-12 实测教训）：**不要**从非 GUI 线程调 `Shell.quit()`。
+# pywebview/WinForms 的窗口销毁必须在 GUI 线程；跨线程销毁会卡在内核态
+# （冒烟实测：60s 进程不退出、端口仍占，比不修更糟）。API 关停路径一律交给
+# `main` 的 watchdog：先关监听 socket（端口立即可用）→ 有界等拆卸 → os._exit。
+
+
 def run(server, url: str, request_quit, storage_dir: Path | None = None,
         on_teardown_done=None) -> None:
     """主线程跑 GUI：后端 uvicorn 在后台线程；返回时后端已请求关停。

@@ -124,8 +124,12 @@ def _graceful_exit_watchdog() -> None:
     _graceful_wait()
     # 等桌面壳把托盘 + WebView2 窗口拆干净**再**退出：在 COM 拆卸中途 ExitProcess 会让
     # 进程停在"半死"态（占住端口、taskkill 都杀不掉）——见 `_release_listen_sockets` 实测记录。
-    # 有界等待：窗口真卡住时也要能退出（socket 已释放，端口不会再被占）。
-    if not _shell_teardown_done.wait(SHELL_TEARDOWN_WAIT):
+    # 有界等待，且**只在桌面壳真的活着时等**（否则白等 8s：实测冒烟退出从 3.6s 变 11.6s）。
+    try:
+        shell_active = desktop.shell_is_active()
+    except Exception:  # noqa: BLE001
+        shell_active = False
+    if shell_active and not _shell_teardown_done.wait(SHELL_TEARDOWN_WAIT):
         logger.warning("桌面壳拆卸未在 %.0fs 内完成（窗口可能卡住）→ 照常退出",
                        SHELL_TEARDOWN_WAIT)
     logger.warning("优雅关停完成，进程退出")
@@ -326,6 +330,9 @@ async def desktop_quit(request: Request) -> JSONResponse:
     """
     _localhost_only(request)
     logger.info("收到显式退出请求（/api/desktop/quit），优雅关停中…")
+    # ⚠️ 不要在这里从后台线程去 `win.destroy()`：pywebview/WinForms 的窗口销毁必须在 GUI 线程，
+    # 跨线程销毁会卡死（2026-09-12 实测：冒烟 60s 进程不退出、端口仍占，比不修更糟）。
+    # 窗口/托盘由 watchdog 的"先放端口 + 有界等拆卸 + os._exit"兜住即可（见 _release_listen_sockets）。
     asyncio.create_task(_shutdown_worker())
     return JSONResponse({"status": "ok", "message": "quit scheduled"})
 
