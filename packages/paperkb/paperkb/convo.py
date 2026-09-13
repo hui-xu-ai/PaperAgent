@@ -166,5 +166,19 @@ def _write_translations(key: str, trans: list[dict], math_list: list[str]) -> in
     out_map, _rejected = _apply_translations({"translations": trans}, paras, idx, math_list)
     for i, zh in out_map.items():
         paras[i]["text_zh"] = zh
-    doc_json.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    payload = json.dumps(data, ensure_ascii=False, indent=1)
+    doc_json.write_text(payload, encoding="utf-8")
+    # **library 正本是阅读器的取数源**（AGENTS.md：翻译真相源在 library），而上面 `shared_doc_json`
+    # 在"已纳入 kb"时返回的是 **kb 快照** ⇒ 必须把同一份译文也写回 library，否则阅读器/渲染拿不到中文
+    # （2026-09-14 实测：kb 46/111、library 0/111）。
+    try:
+        roots = _api._need_store().roots          # noqa: SLF001
+        rid_dir = doc_json.parent.name if doc_json.parent.parent.name == "knowledge_base" else None
+        if rid_dir:
+            lib_path = Path(roots.library_dir) / rid_dir / "document.json"
+            if lib_path.exists() and lib_path.resolve() != doc_json.resolve():
+                lib_path.write_text(payload, encoding="utf-8")
+                logger.info("对话式译文同步写回 library：%s", lib_path)
+    except Exception as e:  # noqa: BLE001 - library 写回失败不推翻 kb 结果（下次同步会补齐）
+        logger.warning("对话式译文写回 library 失败（不阻塞）：%s", e)
     return len(out_map)
