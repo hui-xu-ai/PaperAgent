@@ -25,7 +25,8 @@ from typing import Any, Callable
 from . import compile as _compile
 from .context import CTX_HEADER, context_paragraphs, paper_context_with_math, with_task
 from .llm import get_llm
-from .merged import notes_task, parse_notes, parse_translations, translate_task, translation_coverage
+from .merged import (notes_task, parse_notes, parse_translations, parse_wiki,
+                     translate_task, translation_coverage, wiki_task)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,25 @@ def conversation_compile(key: str, *, levels: tuple[str, ...] = ("L1",),
         comp._index_paper_notes(key)                                    # noqa: SLF001
         raise ConvoFallback(f"对话式翻译覆盖不足 {cov:.0%}")
     out.update({"translated": len(ids), "coverage": round(cov, 3), "calls": calls})
+    # ---------- 第 3 次（可选）：L3 深度知识卡——**单独一轮请求**
+    # 理由（用户 2026-09-13 定调）：L3 输出更大（wiki+concepts），与 L1/L2 合并会顶到 max_tokens 上限；
+    # 单独一发便于失败只重试这一环。它**不检索知识库**（只吃当前论文全文 + L1/L2 摘要）。
+    if l3:
+        l1_ctx = _compile._ctx_from_l1(notes["l1"])                     # noqa: SLF001
+        l2_ctx = (notes["l2_md"] or "")[:4000]
+        messages = messages + [{"role": "assistant", "content": raw_tr},
+                               {"role": "user", "content": wiki_task(meta_json, doc,
+                                                                     journal_meta, l1_ctx, l2_ctx)}]
+        raw_l3 = _call(llm, messages, context)
+        calls += 1
+        wiki = parse_wiki(raw_l3)
+        if wiki is None:
+            raise ConvoFallback("对话式 L3 输出解析失败")
+        comp._wiki_path(key).write_text(_compile._render_wiki(meta, wiki), encoding="utf-8")  # noqa: SLF001
+        comp._save_ctx(key, "L3", (wiki.get("summary") or str(wiki))[:4000])                  # noqa: SLF001
+        comp._mark_done(key, "L3")                                                            # noqa: SLF001
+        levels_done.append("L3")
+        out.update({"levels": levels_done, "l3": True, "calls": calls})
     comp._index_paper_notes(key)                                        # noqa: SLF001
     return out
 

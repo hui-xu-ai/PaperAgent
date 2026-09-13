@@ -94,6 +94,26 @@ def translate_task(target_ids: list[str]) -> str:
     return _task_of(_translate_task([str(x) for x in (target_ids or []) if x]))
 
 
+def wiki_task(meta: dict, doc, journal_meta: str = "", l1_ctx: str = "",
+              l2_ctx: str = "") -> str:
+    """"L3 深度知识卡"的 user 文本（**单独一轮请求**：输出更大，且要复用 L1/L2 摘要）。
+
+    只依赖当前论文（system 全文前缀）+ L1/L2 摘要，**不做知识库检索**——2026-09-13 核查：
+    `retrieve.recall/answer` 只被问答路径使用，编译链（L1/L2/L3）都不检索知识库。
+    """
+    from .compile import _prompt_l3
+
+    return _task_of(_prompt_l3(meta, doc, l1_ctx or "(无)", l2_ctx or "(无)"))
+
+
+def parse_wiki(raw: str) -> dict | None:
+    """解析 L3 输出 → `{"summary","wiki","concepts","cross_refs"}`；不合格返回 None。"""
+    obj = _balanced_json(_strip_fence(raw or ""))
+    if isinstance(obj, dict) and (obj.get("wiki") or obj.get("summary")):
+        return obj
+    return None
+
+
 def merged_task(meta: dict, doc, journal_meta: str = "", l1_ctx: str = "",
                 l2_ctx: str = "", target_ids: list[str] | None = None,
                 levels: tuple[str, ...] = ("L1", "L2", "L3")) -> str:

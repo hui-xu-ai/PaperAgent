@@ -320,9 +320,10 @@ class TaskManager:
                 return False                   # 已编译过 → 交给既有翻译路径
             vlevel = str(((kb.value_score(key) or {}).get("level")) or "L1")
             levels = ("L1", "L2") if vlevel in ("L2", "L3") else ("L1",)
-            logger.info("对话式一次流转（任务流水线）: key=%s levels=%s provider=%s",
-                        key, levels, provider.get("name"))
-            res = kb.conversation_compile(key, levels=levels, translate=True)
+            logger.info("对话式一次流转（任务流水线）: key=%s levels=%s l3=%s provider=%s",
+                        key, levels, vlevel == "L3", provider.get("name"))
+            res = kb.conversation_compile(key, levels=levels, translate=True,
+                                          l3=(vlevel == "L3"))
             logger.info("对话式完成: %s", {k: res.get(k) for k in
                                           ("levels", "translated", "targets",
                                            "coverage", "calls")})

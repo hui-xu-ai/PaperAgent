@@ -215,8 +215,10 @@ class CompileWorker:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                if self.conversation_flow() is not None:
-                    continue
+                # 对话式一次流转**不在 worker 里做**（2026-09-13 实测教训）：它挂在流水线的
+                # 翻译段（`task_service._translate_and_export`）——因为解析后会立刻入队编译并
+                # 马上进翻译，worker 这一环根本接管不到，反而会和流水线抢同一篇（曾出现
+                # L1 单发 + 翻译单发 + L2 升级三条链并行）。worker 只保留原队列逻辑。
                 if self.process_one() is not None:
                     continue  # 刚处理完一项 → 立即检查队列（自动升级项也在此被处理）
             except Exception as e:  # noqa: BLE001 - 单轮异常不杀线程
