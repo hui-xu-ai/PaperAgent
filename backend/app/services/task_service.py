@@ -306,15 +306,15 @@ class TaskManager:
                 "0", "false", "no", "off"):
             return False
         try:
-            from .container import get_settings_service, get_kbmeta
+            from .container import get_kbapi, get_settings_service
 
+            key = self._convo_key(paper, doc_json)
+            if not key:
+                return False
             provider = get_settings_service().get_active_provider(masked=False) or {}
             if str(provider.get("id") or "") == "deepseek":
                 return False
-            key = paper.get("doi") or ""
-            if not key:
-                return False
-            kb = get_kbmeta()
+            kb = get_kbapi()
             _c = kb._need_compiler()           # noqa: SLF001 - 复用编译器的键归一化与产物路径
             if _c._note_path(key).exists():    # noqa: SLF001
                 return False                   # 已编译过 → 交给既有翻译路径
@@ -327,6 +327,11 @@ class TaskManager:
             logger.info("对话式完成: %s", {k: res.get(k) for k in
                                           ("levels", "translated", "targets",
                                            "coverage", "calls")})
+            # 译文已由对话式写好 ⇒ 只做渲染/变体（en_zh.md、kb 变体、清理旧结构），不再调 LLM 翻译
+            try:
+                self.engine.combined_translate(doc_json, template=None, skip_translate=True)
+            except Exception as e:  # noqa: BLE001 - 渲染失败不推翻已完成的翻译（导出会再兜一层）
+                logger.warning("对话式：渲染变体失败（不影响译文）：%s", e)
             return True
         except Exception as e:  # noqa: BLE001 - 任何异常都回退既有路径（用户可见的失败信息由原路径给出）
             from paperkb.convo import ConvoFallback
@@ -336,6 +341,31 @@ class TaskManager:
             else:
                 logger.warning("对话式异常（回退既有翻译路径）：%s", e)
             return False
+
+    def _convo_key(self, paper: dict, doc_json: str) -> str:
+        """对话式路径的资源键（**与 `_assemble_kb` 同一约定**）：document.json 的 metadata.doi 优先；
+        无 DOI 时用内容指纹登记出的 RID。**不能只读 `paper["doi"]`**——实测 papers 表该列为 NULL
+        （DOI 在 document.json/papers_meta 里），只读它会让门禁静默返回 False。
+        """
+        import json
+        from pathlib import Path
+
+        try:
+            data = json.loads(Path(doc_json).read_text(encoding="utf-8", errors="replace"))
+            doi = str(((data.get("metadata") or {}).get("doi")) or "").strip()
+            if doi:
+                return doi
+        except Exception as e:  # noqa: BLE001 - 读不到就按无 DOI 处理
+            logger.debug("对话式取 key：读 document.json 失败（%s）", e)
+        try:
+            from .kbmeta_service import get_kbmeta
+
+            pdf_md5 = str((self.store.get_paper(paper.get("id")) or {}).get("pdf_md5") or "")
+            return get_kbmeta().ensure_paper_registered(
+                doc_json, paper_id=int(paper.get("id") or 0), pdf_md5=pdf_md5) or ""
+        except Exception as e:  # noqa: BLE001 - 登记失败 → 回退既有路径
+            logger.warning("对话式取 key 失败（回退既有路径）：%s", e)
+            return ""
 
     def _translate_and_export(self, paper_id: int, paper: dict, doc_json: str,
                               parse_src: str, parse_label: str) -> None:

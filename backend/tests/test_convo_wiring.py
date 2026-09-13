@@ -1,0 +1,130 @@
+# -*- coding: utf-8 -*-
+"""对话式一次流转的**接线守卫**（2026-09-13 两次实测事故后补）。
+
+事故记录（都在 `agent_feedback` 的教训里）：
+1. `_try_conversation_flow` 写成 `from .container import get_kbmeta`（container 无此名）→ ImportError
+   被宽 `except` 吞成一行 warning ⇒ 线上静默回退老流程；
+2. 键只读 `paper["doi"]`，而 papers 表该列为 **NULL**（DOI 在 document.json/papers_meta）⇒
+   静默 return False，连日志都没有。
+本测试用最小 stub + **真实的小 document.json** 真跑这条分支：import 名错、属性错、键取错都会当场炸。
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+import app.services.task_service as ts
+
+
+@pytest.fixture()
+def doc_json(tmp_path):
+    """真实的小 document.json（键取自 metadata.doi——与 `_assemble_kb` 同一约定）。"""
+    p = tmp_path / "document.json"
+    p.write_text(json.dumps({"metadata": {"doi": "10.1/a"}, "paragraphs": []},
+                            ensure_ascii=False), encoding="utf-8")
+    return str(p)
+
+
+class _FakeKb:
+    def __init__(self, note_exists: bool = False, level: str = "L2", boom: str = ""):
+        self._note_exists = note_exists
+        self._level = level
+        self._boom = boom
+        self.calls: list[tuple] = []
+
+    def _need_compiler(self):
+        note_exists = self._note_exists
+
+        class _P:
+            @staticmethod
+            def exists():
+                return note_exists
+
+        class _C:
+            @staticmethod
+            def _note_path(_key):
+                return _P()
+        return _C()
+
+    def value_score(self, key):
+        return {"level": self._level}
+
+    def conversation_compile(self, key, levels=("L1",), translate=True, l3=False):
+        if self._boom:
+            raise RuntimeError(self._boom)
+        self.calls.append((key, tuple(levels), translate, l3))
+        return {"status": "done", "conversation": True, "calls": 2}
+
+
+def _patch(monkeypatch, kb, provider_id="p_P_P_3FEA2D40"):
+    monkeypatch.setattr("app.services.container.get_kbapi", lambda: kb, raising=True)
+    monkeypatch.setattr(
+        "app.services.container.get_settings_service",
+        lambda: type("S", (), {"get_active_provider":
+                               lambda self, masked=False: {"id": provider_id, "name": "智谱"}})(),
+        raising=True)
+
+
+def _mgr(monkeypatch, engine=None):
+    mgr = ts.TaskManager.__new__(ts.TaskManager)      # 不跑 __init__
+    mgr.engine = engine or type("E", (), {
+        "combined_translate": lambda self, *a, **kw: {"ok": True}})()
+    return mgr
+
+
+def test_conversation_flow_runs_for_non_deepseek(monkeypatch, doc_json):
+    kb = _FakeKb(level="L2")
+    _patch(monkeypatch, kb)
+    mgr = _mgr(monkeypatch)
+    assert mgr._try_conversation_flow({"id": 1}, doc_json) is True
+    assert kb.calls == [("10.1/a", ("L1", "L2"), True, False)]
+
+
+def test_conversation_flow_passes_l3_flag(monkeypatch, doc_json):
+    kb = _FakeKb(level="L3")
+    _patch(monkeypatch, kb)
+    mgr = _mgr(monkeypatch)
+    assert mgr._try_conversation_flow({"id": 1}, doc_json) is True
+    assert kb.calls[0][1] == ("L1", "L2") and kb.calls[0][3] is True
+
+
+def test_conversation_flow_skips_deepseek_official(monkeypatch, doc_json):
+    kb = _FakeKb(level="L2")
+    _patch(monkeypatch, kb, provider_id="deepseek")
+    mgr = _mgr(monkeypatch)
+    assert mgr._try_conversation_flow({"id": 1}, doc_json) is False
+    assert kb.calls == []
+
+
+def test_conversation_flow_skips_already_compiled(monkeypatch, doc_json):
+    kb = _FakeKb(note_exists=True)
+    _patch(monkeypatch, kb)
+    mgr = _mgr(monkeypatch)
+    assert mgr._try_conversation_flow({"id": 1}, doc_json) is False
+    assert kb.calls == []
+
+
+def test_conversation_flow_falls_back_on_error(monkeypatch, doc_json):
+    kb = _FakeKb(boom="模拟失败")
+    _patch(monkeypatch, kb)
+    mgr = _mgr(monkeypatch)
+    assert mgr._try_conversation_flow({"id": 1}, doc_json) is False
+
+
+def test_conversation_flow_env_kill_switch(monkeypatch, doc_json):
+    kb = _FakeKb()
+    _patch(monkeypatch, kb)
+    monkeypatch.setenv("PAPERAGENT_CONVO_FLOW", "0")
+    mgr = _mgr(monkeypatch)
+    assert mgr._try_conversation_flow({"id": 1}, doc_json) is False
+
+
+def test_convo_key_prefers_document_doi(monkeypatch, doc_json):
+    """键必须来自 document.json 的 metadata.doi（papers 表 doi 为 NULL 时也要能用）。"""
+    mgr = _mgr(monkeypatch)
+    assert mgr._convo_key({"id": 1}, doc_json) == "10.1/a"
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
