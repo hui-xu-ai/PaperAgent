@@ -120,8 +120,59 @@ def test_parse_merged_bad_json_returns_empty_parts():
 
 
 def test_translation_coverage_counts_only_target_ids():
-    parsed = {"translations": [{"para_id": "P001", "zh": "x"},
-                               {"para_id": "P002", "zh": "  "},
-                               {"para_id": "P999", "zh": "外部段"}]}
-    assert translation_coverage(parsed, ["P001", "P002"]) == 0.5
-    assert translation_coverage(parsed, []) == 1.0
+    trans = [{"para_id": "P001", "zh": "x"},
+             {"para_id": "P002", "zh": "  "},
+             {"para_id": "P999", "zh": "外部段"}]
+    assert translation_coverage(trans, ["P001", "P002"]) == 0.5
+    assert translation_coverage(trans, []) == 1.0
+
+
+# ---------------------------------------------------------------- 对话方式：笔记任务 / 翻译任务
+
+def test_notes_task_l1_only_and_l1l2():
+    """L1-only 与 L1+L2 的任务文本形状（L2 只在需要时出现；两条都复用既有任务文本）。"""
+    from paperkb.compile import _prompt_l1, _prompt_l2
+    from paperkb.merged import _doc_task_only, notes_task
+
+    doc, meta = _mk_doc(), _meta()
+    l1_only = notes_task(meta, doc, "JIF 5.0", levels=("L1",))
+    assert _task_of(_prompt_l1(meta, doc, "JIF 5.0")) in l1_only
+    assert '"l2_md"' not in l1_only                    # 只要 L1 时不给 L2 键
+    assert '"l1"' in l1_only
+
+    l1l2 = notes_task(meta, doc, "JIF 5.0", levels=("L1", "L2"))
+    assert _task_of(_prompt_l1(meta, doc, "JIF 5.0")) in l1l2
+    assert _task_of(_prompt_l2(meta, _doc_task_only(doc),
+                               "(同一次调用内，请以上面 ① 的产出为准)")) in l1l2
+    assert '"l2_md"' in l1l2
+    assert "## 论文全文" not in l1l2 and TASK_MARK not in l1l2
+
+
+def test_notes_task_is_byte_stable():
+    """同一 doc/meta/levels 两次构造必须逐字节相同（对话前缀能命中缓存的前提）。"""
+    from paperkb.merged import notes_task
+
+    doc, meta = _mk_doc(), _meta()
+    a = notes_task(meta, doc, "JIF", levels=("L1", "L2"))
+    b = notes_task(meta, doc, "JIF", levels=("L1", "L2"))
+    assert a == b
+
+
+def test_translate_task_matches_pipeline_text():
+    from paperkb.merged import translate_task
+    from paperkb.translate.pipeline import _translate_task
+
+    assert translate_task(["P001", "P002"]) == _task_of(_translate_task(["P001", "P002"]))
+
+
+def test_parse_notes_partial_and_translations_parser():
+    from paperkb.merged import parse_notes, parse_translations
+
+    assert parse_notes('{"l1": {"one_liner": "x"}}')["l2_md"] == ""
+    assert parse_notes("```json\n{\"l1\": {\"one_liner\": \"y\"}, \"l2_md\": \"# a\"}\n```")[
+        "l2_md"] == "# a"
+    assert parse_notes("没有 JSON")["l1"] is None
+
+    tr = parse_translations('说明：\n{"translations":[{"para_id":"P001","zh":"一"}]}\n完毕')
+    assert tr and tr[0]["para_id"] == "P001"
+    assert parse_translations("无") == []

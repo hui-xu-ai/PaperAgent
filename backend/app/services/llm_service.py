@@ -706,6 +706,14 @@ class ChatCompleter:
                 provider=self.provider_id, model=self.model,
                 cache_hit_tokens=cache_hit)
 
+    def chat_messages(self, messages: list[dict[str, str]], context: str = "compile") -> str:
+        """**对话式**多消息补全（paperkb 编译+翻译共用一条对话时用）。
+
+        与 `complete(messages, context="chat")` 的区别只在 context 语义：本方法用于**编译/翻译**
+        分组（`context="compile"/"translate"`），让 TokenGuard 记账与既有链路一致。
+        """
+        return self.complete(messages, context=context)
+
     def complete(self, messages: list[dict[str, str]], context: str = "chat") -> str:
         """非流式对话补全（用于回答缓存回填/离线场景）。"""
         if self.guard:

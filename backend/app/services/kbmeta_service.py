@@ -189,6 +189,14 @@ class _KBLLMAdapter:
         # 批3：**思考档决策用真实 context**（compile/l1/l2/l3…）；`mapped` 只用于 TokenGuard 分组。
         return self._base.complete(prompt, context=mapped, effort_context=context)
 
+    def chat_messages(self, messages: list[dict], context: str = "compile") -> str:
+        """对话式（编译+翻译共用一条 messages）——非 DeepSeek 官方供应商的优化路径用。
+
+        TokenGuard 分组与 `complete` 同源（translate 单列，其余归 engine），避免第二套判据。
+        """
+        mapped = {"translate": "translate", "ask": "ask"}.get(context, "engine")
+        return self._base.chat_messages(messages, context=mapped)
+
 
 def get_kbmeta() -> KbMetaService:
     """container 注入点（懒单例，指向 container 持有的 paperkb 访问器）。"""

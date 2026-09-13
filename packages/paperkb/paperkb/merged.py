@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
-"""智谱专用「单次调用」：把 L1 + L2 + L3 + 全文翻译合并成**一次** LLM 请求。
+"""单次请求内合并多级任务（**对话方式**的支持模块）。
 
-为什么（2026-09-13 实测，见 `.dsh-memory/project/NOTES-GLM-CACHE-20260913.md` §9）：
-智谱隐式缓存在"相邻调用间隔 < ~120s"时**完全不命中**，而本应用一次流转的 4 个步骤都在
-15–120s 内连着发 ⇒ 全文前缀（~19k token）被重复计价 4 次。合并成单次请求后输入 4×19k → 1×19k
-（省 ~75%），且不再依赖供应商的缓存时效窗口。
+用户决策（2026-09-13）：非 DeepSeek 官方供应商走"连续对话"——一次流转内保持同一条 messages：
+  第 1 次：system(全文前缀) + user(笔记任务：按价值分要 L1 就 L1、要 L2 就把 L1+L2 写在同一条 user)
+  第 2 次：在同一对话后追加 user(翻译任务)
+第 2 次请求的前缀（≈19k）因此能命中缓存（实测第 2/3 轮 cached≈18.7k/20.2k）。
 
-设计约束（**不复制第二套判据**）：
-- 四个子任务文本**直接复用**既有构造点 `compile._prompt_l1/_prompt_l2/_prompt_l3` 与
-  `translate.pipeline._translate_task`（在 `TASK_MARK` 处取后缀），任务描述改动自动跟随；
-- 译文回填复用 `translate.pipeline._apply_translations`（同样的清洗/公式回填）；
-- 解析失败 / 截断 / 覆盖不足 ⇒ 由调用方回退到既有分步路径（本模块只负责"构造 + 解析 + 判定"）。
+本模块只做**纯函数**：任务文本构造 + 输出解析 + 覆盖判定（不碰网络/磁盘，便于单测）。
+约束（**不复制第二套判据**）：任务描述一律取自既有构造点
+`compile._prompt_l1/_prompt_l2/_prompt_l3` 与 `translate.pipeline._translate_task`（按 `TASK_MARK` 取后缀）。
 """
 from __future__ import annotations
 
@@ -21,16 +19,34 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 合并任务的输出信封（模型必须只回这个 JSON）
-_MERGED_OUTPUT_SPEC = (
-    "## 输出要求（只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码围栏）\n"
+_L1_PLACEHOLDER = "(同一次调用内，请以上面 ① 的产出为准)"
+
+# 笔记任务输出信封（L1-only）
+_NOTES_SPEC_L1 = (
+    "## 输出要求（只输出一个 JSON 对象，不要解释、不要 Markdown 代码围栏）\n"
     "{\n"
-    '  "l1": { …第 ① 项要求的 JSON 对象… },\n'
-    '  "l2_md": "第 ② 项的 Markdown 全文（用 JSON 字符串转义，\\n 换行）",\n'
-    '  "l3": { …第 ③ 项要求的 JSON 对象… },\n'
-    '  "translations": [ {"para_id": "P001", "zh": "第 ④ 项的译文"} ]\n'
+    '  "l1": { …① 要求的 JSON 对象… }\n'
     "}\n"
-    "四个键都必须出现；translations 必须覆盖上面列出的**每一个** para_id，一个都不能少。"
+    "l1 必须含 one_liner。"
+)
+
+# 笔记任务输出信封（L1 + L2）
+_NOTES_SPEC_L1L2 = (
+    "## 输出要求（只输出一个 JSON 对象，不要解释、不要 Markdown 代码围栏）\n"
+    "{\n"
+    '  "l1": { …① 要求的 JSON 对象… },\n'
+    '  "l2_md": "② 的 Markdown 全文（JSON 字符串转义，\\n 换行）"\n'
+    "}\n"
+    "两个键都要出现，l1 必须含 one_liner。"
+)
+
+# 「笔记 + 翻译」一次请求的输出信封（兼容入口用）
+_MERGED_SPEC = (
+    "## 输出要求（只输出一个 JSON 对象，不要解释、不要代码围栏）\n"
+    "{\n"
+    '  "l1": { …①… },\n  "l2_md": "…②…",\n  "l3": { …③… },\n'
+    '  "translations": [ {"para_id": "P001", "zh": "…④…"} ]\n}\n'
+    "出现的键必须齐全；translations 必须覆盖上面列出的**每一个** para_id。"
 )
 
 
@@ -41,42 +57,69 @@ def _task_of(prompt: str) -> str:
     return split_task(prompt)[1]
 
 
-def merged_task(meta: dict, doc, journal_meta: str = "", l1_ctx: str = "",
-                l2_ctx: str = "", target_ids: list[str] | None = None) -> str:
-    """构造合并调用的 **user 消息**（system 侧仍是共享全文前缀，由调用方 with_task 拼）。
-
-    `target_ids`：要翻译的 para_id 清单（**与 run_translate 同一判据**：只有模型看得到原文、
-    非标题、text_en 非空的段落才要求翻译）。
-    """
-    from .compile import _prompt_l1, _prompt_l2, _prompt_l3
-    from .translate.pipeline import _translate_task
-
-    ids = [str(x) for x in (target_ids or []) if x]
-    # 第 ②③ 项不携带"上一级摘要"（合并调用里 L1/L2 与它们同一次产出，尚无文本可带）；
-    # 第 ② 项也不重复内联"章节片段"（正文已在 system 里，这里再塞一遍等于把 user 撑到 6.6k）。
-    # 做法：传入一个**无正文段落**的同源 PaperDoc（任务文本仍来自既有构造点，不复制第二套判据）。
-    _L1_PLACEHOLDER = "(同一次调用内，请以上面 ① 的产出为准)"
+def _doc_task_only(doc):
+    """同源但**不带正文段落**的 PaperDoc（任务文本里不再内联章节片段，正文已在 system）。"""
     try:
-        _doc_task_only = type(doc)(doi=getattr(doc, "doi", ""), title=getattr(doc, "title", ""))
-        _doc_task_only.sections = list(getattr(doc, "sections", []) or [])
-    except Exception:  # noqa: BLE001 - 构造不出来就退回原 doc（只是 user 会长一点）
-        _doc_task_only = doc
-    parts = [
-        "## 合并任务（一次完成，严格按顺序思考，只在最后输出一个 JSON）",
-        "以上方论文全文为唯一依据，依次完成下面四项。**第 ②③ 项要引用第 ① 项已产出的内容**"
-        "（不要重复全景，只补充细节）；第 ④ 项只翻译列出的段落。\n",
-        "### ① L1 核心笔记（JSON）",
-        _task_of(_prompt_l1(meta, doc, journal_meta)),
-        "\n### ② L2 详细笔记（Markdown）",
-        _task_of(_prompt_l2(meta, _doc_task_only, _L1_PLACEHOLDER)),
-        "\n### ③ L3 深度知识卡（JSON）",
-        _task_of(_prompt_l3(meta, doc, _L1_PLACEHOLDER, _L1_PLACEHOLDER)),
-        "\n### ④ 全文逐段翻译（JSON）",
-        _task_of(_translate_task(ids)),
-        "\n" + _MERGED_OUTPUT_SPEC,
-    ]
+        d = type(doc)(doi=getattr(doc, "doi", ""), title=getattr(doc, "title", ""))
+        d.sections = list(getattr(doc, "sections", []) or [])
+        return d
+    except Exception:  # noqa: BLE001 - 构造不出来就退回原 doc（user 会长一点，不影响正确性）
+        return doc
+
+
+def notes_task(meta: dict, doc, journal_meta: str = "", levels: tuple[str, ...] = ("L1",)) -> str:
+    """"笔记任务"的 user 文本：`levels` 决定是否把 L2 写在同一条 user 里（共用一次思考）。
+
+    - `("L1",)` → 输出 `{"l1": {...}}`
+    - `("L1","L2")` → 输出 `{"l1": {...}, "l2_md": "..."}`
+    """
+    from .compile import _prompt_l1, _prompt_l2
+
+    lv = tuple(levels or ("L1",))
+    parts = ["## 本次任务：论文知识编译（严格按顺序，只在最后输出一个 JSON）"]
+    if "L2" in lv:
+        parts.append("先完成 ①，再**基于 ① 的产出**完成 ②（不要重复全景，只补充章节级细节）。\n")
+    parts += ["### ① L1 核心笔记（JSON）", _task_of(_prompt_l1(meta, doc, journal_meta))]
+    if "L2" in lv:
+        parts += ["\n### ② L2 详细笔记（Markdown）",
+                  _task_of(_prompt_l2(meta, _doc_task_only(doc), _L1_PLACEHOLDER))]
+    parts.append("\n" + (_NOTES_SPEC_L1L2 if "L2" in lv else _NOTES_SPEC_L1))
     return "\n".join(parts)
 
+
+def translate_task(target_ids: list[str]) -> str:
+    """"翻译任务"的 user 文本（追加到同一对话的最后一条）。"""
+    from .translate.pipeline import _translate_task
+
+    return _task_of(_translate_task([str(x) for x in (target_ids or []) if x]))
+
+
+def merged_task(meta: dict, doc, journal_meta: str = "", l1_ctx: str = "",
+                l2_ctx: str = "", target_ids: list[str] | None = None,
+                levels: tuple[str, ...] = ("L1", "L2", "L3")) -> str:
+    """**兼容入口**（保留 2026-09-13 早先的"笔记+翻译一次请求"形状，非对话供应商兜底用）。"""
+    from .compile import _prompt_l1, _prompt_l2, _prompt_l3
+
+    ids = [str(x) for x in (target_ids or []) if x]
+    lv = tuple(levels or ("L1",))
+    parts = ["## 合并任务（一次完成，严格按顺序思考，只在最后输出一个 JSON）",
+             "以上方论文全文为唯一依据，依次完成下面各项。**②③ 要引用 ① 的产出**"
+             "（不要重复全景，只补充细节）；翻译项只翻译列出的段落。\n"]
+    if "L1" in lv:
+        parts += ["### ① L1 核心笔记（JSON）", _task_of(_prompt_l1(meta, doc, journal_meta))]
+    if "L2" in lv:
+        parts += ["\n### ② L2 详细笔记（Markdown）",
+                  _task_of(_prompt_l2(meta, _doc_task_only(doc), _L1_PLACEHOLDER))]
+    if "L3" in lv:
+        parts += ["\n### ③ L3 深度知识卡（JSON）",
+                  _task_of(_prompt_l3(meta, doc, _L1_PLACEHOLDER, _L1_PLACEHOLDER))]
+    if ids:
+        parts += ["\n### ④ 全文逐段翻译（JSON）", translate_task(ids)]
+    parts.append("\n" + _MERGED_SPEC)
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------- 解析
 
 def _balanced_json(text: str) -> dict | None:
     """从输出里平衡提取第一个 `{...}` 对象（容忍代码围栏/前后解释文字）。"""
@@ -111,6 +154,23 @@ def _balanced_json(text: str) -> dict | None:
     return None
 
 
+def _balanced_array(text: str, at: int) -> list | None:
+    depth = 0
+    for i in range(at, len(text)):
+        ch = text[i]
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                try:
+                    arr = json.loads(text[at:i + 1])
+                    return arr if isinstance(arr, list) else None
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
 def _strip_fence(text: str) -> str:
     t = (text or "").strip()
     t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
@@ -118,12 +178,48 @@ def _strip_fence(text: str) -> str:
     return t.strip()
 
 
-def parse_merged(raw: str) -> dict[str, Any]:
-    """解析合并输出 → `{"l1": dict|None, "l2_md": str, "l3": dict|None, "translations": list}`。
+def parse_notes(raw: str) -> dict[str, Any]:
+    """解析"笔记任务"输出 → `{"l1": dict|None, "l2_md": str}`。"""
+    out: dict[str, Any] = {"l1": None, "l2_md": ""}
+    text = _strip_fence(raw or "")
+    obj = _balanced_json(text)
+    if isinstance(obj, dict):
+        l1 = obj.get("l1")
+        if isinstance(l1, str):
+            l1 = _balanced_json(l1)
+        if isinstance(l1, dict) and l1.get("one_liner"):
+            out["l1"] = l1
+        l2 = obj.get("l2_md") or obj.get("l2")
+        if isinstance(l2, str):
+            out["l2_md"] = _strip_fence(l2)
+        if out["l1"] or out["l2_md"]:
+            return out
+    logger.warning("笔记输出解析失败，尝试单段抓取（len=%d）", len(text))
+    m = re.search(r'"l1"\s*:\s*', text)
+    if m:
+        sub = _balanced_json(text[m.end():])
+        if isinstance(sub, dict) and sub.get("one_liner"):
+            out["l1"] = sub
+    return out
 
-    宽容策略：整体 JSON 解析失败时，退化为"按键抓取片段"（模型偶尔会输出四段独立 JSON）；
-    四项各自独立判定，调用方按"缺什么补什么"决定回退范围。
-    """
+
+def parse_translations(raw: str) -> list[dict]:
+    """解析"翻译任务"输出 → `[{"para_id","zh"}, ...]`（容忍围栏与前后解释）。"""
+    text = _strip_fence(raw or "")
+    obj = _balanced_json(text)
+    if isinstance(obj, dict) and isinstance(obj.get("translations"), list):
+        return [x for x in obj["translations"] if isinstance(x, dict)]
+    m = re.search(r'"translations"\s*:\s*\[', text)
+    if m:
+        arr = _balanced_array(text, m.end() - 1)
+        if isinstance(arr, list):
+            return [x for x in arr if isinstance(x, dict)]
+    logger.warning("翻译输出解析失败（len=%d）", len(text))
+    return []
+
+
+def parse_merged(raw: str) -> dict[str, Any]:
+    """解析"笔记+翻译一次请求"输出 → `{"l1","l2_md","l3","translations"}`（兼容入口）。"""
     out: dict[str, Any] = {"l1": None, "l2_md": "", "l3": None, "translations": []}
     text = _strip_fence(raw or "")
     obj = _balanced_json(text)
@@ -141,43 +237,22 @@ def parse_merged(raw: str) -> dict[str, Any]:
             l3 = _balanced_json(l3)
         if isinstance(l3, dict) and (l3.get("wiki") or l3.get("summary")):
             out["l3"] = l3
-        trs = obj.get("translations")
-        if isinstance(trs, list):
-            out["translations"] = [x for x in trs if isinstance(x, dict)]
-        if out["l1"] or out["l2_md"] or out["l3"] or out["translations"]:
-            return out
-    # 退化：分别找 "l1"/"translations" 段
-    logger.warning("合并输出整体解析失败，尝试分段抓取（len=%d）", len(text))
-    m = re.search(r'"l1"\s*:\s*', text)
-    if m:
-        sub = _balanced_json(text[m.end():])
-        if isinstance(sub, dict) and sub.get("one_liner"):
-            out["l1"] = sub
-    m = re.search(r'"translations"\s*:\s*\[', text)
-    if m:
-        seg = text[m.end() - 1:]
-        depth = 0
-        for i, ch in enumerate(seg):
-            if ch == "[":
-                depth += 1
-            elif ch == "]":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        arr = json.loads(seg[:i + 1])
-                        if isinstance(arr, list):
-                            out["translations"] = [x for x in arr if isinstance(x, dict)]
-                    except json.JSONDecodeError:
-                        pass
-                    break
+        if isinstance(obj.get("translations"), list):
+            out["translations"] = [x for x in obj["translations"] if isinstance(x, dict)]
+    if out["l1"] is None or not out["l2_md"]:
+        notes = parse_notes(raw)
+        out["l1"] = out["l1"] or notes["l1"]
+        out["l2_md"] = out["l2_md"] or notes["l2_md"]
+    if not out["translations"]:
+        out["translations"] = parse_translations(raw)
     return out
 
 
-def translation_coverage(parsed: dict, target_ids: list[str]) -> float:
-    """译文覆盖率（按 para_id 计，去重后）。"""
+def translation_coverage(trans: list[dict], target_ids: list[str]) -> float:
+    """译文覆盖率（按 para_id 去重计；给回退判据用）。"""
     ids = {str(x) for x in (target_ids or []) if x}
     if not ids:
         return 1.0
-    got = {str(t.get("para_id")) for t in (parsed.get("translations") or [])
+    got = {str(t.get("para_id")) for t in (trans or [])
            if str(t.get("para_id") or "") in ids and (t.get("zh") or "").strip()}
     return len(got) / len(ids)
