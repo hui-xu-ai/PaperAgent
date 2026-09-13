@@ -545,6 +545,65 @@ class DeepSeekAI(AIProvider):
             f"DeepSeek 调用失败（已重试 {self.max_retries} 次）: {last_err}{self._hint}") \
             from last_err
 
+    # ---------------------------------------------------------- 对话式（多消息）通道
+    def chat_messages(self, messages: list[dict[str, str]],
+                      context: str = "compile") -> str:
+        """**对话式**多消息补全（paperkb 编译+翻译共用一条对话时用）。
+
+        与 `complete()` 的差别：接收**完整 messages 列表**（含 assistant 历史），而不是单条 prompt。
+        `context` 用于 TokenGuard 分组（`translate` 单列，其余归 engine）。思考档沿用
+        `_resolve_effort` 的单一判据（translate=low / 其余映射），否则 GLM 会把 max_tokens
+        全用在思考上、正文 0 字符（2026-09-13 实测）。
+        """
+        if self.guard:
+            input_chars = sum(len(m.get("content") or "") for m in messages)
+            self.guard.begin_call(context, input_chars)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        effort, explicit = self._resolve_effort(context)
+        if effort and (explicit or self._reasoning_supported):
+            payload["reasoning_effort"] = effort
+        debug_request("chat_messages", self.model, messages, context=str(context),
+                      extra={"effort": effort, "max_tokens": self.max_tokens})
+        import requests as _req
+
+        resp = _req.post(
+            self._base_url + "/chat/completions",
+            headers={"Authorization": "Bearer " + self._api_key,
+                     "Content-Type": "application/json"},
+            json=payload, timeout=self.timeout_sec)
+        resp.raise_for_status()
+        data = resp.json()
+        try:
+            ch = data["choices"][0]
+        except (KeyError, IndexError, TypeError) as e:
+            raise DeepSeekError(f"对话式补全返回异常信封: {str(data)[:200]}") from e
+        msg = ch.get("message") or ch.get("delta") or {}
+        text = str(msg.get("content") or "").strip()
+        if not text:
+            text = str(msg.get("reasoning_content") or "").strip()
+        import re as _re3
+        text = _re3.sub(r"</?think>", "", text).strip()
+        usage = data.get("usage")
+        if usage is not None:
+            debug_usage("chat_messages", str(context), self.model, usage,
+                        cache_hit_tokens(usage), extra={"finish": ch.get("finish_reason")})
+        if usage is not None and self.guard:
+            self.guard.record_usage(
+                context,
+                int(usage.get("prompt_tokens", 0) or 0),
+                int(usage.get("completion_tokens", 0) or 0),
+                provider=self.provider_id, model=self.model,
+                cache_hit_tokens=cache_hit_tokens(usage))
+        if ch.get("finish_reason") == "length":
+            logger.warning("对话式补全输出被 max_tokens 截断（model=%s, chars=%d）",
+                           self.model, len(text))
+        return text
+
 
 # ---------------------------------------------------------------- 对话通道
 
