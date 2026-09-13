@@ -20,7 +20,7 @@ import logging
 import re
 from pathlib import Path
 
-from ..context import CTX_HEADER, context_paragraphs, paper_context_with_math
+from ..context import CTX_HEADER, context_paragraphs, paper_context_with_math, with_task
 from ..doc import read_document
 from .fixes import KNOWN_FIXES
 from .latextap import reassemble
@@ -208,7 +208,7 @@ def _do_batch(llm, shared: str, paras: list[dict], batch: list[int],
     缩小批。返回的 zh 已 reassemble + KNOWN_FIXES + 清洗（空串丢弃计 rejected）。
     """
     para_ids = [paras[i].get("para_id") for i in batch]
-    prompt = shared + "\n\n" + _translate_task(para_ids)
+    prompt = with_task(shared, _translate_task(para_ids))
     data_out: dict | None = None
     for attempt in (0, 1):
         try:
@@ -282,7 +282,7 @@ def _try_whole(llm, shared: str, paras: list[dict], targets: list[int],
     交给上层回退分批。整篇 prompt 过大（>MAX_WHOLE_CHARS）同样返回 None（防 TokenGuard 红线）。
     """
     para_ids = [paras[i].get("para_id") for i in targets]
-    prompt = shared + "\n\n" + _translate_task(para_ids)
+    prompt = with_task(shared, _translate_task(para_ids))
     # 预检：整篇 prompt 超过 MAX_WHOLE_CHARS 会触发 TokenGuard 单次输入红线
     # （guard 上限与 MAX_WHOLE_CHARS 同值）→ 不尝试整篇，交给上层回退分批。
     if len(prompt) > MAX_WHOLE_CHARS:

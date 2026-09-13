@@ -159,3 +159,40 @@ def paper_context(doc: PaperDoc) -> str:
 def shared_ctx(doc: PaperDoc) -> str:
     """共享前缀 = 系统/结构前缀 + 全文块（翻译与编译同用，字节一致）。"""
     return CTX_HEADER + paper_context(doc)
+
+
+# ---------------------------------------------------------------- 共享前缀 / 任务 分界
+# 2026-09-13 用户实测（智谱 GLM 自动前缀缓存**只对 `system` 消息内容生效**）：
+#   · 单条 user 装前缀（本仓库旧形状）→ `cached_tokens=0`（1.5k/5k 前缀都 0）；
+#   · `system` + `user` 两条 → 1.5k 前缀命中 512、5k 前缀命中 5120。
+# DeepSeek 官方与硅基流动不挑形状（旧形状也有命中），智谱恒 0。⇒ 统一改成
+# **共享全文前缀独立为 `system` 消息**（三家都能命中），任务指令留 `user`。
+#
+# 分界方式：构造点用 `with_task(shared, task)` 显式标界（不靠猜分隔符——任务文本里
+# 可能出现任意空行/标题），发送层用 `split_task(prompt)` 拆成 (system, user)。
+# `TASK_MARK` 只作**内部分界标记**，不含任何会被模型当内容的东西；命中时它留在
+# system 串末尾（各请求同一篇文档的 system 逐字节稳定 ⇒ 不破坏前缀缓存）。
+TASK_MARK = "\n\n<<<PAPERAGENT_TASK>>>\n\n"
+
+
+def with_task(shared: str, task: str) -> str:
+    """把共享前缀与任务部分合成一条 prompt，并用 `TASK_MARK` 标出分界。
+
+    返回 ``shared + TASK_MARK + task``：**shared 部分逐字节不变**（翻译/编译/问答三路
+    共享同一字节前缀）；任务文本原样保留在 marker 之后。
+    """
+    return (shared or "") + TASK_MARK + (task or "")
+
+
+def split_task(prompt: str) -> tuple[str, str]:
+    """按 `TASK_MARK` 把 prompt 拆成 ``(system, user)``。
+
+    - 命中 marker：``(shared, task)`` → 发送层发 `[system, user]` 两条消息
+      （智谱等供应商的前缀缓存只认 `system` 内容）；
+    - **无 marker**：``("", prompt)`` —— 保持旧行为（单条 user 消息）。
+    """
+    text = prompt or ""
+    idx = text.find(TASK_MARK)
+    if idx < 0:
+        return "", text
+    return text[:idx], text[idx + len(TASK_MARK):]

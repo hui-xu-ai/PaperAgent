@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import Roots
-from .context import _is_ref_section, context_paragraphs, shared_ctx
+from .context import _is_ref_section, context_paragraphs, shared_ctx, with_task
 from .db import KBStore
 from .doc import PaperDoc, find_document_in_kb, read_document
 from .journals import JournalsDB
@@ -478,10 +478,8 @@ def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
     from .frontmatter import meta_block
 
     shared = shared_ctx(doc)
-    return (
-        shared
-        + "\n\n"
-        + "你是科研知识编译助手。请依据上方论文全文，把它编译成结构化中文知识笔记。\n"
+    task = (
+        "你是科研知识编译助手。请依据上方论文全文，把它编译成结构化中文知识笔记。\n"
         "要求：六维每维必须引用论文段落 ID（如 [P001]）；输出严格 JSON：\n"
         '{"one_liner": "一句话贡献", "background": {"text": "...", "paras": ["P001"]}, '
         '"method": {...}, "result": {...}, "conclusion": {...}, "innovation": {...}, '
@@ -491,6 +489,7 @@ def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
         + meta_block(meta, doc)
         + (f"\n期刊(权威)：{journal_meta}" if journal_meta else "")
     )
+    return with_task(shared, task)
 
 
 def _l2_sections(doc: PaperDoc) -> list[dict]:
@@ -558,17 +557,17 @@ def _prompt_l2(meta: dict, doc: PaperDoc, l1_ctx: str) -> str:
         texts = texts[:5]
         if texts:
             parts.append(f"### {sec.get('section')}\n" + "\n".join(texts))
-    context = "\n\n".join(parts) or "(无可用章节片段)"
-    return (
-        shared_ctx(doc)                        # ← 共享全文前缀（与 L1/L3/翻译/问答字节一致）
-        + "\n\n"
+    sec_ctx = "\n\n".join(parts) or "(无可用章节片段)"
+    task = (
         "你是科研笔记助手。以下是某篇论文的 L1 知识编译摘要（已有全景六维）。\n"
         "现在为每章提炼 2-4 条要点（中文，保留段落 ID 引用 [Pxxx]）。\n"
         "**已有内容不要重复**，只补充章节级细节。输出 Markdown：\n"
         "# 详细笔记：<标题>\n\n## 章节要点\n### <章节名>\n- 要点（[P001]）\n...\n\n"
         f"论文标题：{meta.get('title')}\n\n## L1 摘要（勿重复）\n{l1_ctx or '(无)'}\n\n"
-        f"## 章节片段（原文 text_en）\n{context}"
+        f"## 章节片段（原文 text_en）\n{sec_ctx}"
     )
+    # ← 共享全文前缀（与 L1/L3/翻译/问答字节一致）
+    return with_task(shared_ctx(doc), task)
 
 
 def _prompt_l3(meta: dict, doc: PaperDoc, l1_ctx: str, l2_ctx: str) -> str:
@@ -576,10 +575,8 @@ def _prompt_l3(meta: dict, doc: PaperDoc, l1_ctx: str, l2_ctx: str) -> str:
     from .frontmatter import meta_block
 
     shared = shared_ctx(doc)
-    return (
-        shared
-        + "\n\n"
-        + "你是科研深度编译专家。基于论文产出深度知识卡（Markdown 结构 + JSON 概念列表）。\n"
+    task = (
+        "你是科研深度编译专家。基于论文产出深度知识卡（Markdown 结构 + JSON 概念列表）。\n"
         "输出严格 JSON：\n"
         '{"summary": "全文 200 字摘要", "wiki": "深度编译 Markdown：## 研究设计 / ## 关键方法 '
         '/ ## 核心结论 / ## 创新点 / ## 局限与批判性分析（方法局限、证据强度）/ ## 开放问题'
@@ -590,6 +587,7 @@ def _prompt_l3(meta: dict, doc: PaperDoc, l1_ctx: str, l2_ctx: str) -> str:
         + f"\n\n## L1 摘要（已有，勿重复全景）\n{l1_ctx or '(无)'}\n"
         f"## L2 摘要（已有，勿重复）\n{l2_ctx or '(无)'}"
     )
+    return with_task(shared, task)
 
 
 # ---------------------------------------------------------------- 渲染

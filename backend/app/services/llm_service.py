@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from paperparse.llm.client import AIProvider, set_ai
+from paperkb.context import split_task
 
 from ..config import Settings
 
@@ -322,9 +323,22 @@ class DeepSeekAI(AIProvider):
         批3：`effort_context` = **思考档决策用的真实上下文**（编译/翻译经 kbmeta 折成 context="engine"
         只为 TokenGuard 分组，若不额外传入，`DEFAULT_REASONING_EFFORTS` 永远取不到 compile/translate
         ⇒ 档位形同不存在，实测所有编译都跑在服务端默认重思考）。
+        批5：prompt 带 `paperkb.context.TASK_MARK` 时按 marker 拆成 `[system(共享全文前缀), user(任务)]`
+        两条消息（智谱前缀缓存只认 system 内容）；不带 marker 时保持单条 user（旧行为不变）。
         """
         if self.guard:
             self.guard.begin_call(context, len(prompt))
+        # 共享全文前缀 / 任务 分界（2026-09-13 用户实测）：智谱 GLM 的自动前缀缓存**只对
+        # `system` 消息内容生效**（单条 user 装前缀 cached_tokens 恒 0；system+user 才命中），
+        # DeepSeek 官方与硅基流动则两种形状都命中。⇒ 构造点（compile/translate）用
+        # `paperkb.context.with_task` 标界，这里按 marker 拆分：命中则发 [system, user]
+        # 两条（共享全文块独立成 system，三家都能命中缓存），未命中维持旧单条 user。
+        _sys, _user = split_task(prompt)
+        if _sys:
+            _messages = [{"role": "system", "content": _sys},
+                         {"role": "user", "content": _user}]
+        else:
+            _messages = [{"role": "user", "content": _user}]
         import requests as _req
         last_err: Exception | None = None
         for attempt in range(self.max_retries + 1):
@@ -334,7 +348,7 @@ class DeepSeekAI(AIProvider):
                 # reasoning_effort 决策（批3）：供应商级显式配置 > 编译族设置 > 既有 context 映射
                 effort, explicit = self._resolve_effort(effort_context or context)
                 payload = {"model": self.model,
-                           "messages": [{"role": "user", "content": prompt}],
+                           "messages": _messages,
                            "temperature": self.temperature,
                            "max_tokens": self.max_tokens}
                 # 显式档位（供应商配置/设置中心）**照发**——即使模型名不在 hints 里；
