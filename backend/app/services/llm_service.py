@@ -63,6 +63,44 @@ REASONING_MODEL_HINTS = ("glm", "reason", "thinking", "qwq", "moonshot", "kimi")
 _RETRY_SLEEP_SEC = 2.0
 
 
+def cache_hit_tokens(usage) -> int:
+    """从各家 `usage` 里取**前缀缓存命中** token 数（2026-09-13 直打三家 API 实测）。
+
+    用户报障：「DeepSeek 有缓存命中，智谱 glm-flash 和硅基流动的 DeepSeek 显示 0」。实测三家形状不同：
+      · **DeepSeek 官方**：`prompt_cache_hit_tokens`（同时给 `prompt_tokens_details.cached_tokens`）；
+      · **智谱 GLM（OpenAI 兼容）**：**只给** `prompt_tokens_details.cached_tokens`，
+        **完全没有** `prompt_cache_hit_tokens` ⇒ 旧实现只读后者，于是**永远记 0**（**本应用解析 bug**）；
+      · **硅基流动**：字段与 DeepSeek 同形，但它有**最小缓存块**——实测 ≈1000 token 前缀命中 0、
+        ≈4000 token 前缀命中 3840 ⇒ 短前缀不命中属正常，不是解析问题。
+    取值顺序：`prompt_cache_hit_tokens` → `cached_tokens` → `cache_read_input_tokens`（备用）
+    → `prompt_tokens_details.cached_tokens`。dict（原始 JSON）与 SDK 对象两种形态都支持。
+    """
+    if usage is None:
+        return 0
+
+    def _get(key):
+        if isinstance(usage, dict):
+            return usage.get(key)
+        return getattr(usage, key, None)
+
+    for key in ("prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens"):
+        val = _get(key)
+        if val:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+    details = _get("prompt_tokens_details")
+    if details is not None:
+        val = (details.get("cached_tokens") if isinstance(details, dict)
+               else getattr(details, "cached_tokens", None))
+        try:
+            return int(val or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
 class DeepSeekError(Exception):
     """LLM 调用失败（重试耗尽后抛出）。"""
 
@@ -342,7 +380,7 @@ class DeepSeekAI(AIProvider):
                         f"响应无内容（finish_reason={ch.get('finish_reason')}）: {str(data)[:200]}")
                 usage = data.get("usage")
                 if usage is not None and self.guard:
-                    cache_hit = int(usage.get("prompt_cache_hit_tokens", 0) or 0)
+                    cache_hit = cache_hit_tokens(usage)
                     self.guard.record_usage(
                         context,
                         int(usage.get("prompt_tokens", 0) or 0),
@@ -530,7 +568,7 @@ class ChatCompleter:
             if text:
                 yield {"type": "delta", "text": text}
         if usage is not None and self.guard:
-            cache_hit = int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
+            cache_hit = cache_hit_tokens(usage)
             self.guard.record_usage(
                 context,
                 int(getattr(usage, "prompt_tokens", 0) or 0),
@@ -558,7 +596,7 @@ class ChatCompleter:
         text = (resp.choices[0].message.content or "").strip()
         usage = getattr(resp, "usage", None)
         if usage is not None and self.guard:
-            cache_hit = int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
+            cache_hit = cache_hit_tokens(usage)
             self.guard.record_usage(
                 context,
                 int(getattr(usage, "prompt_tokens", 0) or 0),
@@ -599,7 +637,7 @@ class ChatCompleter:
         content = (msg.content or "").strip() or None
         usage = getattr(resp, "usage", None)
         if usage is not None and self.guard:
-            cache_hit = int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
+            cache_hit = cache_hit_tokens(usage)
             self.guard.record_usage(
                 context,
                 int(getattr(usage, "prompt_tokens", 0) or 0),
