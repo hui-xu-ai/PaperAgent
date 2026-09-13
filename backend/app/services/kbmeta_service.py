@@ -141,6 +141,17 @@ class KbMetaService:
             pass
         return kbapi.translate_paper(doc_json)
 
+    def conversation_compile(self, key: str, levels: tuple[str, ...] = ("L1",),
+                             translate: bool = True) -> dict:
+        """**对话式一次流转**（非 DeepSeek 官方）：编译（L1 或 L1+L2）+ 翻译 同一条 messages。
+
+        2026-09-13 用户决策；不可用时抛 `paperkb.convo.ConvoFallback`，调用方回退既有单发路径。
+        """
+        self._ensure()
+        from paperkb.convo import conversation_compile as _convo
+
+        return _convo(key, levels=levels, translate=translate)
+
     # ---------------------------------------------------------- 文献阅读日记
     # 数据聚合 + 用户笔记。与 paperkb.api 解耦：直接构造 KBStore(ROOTS)，
     # 不依赖 init_kb 后的 _store 单例（避免与 api.py 并行改动冲突）。

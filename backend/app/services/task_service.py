@@ -290,6 +290,52 @@ class TaskManager:
         except Exception as e:  # noqa: BLE001 - 清理失败不阻塞流水线
             logger.warning("清理上传暂存失败: %s", e)
 
+    def _try_conversation_flow(self, paper: dict, doc_json: str) -> bool:
+        """非 DeepSeek 官方：用**对话式一次流转**替代"单发编译 + 单发翻译"。
+
+        判定链（任一不满足 → 返回 False，走既有 `combined_translate`）：
+          1. env `PAPERAGENT_CONVO_FLOW` 未关；
+          2. 当前激活供应商 id ≠ `deepseek`（DeepSeek 官方前缀缓存跨请求有效，保持原方案）；
+          3. 该篇尚未编译出 `_note.md`（已编译过 → 翻译阶段无需再编译）；
+          4. paperkb 适配器支持 `chat_messages`；调用成功且译文覆盖达标。
+        成功时把 L1(+L2) 的编译任务标记为 done（**避免后台 worker 再单发编译一次**）。
+        """
+        import os
+
+        if (os.getenv("PAPERAGENT_CONVO_FLOW") or "1").strip().lower() in (
+                "0", "false", "no", "off"):
+            return False
+        try:
+            from .container import get_settings_service, get_kbmeta
+
+            provider = get_settings_service().get_active_provider(masked=False) or {}
+            if str(provider.get("id") or "") == "deepseek":
+                return False
+            key = paper.get("doi") or ""
+            if not key:
+                return False
+            kb = get_kbmeta()
+            _c = kb._need_compiler()           # noqa: SLF001 - 复用编译器的键归一化与产物路径
+            if _c._note_path(key).exists():    # noqa: SLF001
+                return False                   # 已编译过 → 交给既有翻译路径
+            vlevel = str(((kb.value_score(key) or {}).get("level")) or "L1")
+            levels = ("L1", "L2") if vlevel in ("L2", "L3") else ("L1",)
+            logger.info("对话式一次流转（任务流水线）: key=%s levels=%s provider=%s",
+                        key, levels, provider.get("name"))
+            res = kb.conversation_compile(key, levels=levels, translate=True)
+            logger.info("对话式完成: %s", {k: res.get(k) for k in
+                                          ("levels", "translated", "targets",
+                                           "coverage", "calls")})
+            return True
+        except Exception as e:  # noqa: BLE001 - 任何异常都回退既有路径（用户可见的失败信息由原路径给出）
+            from paperkb.convo import ConvoFallback
+
+            if isinstance(e, ConvoFallback):
+                logger.warning("对话式回退既有翻译路径: %s", e)
+            else:
+                logger.warning("对话式异常（回退既有翻译路径）：%s", e)
+            return False
+
     def _translate_and_export(self, paper_id: int, paper: dict, doc_json: str,
                               parse_src: str, parse_label: str) -> None:
         """翻译+导出段（_run_pipeline 与复核门控续跑共用；翻译输入=复核后最终 document）。"""
@@ -316,7 +362,11 @@ class TaskManager:
                     tpl = get_settings_service().get_md_template()
                 except Exception:  # noqa: BLE001
                     tpl = ""
-            self.engine.combined_translate(doc_json, template=tpl or None)
+            # 2026-09-13（用户决策）：**非 DeepSeek 官方**走"对话式一次流转"——
+            # 编译（L1 或 L1+L2 写在同一条 user）+ 翻译放在同一条对话里，请求数 3~4 → 2。
+            # 失败/覆盖不足 → 回退既有单发路径（`combined_translate` 原样保留）。
+            if not self._try_conversation_flow(paper, doc_json):
+                self.engine.combined_translate(doc_json, template=tpl or None)
         except EngineError as e:
             self._fail(paper_id, f"翻译+总结失败: {e}")
             return
