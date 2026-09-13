@@ -155,7 +155,26 @@ class KbMetaService:
         self._ensure()
         from paperkb.convo import conversation_compile as _convo
 
-        return _convo(key, levels=levels, translate=translate, l3=l3, context=context)
+        # 运行时自证 + 适配：不同构建里 paperkb 副本的参数集可能滞后（实测报
+        # `conversation_compile() got an unexpected keyword argument 'l3'` 却查不出调用点）。
+        # 这里按**被调函数的真实签名**过滤关键字，并把双方签名写进日志，永不因此静默回退。
+        import inspect as _inspect
+
+        try:
+            params = set(_inspect.signature(_convo).parameters)
+        except Exception:  # noqa: BLE001 - 取不到签名就按老参数集发
+            params = {"key", "levels", "translate"}
+        kwargs = {"levels": levels, "translate": translate}
+        if "l3" in params:
+            kwargs["l3"] = l3
+        elif l3:
+            logger.warning("paperkb.convo 不支持 l3（签名=%s）→ 本次跳过 L3，"
+                           "其余流程照常", sorted(params))
+        if "context" in params:
+            kwargs["context"] = context
+        logger.warning("[convo] 转发 paperkb.convo.conversation_compile：目标签名=%s 实发=%s",
+                       sorted(params), sorted(kwargs))
+        return _convo(key, **kwargs)
 
     # ---------------------------------------------------------- 文献阅读日记
     # 数据聚合 + 用户笔记。与 paperkb.api 解耦：直接构造 KBStore(ROOTS)，

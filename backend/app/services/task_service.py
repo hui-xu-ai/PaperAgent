@@ -322,6 +322,14 @@ class TaskManager:
             levels = ("L1", "L2") if vlevel in ("L2", "L3") else ("L1",)
             logger.info("对话式一次流转（任务流水线）: key=%s levels=%s l3=%s provider=%s",
                         key, levels, vlevel == "L3", provider.get("name"))
+            import inspect as _inspect
+
+            try:
+                _sig = str(_inspect.signature(kb.conversation_compile))
+            except Exception as e:  # noqa: BLE001
+                _sig = f"(签名不可得: {e})"
+            logger.warning("[convo] 调用 conversation_compile：kb=%s 签名=%s key=%s levels=%s l3=%s",
+                           type(kb).__name__, _sig, key, levels, vlevel == "L3")
             res = kb.conversation_compile(key, levels=levels, translate=True,
                                           l3=(vlevel == "L3"))
             logger.info("对话式完成: %s", {k: res.get(k) for k in

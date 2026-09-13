@@ -56,7 +56,8 @@ def targets_of(doc) -> list[str]:
 
 
 def conversation_compile(key: str, *, levels: tuple[str, ...] = ("L1",),
-                         translate: bool = True, context: str = "compile") -> dict:
+                         translate: bool = True, l3: bool = False,
+                         context: str = "compile") -> dict:
     """对话式：一次流转内完成"笔记（L1/L1+L2）+ 翻译"。
 
     `levels`：按价值分判定的级别（含 "L2" 时把 L2 写进同一条 user；"L3" 单独走既有单发路径）。
