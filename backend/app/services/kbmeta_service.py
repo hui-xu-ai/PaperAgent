@@ -142,15 +142,20 @@ class KbMetaService:
         return kbapi.translate_paper(doc_json)
 
     def conversation_compile(self, key: str, levels: tuple[str, ...] = ("L1",),
-                             translate: bool = True) -> dict:
+                             translate: bool = True, l3: bool = False,
+                             context: str = "compile") -> dict:
         """**对话式一次流转**（非 DeepSeek 官方）：编译（L1 或 L1+L2）+ 翻译 同一条 messages。
 
-        2026-09-13 用户决策；不可用时抛 `paperkb.convo.ConvoFallback`，调用方回退既有单发路径。
+        2026-09-13 用户决策；`l3=True` 时在最后**单独追加一轮** L3 深度知识卡请求。
+        不可用时抛 `paperkb.convo.ConvoFallback`，调用方回退既有单发路径。
+        ⚠️ 签名必须与 `paperkb.convo.conversation_compile` 保持一致——包装层漏参会变成
+        `unexpected keyword argument` 而被宽 except 吞掉（2026-09-13 实测踩过一次）；
+        守卫见 `backend/tests/test_convo_wiring.py::test_kbmeta_wrapper_signature_matches_paperkb`。
         """
         self._ensure()
         from paperkb.convo import conversation_compile as _convo
 
-        return _convo(key, levels=levels, translate=translate)
+        return _convo(key, levels=levels, translate=translate, l3=l3, context=context)
 
     # ---------------------------------------------------------- 文献阅读日记
     # 数据聚合 + 用户笔记。与 paperkb.api 解耦：直接构造 KBStore(ROOTS)，

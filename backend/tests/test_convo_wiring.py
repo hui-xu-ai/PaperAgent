@@ -126,5 +126,52 @@ def test_convo_key_prefers_document_doi(monkeypatch, doc_json):
     assert mgr._convo_key({"id": 1}, doc_json) == "10.1/a"
 
 
+def test_kbmeta_wrapper_signature_matches_paperkb():
+    """**包装层签名契约**（2026-09-13 事故：kbmeta 包一层时漏了 `l3` 参数，
+    调用方传 l3 直接 `unexpected keyword argument` → 被宽 except 吞成静默回退）。
+
+    规则：`KbMetaService.conversation_compile` 的关键字参数必须**覆盖** paperkb 侧同名函数的
+    关键字参数（名字与默认值一致），且能逐参透传。
+    """
+    import inspect
+
+    from app.services.kbmeta_service import KbMetaService
+    from paperkb import convo as _convo
+
+    p_params = {n: p for n, p in
+                inspect.signature(_convo.conversation_compile).parameters.items()
+                if n != "self" and p.kind is inspect.Parameter.KEYWORD_ONLY
+                or p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    w_params = inspect.signature(KbMetaService.conversation_compile).parameters
+    missing = [n for n in p_params if n not in ("key",) and n not in w_params]
+    assert not missing, f"包装层漏参：{missing}"
+    for name in p_params:
+        if name in w_params and p_params[name].default is not inspect.Parameter.empty:
+            assert w_params[name].default == p_params[name].default, f"{name} 默认值不一致"
+
+
+def test_kbmeta_wrapper_forwards_l3(monkeypatch):
+    """包一层必须把 l3 透传到 paperkb（否则 L3 永远不触发）。"""
+    from app.services.kbmeta_service import KbMetaService
+
+    seen: dict = {}
+
+    def _fake_convo(key, levels=("L1",), translate=True, l3=False, context="compile"):
+        seen.update({"key": key, "levels": levels, "translate": translate, "l3": l3,
+                     "context": context})
+        return {"ok": True}
+
+    import paperkb.convo as _c
+
+    monkeypatch.setattr(_c, "conversation_compile", _fake_convo, raising=True)
+    svc = KbMetaService.__new__(KbMetaService)
+    svc._ready = True                                   # 跳过 _ensure 的真实初始化
+    monkeypatch.setattr(KbMetaService, "_ensure", lambda self: None, raising=True)
+    out = svc.conversation_compile("10.1/a", levels=("L1", "L2"), translate=True, l3=True)
+    assert out == {"ok": True}
+    assert seen == {"key": "10.1/a", "levels": ("L1", "L2"), "translate": True,
+                    "l3": True, "context": "compile"}
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
