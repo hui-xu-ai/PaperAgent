@@ -318,6 +318,13 @@ class TaskManager:
             _c = kb._need_compiler()           # noqa: SLF001 - 复用编译器的键归一化与产物路径
             if _c._note_path(key).exists():    # noqa: SLF001
                 return False                   # 已编译过 → 交给既有翻译路径
+            # 关键顺序：对话式直接用 paperkb 的取数口径（**kb 副本优先**），而此刻 document.json
+            # 还在 library（编译时才 `_ensure_source` 同步）⇒ 先显式纳入 kb，否则报
+            # "kb 中无 document.json"（实测踩到）。
+            try:
+                kb.sync_source_to_kb(key, force=False)
+            except Exception as e:  # noqa: BLE001 - 纳入失败 → 让对话式自己报错并回退
+                logger.warning("对话式前纳入 kb 失败（继续尝试）：%s", e)
             vlevel = str(((kb.value_score(key) or {}).get("level")) or "L1")
             levels = ("L1", "L2") if vlevel in ("L2", "L3") else ("L1",)
             logger.info("对话式一次流转（任务流水线）: key=%s levels=%s l3=%s provider=%s",

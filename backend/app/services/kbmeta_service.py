@@ -228,9 +228,17 @@ class _KBLLMAdapter:
         """对话式（编译+翻译共用一条 messages）——非 DeepSeek 官方供应商的优化路径用。
 
         TokenGuard 分组与 `complete` 同源（translate 单列，其余归 engine），避免第二套判据。
+        防御：若 base 没有该通道（旧构建/其它适配器），退回"拼成单条 prompt 再 complete"，
+        保证对话式路径**至少能跑**而不是整篇回退（实测：exe 里 `DeepSeekAI` 缺该方法）。
         """
         mapped = {"translate": "translate", "ask": "ask"}.get(context, "engine")
-        return self._base.chat_messages(messages, context=mapped)
+        fn = getattr(self._base, "chat_messages", None)
+        if callable(fn):
+            return fn(messages, context=mapped)
+        logger.warning("base 无 chat_messages 通道（%s）→ 退回单条 prompt 方式",
+                       type(self._base).__name__)
+        prompt = "\n\n".join(str(m.get("content") or "") for m in messages)
+        return self._base.complete(prompt, context=mapped, effort_context=context)
 
 
 def get_kbmeta() -> KbMetaService:
