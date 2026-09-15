@@ -110,8 +110,13 @@ def test_list_templates():
     assert "recognized" in names
 
 
-def test_summary_fields_rendered_as_separate_blocks():
-    """v1.4.0：AI 总结六字段各自独立成段（行间空引用行），不再整段糊在一起"""
+def test_ai_summary_block_removed_from_variants():
+    """2026-09-16（用户指示）：`> [!summary] AI 阅读总结` 整块**删除**——这是遗留功能。
+
+    理由（用户原话）：总结现在全汇总到**编译**里（L1 的六维笔记），翻译/变体渲染里不可能出现
+    总结结果，所以这个 callout（含"由 AI 总结阶段（M5）填充"占位）都是无信息量的遗留。
+    本测试锁定：**即使 `doc.ai_summary` 非空，变体渲染也不得再输出该 callout**。
+    """
     from paperparse.middleware.schema import ArticleDocument, ArticleMetadata, Paragraph
     doc = ArticleDocument(
         metadata=ArticleMetadata(title="T", abstract="Abs", extraction_time="x"),
@@ -121,13 +126,11 @@ def test_summary_fields_rendered_as_separate_blocks():
                     "研究结果": "结果内容", "结论": "结论内容",
                     "创新点": "创新内容", "局限": "局限内容"})
     md = render(doc)
-    # 每个字段独立 `> **键**: 值` 行，且字段之间有空的引用行 `>`（分段）
-    assert "> **研究背景**: 背景内容" in md
-    assert "> **研究方法**: 方法内容" in md
-    idx_bg = md.index("> **研究背景**: 背景内容")
-    idx_m = md.index("> **研究方法**: 方法内容")
-    between = md[idx_bg:idx_m]
-    assert "\n>\n" in between or between.count("\n") >= 2   # 字段间有分隔
+    assert "> [!summary]" not in md, "总结 callout 必须已删除（总结归编译）"
+    assert "AI 阅读总结" not in md
+    assert "由 AI 总结阶段" not in md
+    # 文献信息 callout 仍必须在
+    assert "> [!info] 文献信息" in md
 
 
 def test_abstract_section_inserted():

@@ -19,11 +19,6 @@ created: {{ doc.metadata.extraction_time }}
 {% if doc.metadata.article_type %}> - **类型**: {{ doc.metadata.article_type }}
 {% endif %}> - **期刊**: {{ doc.metadata.journal or "—" }} | **年份**: {{ doc.metadata.year if doc.metadata.year else "—" }} | **DOI**: {{ doc.metadata.doi or "—" }}
 {% endif %}
-{% if doc.ai_summary and doc.ai_summary|length > 0 %}
-> [!summary] AI 阅读总结
-{% for sec, txt in doc.ai_summary.items() if txt %}> **{{ sec }}**: {{ txt }}
-{% endfor %}
-{% endif %}
 {% for item in items %}
 {%- if item.type == "heading" %}
 
