@@ -36,7 +36,9 @@ def test_e2e_real_sample(tmp_work):
     assert md.startswith("---")                       # frontmatter
     assert "tags:" in md                              # Obsidian 全局搜索
     assert "> [!info]" in md                          # 文献信息 callout
-    assert "> [!summary]" in md                       # AI 总结占位
+    # 2026-09-16（用户指示）：删除 `> [!summary] AI 阅读总结 … 由 AI 总结阶段（M5）填充` 占位块
+    # ——模板仅在 doc.ai_summary 非空时才输出该 callout ⇒ 此处断言占位文本不再出现。
+    assert "由 AI 总结阶段（M5）填充" not in md, "无信息量的总结占位块必须已删除"
     assert "## References" in md                      # 参考文献
     assert "![](images/F" in md                       # 图片嵌入
     assert "<details>" not in md                      # 未翻译时无折叠（M5 才有）

@@ -361,16 +361,14 @@ class EngineService:
         return folder
 
     @staticmethod
-    def _write_kb_variants(doc, kb_dir: Path) -> dict:
-        """渲染 zh.md / en_zh.md 写入 **library 资源目录**（P0-B 2026-09-12 归位）。
+    def _write_kb_variants(doc, kb_dir: Path, note_header: str = "") -> dict:
+        """渲染 zh.md / en_zh.md 写入目标目录。
 
-        用户模型（REWORK-20260911-file-ui §3.5）：**翻译是文献的翻译 → 属 library**；
-        `knowledge_base/` 只放知识库内容（编译产物/笔记/QA 卡片）。旧实现直写 kb，
-        与"未编译不算知识库"冲突、且同一份译文两处各一份 → stale（实测 cej 的 kb
-        副本比 library 少 87 段译文）。
-
-        kb 侧读取有单源回退（`kb_service.read_file`/`tree` 会回 library 取，
-        并按 mtime 择新），所以旧数据无需迁移、也不会读到旧副本。
+        2026-09-16（用户指示）：
+          · 头部 `> [!info] 文献信息` **必须与编译 L1 开头一致** ⇒ 由 `note_header` 注入
+            （内容来自 `paperkb.compile.render_info_header(meta)`，与 `_render_note` 同一份元数据）；
+          · 删除 `> [!summary] AI 阅读总结 … 由 AI 总结阶段（M5）填充` 这个无信息量占位块
+            （模板层已改：仅当 `doc.ai_summary` 非空时才输出该 callout）。
 
         zh      ← render_variant("zh")       纯中文，无对照
         en_zh   ← render_variant("translated")  英上中下双语对照
@@ -379,8 +377,8 @@ class EngineService:
         from paperparse.core.markdown_render import render_variant
 
         files = {
-            "zh.md": render_variant(doc, "zh"),
-            "en_zh.md": render_variant(doc, "translated"),
+            "zh.md": render_variant(doc, "zh", note_header=note_header),
+            "en_zh.md": render_variant(doc, "translated", note_header=note_header),
         }
         kb_dir.mkdir(parents=True, exist_ok=True)
         paths: dict[str, str] = {}
@@ -416,10 +414,29 @@ class EngineService:
         # 依据：kb 是唯一成品区、阅读器读取已改为"定版优先"（`kb_service.read_file`），
         # 只写 library 会让新译文在 kb 里缺位、读侧只能回退中转站（审计 §C5/C12 的残留）。
         # library 那份暂留：兼容"变体真相源在 library"的旧数据与外部引用，验证无异常后即可撤。
-        paths = self._write_kb_variants(doc, paper_dir)
+        # 头部与 L1 同源：用 `papers_meta` 渲染（取不到 meta 则留空 → 模板回退旧行为）
+        note_header = ""
+        try:
+            from paperkb.compile import render_info_header
+
+            meta = self._get_kbmeta().get_paper_meta(doi_dir) or None
+            if meta is None:
+                _m = doc.metadata
+                meta = type("_M", (), {
+                    "authors": list(getattr(_m, "authors", []) or []),
+                    "corresponding": [], "affiliations": [],
+                    "keywords": list(getattr(_m, "keywords", []) or []),
+                    "journal": getattr(_m, "journal", "") or "",
+                    "year": getattr(_m, "year", "") or "",
+                    "doi": getattr(_m, "doi", "") or "",
+                    "times_cited": 0})()
+            note_header = render_info_header(meta)
+        except Exception as e:  # noqa: BLE001 - 头部渲染失败不阻塞变体产出（模板会回退）
+            logger.warning("变体头部（与 L1 同源）渲染失败，模板回退旧格式: %s", e)
+        paths = self._write_kb_variants(doc, paper_dir, note_header=note_header)
         try:
             kb_dir = self._kb_dir_for_library(doi_dir)
-            kb_paths = self._write_kb_variants(doc, kb_dir)
+            kb_paths = self._write_kb_variants(doc, kb_dir, note_header=note_header)
             for name, fp in kb_paths.items():
                 paths[f"kb/{name}"] = fp
             logger.info("变体双写完成：library=%s kb=%s", sorted(paths)[:2], sorted(kb_paths))

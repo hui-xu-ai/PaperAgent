@@ -180,17 +180,18 @@ def _strip_ref_num(raw: str) -> str:
 
 
 def render(doc: ArticleDocument, template: str = "obsidian_bilingual",
-           exclude_sections: set[str] | None = None) -> str:
+           exclude_sections: set[str] | None = None,
+           note_header: str = "") -> str:
     """[全局] 渲染 document.json → Obsidian 兼容 Markdown
 
     参数:
         doc: ArticleDocument（单一事实源）
         template: 模板名（skill/templates/<name>.md.j2）
         exclude_sections: 需排除的章节名集合（小写；recognized 变体用）
-    返回:
-        Markdown 文本
-    报错:
-        PaperError PAPER-0040（模板缺失/渲染失败）
+        note_header: `> [!info] 文献信息` 的正文行（**由 backend 用 L1 同一套元数据渲染后传入**）。
+            2026-09-16 用户要求：变体头部必须与编译 L1 开头一致——模板自己只能拿到 `doc.metadata`
+            （解析产物，**没有期刊/被引**，所以曾恒显示 `期刊: —`），故改为由调用方注入权威文本；
+            为空时模板回退旧的 `doc.metadata` 渲染（保持旧行为可跑）。
     """
     env = Environment(
         loader=FileSystemLoader(str(templates_dir())),
@@ -205,13 +206,15 @@ def render(doc: ArticleDocument, template: str = "obsidian_bilingual",
         tags += [_tag(k) for k in doc.metadata.keywords]
         tags_json = json.dumps(tags, ensure_ascii=False)
         items = _filter_excluded(_build_items(doc), exclude_sections or set())
-        return tpl.render(doc=doc, items=items, tags=tags, tags_json=tags_json)
+        return tpl.render(doc=doc, items=items, tags=tags, tags_json=tags_json,
+                          note_header=note_header)
     except Exception as exc:
         raise PaperError("PAPER-0040", stage="S7",
                          detail={"template": template, "exc": str(exc)[:300]}) from exc
 
 
-def render_variant(doc: ArticleDocument, variant: str = "recognized") -> str:
+def render_variant(doc: ArticleDocument, variant: str = "recognized",
+                   note_header: str = "") -> str:
     """[全局] 变体渲染（M5 输出结构）：
       recognized：识别校准版（英文正文+图，排除参考文献/致谢/COI 等章节）
       translated ：中英对照版（英文上中文下，不折叠）
@@ -219,13 +222,14 @@ def render_variant(doc: ArticleDocument, variant: str = "recognized") -> str:
       summary    ：AI 阅读总结版（仅 frontmatter + 总结 callout + 标题）
     """
     if variant == "recognized":
-        return render(doc, template="recognized", exclude_sections=EXCLUDE_SECTIONS)
+        return render(doc, template="recognized", exclude_sections=EXCLUDE_SECTIONS,
+                      note_header=note_header)
     if variant == "translated":
-        return render(doc, template="obsidian_bilingual")
+        return render(doc, template="obsidian_bilingual", note_header=note_header)
     if variant == "zh":
-        return render(doc, template="zh_only")     # 纯中文版（保留标题结构，移除英文对照）
+        return render(doc, template="zh_only", note_header=note_header)     # 纯中文版（保留标题结构，移除英文对照）
     if variant == "summary":
-        return render(doc, template="summary_variant")
+        return render(doc, template="summary_variant", note_header=note_header)
     raise PaperError("PAPER-0501", stage="S7",
                      detail={"reason": "未知变体",
                              "available": ["recognized", "translated", "zh", "summary"]})
