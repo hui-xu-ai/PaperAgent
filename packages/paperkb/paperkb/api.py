@@ -96,6 +96,40 @@ def shared_doc_json(key: str) -> str:
     return str(hit) if hit is not None else ""
 
 
+def canonical_doc_json(key: str, *, prefer_kb: bool = True) -> str:
+    """[全局] **定版（唯一权威文件）解析器**——编译/翻译/问答/复核**必须**都走它。
+
+    2026-09-16 用户决策（方案 A）：`knowledge_base/` 是**唯一成品区**（定版），
+    `library/` 只是中转仓库；因此：
+      · 定版 = kb 的那份 `document.json`（若已纳入 kb）；
+      · 尚未纳入 kb（解析完但未定版）→ 返回 **library** 那份（此时它就是要被纳入的源）；
+    两类调用者（读上下文 + 写回产物）**用同一个返回值**，从而保证：
+      ① 编译与翻译读到**同一份文件**（来源统一、共享前缀逐字节一致）；
+      ② 译文/复核修改写回**同一份**（不再出现"复核改 library、编译读 kb"的分叉）。
+
+    返回 "" 表示两侧都没有 document.json。
+    """
+    return shared_doc_json(key)
+
+
+def translation_target(doc_json: str | Path) -> str:
+    """翻译/复核的**写回目标 = 定版文件**（2026-09-16）。
+
+    传入的 `doc_json` 若是 kb 或 library 下的 `<...>/<资源>/document.json`，取其目录名作 key
+    走 `canonical_doc_json`；定位不到就**原样返回传入路径**（旧行为兜底，绝不因定位失败而丢写入）。
+    """
+    p = Path(doc_json)
+    key = p.parent.name
+    if not key:
+        return str(p)
+    try:
+        hit = canonical_doc_json(key)
+    except Exception as e:  # noqa: BLE001 - kb 未初始化等 → 退回传入路径
+        logger.debug("定版写入目标定位失败（退回传入路径）: %s", e)
+        return str(p)
+    return hit or str(p)
+
+
 def _dir_doi(store: KBStore, name: str) -> str:
     """目录名 → 真实 DOI（T6）：DOI 目录直接反推；md5 目录经 doi_md5_map 反查
     （map 命中返回 DOI；纯 md5 文献无 DOI 返回 ""）。"""
@@ -563,15 +597,19 @@ def translate_paper(doc_json: str | Path) -> dict:
     from .llm import get_llm
     from .translate import run_translate
 
+    # 2026-09-16（方案 A）：**读写同一份定版**。此前"上下文取 kb、译文写回传入的 library"
+    # ⇒ 复核改 library、编译读 kb，两侧分叉（审计 C2/C3）。现在统一：定版 = kb（未纳入时=library），
+    # 上下文与写回都指向它。
+    target = translation_target(doc_json)
     ctx_path = ""
     try:
-        key = Path(doc_json).parent.name          # RID / DOI 目录名都可作为键
+        key = Path(target).parent.name
         if key:
-            ctx_path = shared_doc_json(key)        # kb 优先 → library 兜底
+            ctx_path = canonical_doc_json(key)
     except Exception as e:  # noqa: BLE001 - kb 未初始化/定位失败 → 退回"同一份"（旧行为）
         logger.warning("翻译上下文同源定位失败（退回传入路径）: %s", e)
         ctx_path = ""
-    return run_translate(doc_json, get_llm(), context_path=(ctx_path or None))
+    return run_translate(target, get_llm(), context_path=(ctx_path or target))
 
 
 # ---------------------------------------------------------------- 检索/问答（M4）

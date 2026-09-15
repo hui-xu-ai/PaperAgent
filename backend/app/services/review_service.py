@@ -436,12 +436,23 @@ class ReviewService:
                     changed += 1
                     detail.append(f"段落 {para.para_id} 已{'替换为 PaddleOCR' if want_po else '还原为 MinerU'}")
             if changed:
-                save_document(doc, doc_json)
+                # 2026-09-16（方案 A）：复核改动写回**定版（kb）**——与编译/翻译同一份文件。
+                # 旧行为只写 library，而编译读 kb ⇒ 复核结果对编译不可见（审计 C2）。
+                # 定位失败时原样写回传入路径（旧行为兜底，绝不丢用户改动）。
+                try:
+                    from paperkb.api import translation_target as _target
+
+                    _t = _target(doc_json)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("复核写回目标定位失败（写回原路径）: %s", e)
+                    _t = str(doc_json)
+                save_document(doc, _t)
                 try:
                     from .container import get_engine
-                    get_engine()._post_parse_clean(doc_json)   # 重渲染 en.md
+                    # 重渲染 en.md：定版与 library 两侧都刷一次（library 仅作中转缓存的视图）
+                    get_engine()._post_parse_clean(_t)   # 重渲染 en.md
                 except Exception:  # noqa: BLE001 - 重渲染失败不阻塞
-                    logger.warning("复核落地后重渲染失败: %s", doc_json)
+                    logger.warning("复核落地后重渲染失败: %s", _t)
 
         # 学习闭环：domain_ai 项（C 层 AI 共识扫描）确认 B → 提升为 learned 词典
         # 条目（下次解析自动应用；校验：元素表解析成功 + 带电荷）
