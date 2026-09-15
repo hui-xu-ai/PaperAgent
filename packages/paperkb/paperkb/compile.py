@@ -217,13 +217,25 @@ class Compiler:
         llm = get_llm()
         prompt = _prompt_l1_l2(meta_json, doc, journal_meta)
         raw = llm.complete(prompt, context="compile")
-        data = _parse_json(raw)
+        # 两段式解析：L1 段 → JSON；分隔符之后 → L2 Markdown 纯文本。
+        # ⚠️ 关键：**L1 解析失败也不能丢 L1**——若整段 JSON 不合法，退回 L1 单发（与旧行为等价），
+        # 而不是抛错把这一轮编译判死（2026-09-15 实测：模型塞长 Markdown 进 JSON 时整条失败）。
+        l1_raw, l2_md = _split_l1_l2(raw)
+        try:
+            data = _parse_json(l1_raw)
+        except ValueError:
+            logger.warning("L1+L2 合并输出解析失败 → 退回 L1 单发（L2 留给队列项）: %s", doi)
+            raw = llm.complete(_prompt_l1(meta_json, doc, journal_meta), context="compile")
+            data = _parse_json(raw)
+            l2_md = ""
+        if isinstance(data, dict):
+            l2_md = l2_md or str(data.get(_L2_MD_KEY) or "").strip()
         if not isinstance(data, dict) or not data.get("one_liner"):
             raise CompileError("L1 编译输出无效（JSON 缺失 one_liner）")
         note.write_text(_render_note(meta, data, journal_meta), encoding="utf-8")
         self._save_ctx(doi, "L1", _ctx_from_l1(data))
         self._mark_done(doi, "L1")
-        l2_md = str(data.get(_L2_MD_KEY) or data.get("l2_md") or "").strip()
+        l2_md = (l2_md or "").strip()
         if l2_md:
             details.write_text(l2_md + "\n", encoding="utf-8")
             self._save_ctx(doi, "L2", l2_md[: _CTX_LIMIT])
@@ -483,8 +495,23 @@ class Compiler:
 
 # ---------------------------------------------------------------- 提示词
 
-# L1 合并请求里承载 L2 详细笔记的 JSON 键（单独常量，便于解析与测试）
+# L1 合并请求里承载 L2 详细笔记的 JSON 键（兼容旧形状，便于解析与测试）
 _L2_MD_KEY = "l2_md"
+# 两段式输出的分隔符（**独立一行**）：之前用"把 Markdown 塞进 JSON 字符串"的形状，
+# 实测模型给不全导致整个 JSON 解析失败、连 L1 都丢（2026-09-15 真实链路）。
+_L2_SEP = "<<<L2_MD>>>"
+
+
+def _split_l1_l2(raw: str) -> tuple[str, str]:
+    """把"两段式"输出拆成 (L1 段, L2 Markdown)。
+
+    容忍：缺分隔符（则 L2 为空、由后续 L2 队列项单独编译）、围栏、分隔符前后多余空行。
+    """
+    text = raw or ""
+    idx = text.find(_L2_SEP)
+    if idx < 0:
+        return text, ""
+    return text[:idx], text[idx + len(_L2_SEP):].strip()
 
 
 def _prompt_l1_l2(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
@@ -503,17 +530,15 @@ def _prompt_l1_l2(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
     l1_task = split_task(_prompt_l1(meta, doc, journal_meta))[1]
     l2_task = split_task(_prompt_l2(meta, doc, "(同一次调用内，请以上面 ① 的输出为准)"))[1]
     task = (
-        "## 本次任务：论文知识编译（严格按顺序，只在最后输出一个 JSON）\n"
+        "## 本次任务：论文知识编译（严格按顺序，两部分输出）\n"
         "先完成 ①，再**基于 ① 的输出**完成 ②（不要重复全景，只补充章节级细节）。\n\n"
         "### ① L1 核心笔记\n" + l1_task + "\n\n"
         "### ② L2 详细笔记（Markdown）\n" + l2_task + "\n\n"
-        "## 输出要求（只输出一个 JSON 对象，不要解释、不要 Markdown 代码围栏）\n"
-        "先输出 ① 的全部字段（含 one_liner / concepts 等），再加一个键 "
-        f"\"{_L2_MD_KEY}\"，值是 ② 的 Markdown 全文（JSON 字符串转义，\\n 换行）：\n"
-        "{\n  \"one_liner\": \"…\",\n  …① 的其余字段…,\n"
-        f"  \"{_L2_MD_KEY}\": \"# 详细笔记：<标题>\\n\\n## 章节要点\\n### <章节名>\\n- 要点（[P001]）…\"\n"
-        "}\n"
-        f"`{_L2_MD_KEY}` 必须存在且非空。"
+        "## 输出格式（**两段式，务必遵守**）\n"
+        "第一段：① 的 JSON 对象（含 one_liner / concepts 等全部字段），不要代码围栏。\n"
+        f"然后单独一行输出分隔符：{_L2_SEP}\n"
+        "分隔符之后：② 的 Markdown 正文，**直接写 Markdown，不要放进 JSON、不要转义换行**。\n"
+        f"（分隔符必须是独立一行、内容就是 {_L2_SEP}；Markdown 正文直到结尾都算 ②。）"
     )
     return with_task(shared_ctx(doc), task)
 

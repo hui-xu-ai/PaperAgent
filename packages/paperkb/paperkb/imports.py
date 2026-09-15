@@ -273,8 +273,23 @@ def sync_source_to_kb(doi: str, roots: Roots, force: bool = False, store=None) -
     verify = None
     if (dst / "document.json").exists() and (dst / "en.md").exists():
         verify = verify_kb_doc(doi, roots, base="kb")
+    # G1 闸门（2026-09-16 方案 A）：**纳入 kb 后必须"原文层四件齐全"**，否则大声告警。
+    # 背景：kb 缺 `source.pdf` 曾是真实用户报障（审计 C2/C8；根因是"谁先建 kb 谁定局"的执行时序），
+    # 没有闸门时只能靠肉眼发现。这里只**告警不抛错**：source.pdf 在部分老数据里确实合法缺失
+    # （纯 md 导入、用户删除），抛错会把整条流水线打死；完整性进返回值，由上层日志/事件暴露。
+    missing: list[str] = []
+    try:
+        st = source_status(doi, roots, store=store)
+        kb_files = (st or {}).get("kb") or {}
+        missing = [k for k in ("document.json", "en.md", "source.pdf") if not kb_files.get(k)]
+    except Exception as e:  # noqa: BLE001 - 闸门自身失败不影响纳入结果
+        logger.warning("纳入 kb 完整性检查失败（忽略）: %s", e)
+    if missing:
+        logger.warning("⚠ 纳入 kb 后仍缺文件 %s（key=%s, kb=%s）——检查解析是否产出该文件、"
+                       "以及 _ensure_library_source_pdf 是否在纳入之前执行", missing, key, dst)
     return {"doi": doi, "copied": copied, "skipped": skipped,
-            "refreshed": refreshed, "kb_dir": str(dst), "verify": verify}
+            "refreshed": refreshed, "kb_dir": str(dst), "verify": verify,
+            "missing": missing}
 
 
 def resync_source(doi: str, roots: Roots) -> dict:
