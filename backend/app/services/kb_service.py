@@ -157,19 +157,20 @@ class KnowledgeBaseService:
     def read_file(self, rel_path: str) -> dict:
         """安全读取知识库内文件（防目录穿越）。
 
-        P0-B（2026-09-12）：**变体（zh.md/en_zh.md）真相源在 library**——
-        kb 缺该文件时回退读 library（两者都有时取**较新**的一份，避免读到
-        旧冻结副本：实测 cej 的 kb 副本曾比 library 少 87 段译文）。
+        P0-B（2026-09-12）：变体（zh.md/en_zh.md）曾"真相源在 library"。
+        2026-09-16（方案 A，用户决策）：**kb 是唯一定版**，因此改为——
+          · kb 有该文件 ⇒ **直接读 kb**（不再与 library 比 mtime：mtime 择新会让"读到的内容"
+            取决于文件时间戳，与编译/翻译的读写基准不一致；审计 C12）；
+          · kb 缺该文件 ⇒ 回退 library（兼容迁移前的旧文献：它们的中文变体只存在于 library）。
         """
         root = self.root().resolve()
         target = (root / rel_path).resolve()
         if not target.is_relative_to(root):
             raise FileNotFoundError(f"文件不存在: {rel_path}")
         picked = target
-        if target.name in _KB_VARIANTS:
+        if target.name in _KB_VARIANTS and not target.is_file():
             alt = self._variant_in_library(Path(rel_path).parts[0], target.name)
-            if alt is not None and (not target.is_file()
-                                    or alt.stat().st_mtime > target.stat().st_mtime):
+            if alt is not None:
                 picked = alt
         if not picked.is_file():
             raise FileNotFoundError(f"文件不存在: {rel_path}")

@@ -112,8 +112,12 @@ def test_link_originals_syncs_source_layer(tmp_path, store, monkeypatch):
 # ---------------------------------------------------------------- 变体回退（P0-B）
 
 def test_variant_reads_fall_back_to_library(tmp_path, store, monkeypatch):
-    """P0-B（2026-09-12）：变体（zh.md/en_zh.md）真相源在 library——
-    kb 里没有该文件时 read_file/tree 必须回退读 library，否则阅读器译文 tab 会空。"""
+    """变体（zh.md/en_zh.md）读取语义（2026-09-16 更新为方案 A）。
+
+    · kb **缺**该文件 → 回退读 library（迁移前旧文献的中文变体只存在于 library，阅读器不能空）；
+    · kb **有**该文件 → **直接读 kb**（kb 是唯一定版；旧行为"两者都有时按 mtime 取较新"会让
+      读到的内容取决于文件时间戳，与编译/翻译的读写基准不一致 —— 审计 C12，已改）。
+    """
     kb, kb_root = _make_kb(tmp_path, store, monkeypatch)
     folder = kb_root / "10.1002_adma.202407106"
     folder.mkdir()
@@ -131,14 +135,14 @@ def test_variant_reads_fall_back_to_library(tmp_path, store, monkeypatch):
     names = {f["name"] for fo in kb.tree()["folders"] for f in fo["files"]}
     assert {"zh.md", "en_zh.md"} <= names, "树视图也要列出 library 侧变体"
 
-    # kb 里有旧副本、library 更新 → 必须读到较新的一份（防旧冻结副本）
+    # kb 里也有该文件 → **kb 优先**（即使 library 那份"更新"也不改判据）
     import os
     import time
 
-    (folder / "zh.md").write_text("旧译本", encoding="utf-8")
+    (folder / "zh.md").write_text("定版译本", encoding="utf-8")
     os.utime(folder / "zh.md", (time.time() - 600, time.time() - 600))
-    (lib / "zh.md").write_text("新译本", encoding="utf-8")
-    assert kb.read_file("10.1002_adma.202407106/zh.md")["content"] == "新译本"
+    (lib / "zh.md").write_text("library 较新但非定版", encoding="utf-8")
+    assert kb.read_file("10.1002_adma.202407106/zh.md")["content"] == "定版译本"
 
 
 # ---------------------------------------------------------------- 文件管理
