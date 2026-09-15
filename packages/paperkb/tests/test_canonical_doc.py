@@ -65,7 +65,43 @@ def test_translation_target_never_loses_write(tmp_path):
     assert kbapi.translation_target(str(ghost)) == str(ghost)
 
 
-# ---------------------------------------------------------------- L1+L2 合并输出的两段式解析
+# ---------------------------------------------------------------- [!info] 文献信息 头部格式
+# 用户 2026-09-16 给定目标格式（逐字锁定，防再漂移）。四行：作者 / 期刊·年份（指标）/ DOI / 被引。
+
+_USER_TARGET = (
+    "> - 作者：Zhenjin Xu, Keqi Deng, Yang Zhang, Bin Zhu, Jianhui Yang, Mingcheng Xue, "
+    "Hang Jin, Gonghan He, Gaofeng Zheng, Jianyi Zheng, * and Dezhi Wu*\n"
+    "> - 期刊/年份： （无指标）\n"
+    "> - DOI：[10.1002/adma.202407106](https://doi.org/10.1002/adma.202407106)\n"
+    "> - 被引：0"
+)
+
+
+def test_info_header_matches_user_given_format_exactly():
+    from paperkb.compile import render_info_header
+
+    meta = {"authors": ["Zhenjin Xu", "Keqi Deng", "Yang Zhang", "Bin Zhu", "Jianhui Yang",
+                        "Mingcheng Xue", "Hang Jin", "Gonghan He", "Gaofeng Zheng",
+                        "Jianyi Zheng", "* and Dezhi Wu*"],
+            "journal": "", "year": "", "doi": "10.1002/adma.202407106", "times_cited": 0}
+    assert render_info_header(meta) == _USER_TARGET
+
+
+def test_info_header_with_values_and_corresponding_star():
+    """有值时四行同样成立；通信作者加 `*`；无自造占位符（不出现 `—` / 多余"通信作者/研究单位"行）。"""
+    from paperkb.compile import render_info_header
+
+    out = render_info_header({"authors": ["A B", "C D"], "corresponding": ["C D"],
+                              "journal": "Advanced Materials", "year": "2024",
+                              "doi": "10.1002/x", "times_cited": 12}, "IF 27.4 / 一区")
+    lines = out.splitlines()
+    assert lines[0] == "> - 作者：A B, C D*"
+    assert lines[1] == "> - 期刊/年份：Advanced Materials 2024（IF 27.4 / 一区）"
+    assert lines[2] == "> - DOI：[10.1002/x](https://doi.org/10.1002/x)"
+    assert lines[3] == "> - 被引：12"
+    assert len(lines) == 4, "只允许四行（不自作主张增删）"
+    assert "—" not in out
+
 # 为什么不用 JSON 承载 L2：2026-09-15 真实链路实测——让模型把长 Markdown 塞进 JSON 字符串时
 # 它给不全 ⇒ 整个 JSON 解析失败 ⇒ **连 L1 都丢**（比旧行为更坏）。改两段式后 L1 独立可解析。
 

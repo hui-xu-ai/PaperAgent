@@ -414,22 +414,23 @@ class EngineService:
         # 依据：kb 是唯一成品区、阅读器读取已改为"定版优先"（`kb_service.read_file`），
         # 只写 library 会让新译文在 kb 里缺位、读侧只能回退中转站（审计 §C5/C12 的残留）。
         # library 那份暂留：兼容"变体真相源在 library"的旧数据与外部引用，验证无异常后即可撤。
-        # 头部与 L1 同源：用 `papers_meta` 渲染（取不到 meta 则留空 → 模板回退旧行为）
+        # 头部与 L1 同源：用 `papers_meta` 渲染（取不到 meta 则用 doc.metadata 兜底）
         note_header = ""
         try:
             from paperkb.compile import render_info_header
 
-            meta = self._get_kbmeta().get_paper_meta(doi_dir) or None
-            if meta is None:
+            meta = None
+            try:
+                meta = self._get_kbmeta().get_paper_meta(doi_dir)
+            except Exception as e:  # noqa: BLE001 - 无 kbmeta（单测/CLI）→ 用 doc.metadata
+                logger.debug("取 papers_meta 失败（用 doc.metadata 兜底）：%s", e)
+            if not isinstance(meta, dict) and meta is None:
                 _m = doc.metadata
-                meta = type("_M", (), {
-                    "authors": list(getattr(_m, "authors", []) or []),
-                    "corresponding": [], "affiliations": [],
-                    "keywords": list(getattr(_m, "keywords", []) or []),
-                    "journal": getattr(_m, "journal", "") or "",
-                    "year": getattr(_m, "year", "") or "",
-                    "doi": getattr(_m, "doi", "") or "",
-                    "times_cited": 0})()
+                meta = {"authors": list(getattr(_m, "authors", []) or []),
+                        "journal": getattr(_m, "journal", "") or "",
+                        "year": getattr(_m, "year", "") or "",
+                        "doi": getattr(_m, "doi", "") or "",
+                        "times_cited": 0}
             note_header = render_info_header(meta)
         except Exception as e:  # noqa: BLE001 - 头部渲染失败不阻塞变体产出（模板会回退）
             logger.warning("变体头部（与 L1 同源）渲染失败，模板回退旧格式: %s", e)

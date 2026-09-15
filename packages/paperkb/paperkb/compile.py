@@ -717,45 +717,42 @@ def _render_note(meta, data: dict, journal_meta: str) -> str:
 
 
 def render_info_header(meta, journal_meta: str = "") -> str:
-    """**`> [!info] 文献信息` 的正文行（唯一来源）**——变体渲染与 L1 笔记共用同一份元数据。
+    """**`> [!info] 文献信息` 的正文行（唯一来源）**——变体渲染与 L1 笔记共用。
 
-    2026-09-16 用户要求：知识库 `zh.md`/`en_zh.md` 开头的文献信息必须与**编译 L1 开头一致**。
-    L1 走 `_render_note`（meta 来自 `papers_meta`，含通信作者/研究单位/关键词/期刊指标）；
-    变体模板此前只拿得到 `doc.metadata`（解析产物，无期刊/被引）⇒ 恒显示 `期刊: —`。
-    这里把 L1 的"基本信息"四行抽成纯函数，双方共用，避免两套格式漂移。
+    2026-09-16 用户给定**目标格式**（逐字照抄，不再自作主张增删行）：
+        - 作者：A, B, * and C*
+        - 期刊/年份：Advanced Materials 2024（IF x.x / 一区）
+        - DOI：[10.1002/adma.202407106](https://doi.org/10.1002/adma.202407106)
+        - 被引：12
 
-    输出示例（每行以 `> ` 开头，供 callout 内直接使用）：
-        > - 作者：A*, B（* = 通信作者）
-        > - 通信作者：A
-        > - 研究单位：某大学
-        > - 关键词：a, b
-        > - 期刊/年份：Nature 2024（IF 5.0）
-        > - DOI：[10.x/y](https://doi.org/10.x/y)
-        > - 被引：12
+    说明：期刊/年份取不到时按用户示例输出 `期刊/年份： （无指标）`（空值 + 无指标），
+    不引入 `—` 之类的自造占位。`meta` 可为 `PaperMeta` 对象或等价 dict。
     """
-    authors = [a for a in (getattr(meta, "authors", None) or []) if a]
-    corr = [c for c in (getattr(meta, "corresponding", None) or []) if c]
+    def _g(key: str, default=""):
+        if isinstance(meta, dict):
+            return meta.get(key, default)
+        return getattr(meta, key, default)
+
+    authors = [a for a in (_g("authors") or []) if a]
+    corr = [c for c in (_g("corresponding") or []) if c]
 
     def _is_corr(a: str) -> bool:
         return any(a == c or (c and (c in a or a in c)) for c in corr)
 
-    lines = ["- 作者：" + (", ".join(a + ("*" if _is_corr(a) else "") for a in authors)
-                           or "(未知)")]
-    if corr:
-        lines.append(f"- 通信作者：{'；'.join(corr)}")
-    affils = [a for a in (getattr(meta, "affiliations", None) or []) if a]
-    if affils:
-        lines.append(f"- 研究单位：{'；'.join(affils)}")
-    keywords = [k for k in (getattr(meta, "keywords", None) or []) if k]
-    if keywords:
-        lines.append(f"- 关键词：{', '.join(keywords)}")
-    journal = getattr(meta, "journal", "") or ""
-    year = getattr(meta, "year", "") or ""
-    lines.append(f"- 期刊/年份：{journal} {year}（{journal_meta or '无指标'}）")
-    doi = getattr(meta, "doi", "") or ""
-    lines.append(f"- DOI：[{doi}](https://doi.org/{doi})")
-    lines.append(f"- 被引：{getattr(meta, 'times_cited', 0)}")
-    return "\n".join("> " + ln for ln in lines)
+    a_line = ", ".join(a + ("*" if _is_corr(a) else "") for a in authors)
+    journal = str(_g("journal") or "").strip()
+    year = str(_g("year") or "").strip()
+    jy = (journal + (" " + year if year else "")).strip()
+    doi = str(_g("doi") or "").strip()
+    cited = _g("times_cited", 0)
+    # 期刊/年份为空时保留一个空格（用户给定格式 `期刊/年份： （无指标）` 逐字一致）
+    jy_part = f"{jy}（{journal_meta or '无指标'}）" if jy else f" （{journal_meta or '无指标'}）"
+    return "\n".join([
+        f"> - 作者：{a_line}",
+        f"> - 期刊/年份：{jy_part}",
+        f"> - DOI：[{doi}](https://doi.org/{doi})",
+        f"> - 被引：{cited}",
+    ])
 
 
 def _render_wiki(meta, data: dict) -> str:
