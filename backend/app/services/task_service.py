@@ -449,25 +449,46 @@ class TaskManager:
         except Exception as e:  # noqa: BLE001 - 补齐失败不影响解析结果
             logger.warning("确保 library 源 PDF 异常（不影响任务）: %s", e)
 
+    @staticmethod
+    def _meta_ready(meta: dict | None) -> bool:
+        """元数据是否"够用"（够用才跳过补全）。
+
+        2026-09-16（用户报障"作者(未知)/被引0/（无指标）"）：旧实现是
+        `if kb.get_paper_meta(doi): return` —— **只要有行就整条跳过**，于是 bib 导入或
+        早期登记过的行永远不会再补 `times_cited/authors/journal`，`_note.md` 就长期显示
+        `(未知)/被引：0/（无指标）`。而 `enrich_paper_meta` 的设计本来就是"**只补空字段**"
+        （bib 权威值不覆盖）⇒ 改为按"关键字段是否齐全"判断，缺项就补。
+        注意：`times_cited == 0` 既可能是"真 0"也可能是"没抓到"（审计 §8 指出二者不可区分），
+        这里按"需要补"处理——重复补全只是多一次公开源查询，不会覆盖已有非零值。
+        """
+        if not meta:
+            return False
+        authors = meta.get("authors") or []
+        journal = str(meta.get("journal") or "").strip()
+        cited = meta.get("times_cited")
+        return bool(authors) and bool(journal) and isinstance(cited, int) and cited > 0
+
     def _ensure_meta_for_doi(self, doi: str, paper_id: int) -> None:
-        """DOI 文献：`papers_meta` 还没有行时，按 DOI 从公开源临时补全元数据。
+        """DOI 文献：`papers_meta` 的**关键字段缺失**时，按 DOI 从公开源补全元数据。
 
         为什么需要（用户提问 2026-09-12）：自动编译层级**严格依赖 `papers_meta`**
         （`value_score_for` 无行即 None → 恒判 L1），而 PDF 直导只走 `doi_md5_map`、
         从不登记元数据 ⇒ 这类文献永远拿不到 L2/L3。补全后价值分可算，自动升级链才生效。
-        已有行（多为 bib 权威数据）则跳过；失败只告警。
+        已有行的**空字段**仍会补（见 `_meta_ready`）；失败只告警，不阻塞解析/编译。
         """
         try:
             from .kbmeta_service import get_kbmeta
 
             kb = get_kbmeta()
-            if kb.get_paper_meta(doi):
+            existing = kb.get_paper_meta(doi)
+            if self._meta_ready(existing):
                 return
             from .doi_meta import enrich_paper_meta
 
             r = enrich_paper_meta(doi, paper_id=paper_id or None)
-            logger.info("DOI 元数据临时补全: doi=%s → ok=%s source=%s filled=%s level=%s",
-                        doi, r.get("ok"), r.get("source"), r.get("filled"), r.get("level"))
+            logger.info("DOI 元数据补全: doi=%s 已有行=%s 判缺=%s → ok=%s source=%s filled=%s level=%s",
+                        doi, bool(existing), not self._meta_ready(existing),
+                        r.get("ok"), r.get("source"), r.get("filled"), r.get("level"))
         except Exception as e:  # noqa: BLE001 - 补全失败不影响解析/编译
             logger.warning("DOI 元数据补全失败（不影响任务）: %s", e)
 
