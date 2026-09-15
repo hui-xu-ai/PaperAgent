@@ -231,6 +231,15 @@ class TaskManager:
             if mode == "parse_compile":
                 self._write_doi_md5_map(doc_json, paper_id)  # 先登记目录↔DOI/md5 映射
                 kb_status = self._assemble_kb(doc_json, paper_id)  # kb 登记 + 自动编译 L1 入队（不翻译）
+                # 2026-09-15（用户报障修复）：编译合并**必须挂在 `_assemble_kb` 之后**——
+                #   · `_assemble_kb` 负责把 library 的「原文层四件」（含 **source.pdf**）纳入 kb，
+                #     并 `ensure_paper_registered`（元数据/被引/价值分的前提）；
+                #   · 之前挂在"翻译段"里，而 `parse_compile` 模式在下面 L250 就 return，
+                #     根本不会进翻译段 ⇒ 该模式下**零翻译**；且编译抢在 `_assemble_kb` 前跑会把
+                #     kb 建好、让 source.pdf 永远补不进去（实测：kb 缺 source.pdf、译文 0 段）。
+                if self._try_conversation_flow(paper, doc_json):
+                    kb_status = dict(kb_status or {})
+                    kb_status["compile"] = "merged_L1L2"
                 done_msg = parse_compile_done_msg(parse_label, kb_status)
             else:
                 kb_status = None
@@ -389,11 +398,9 @@ class TaskManager:
                     tpl = get_settings_service().get_md_template()
                 except Exception:  # noqa: BLE001
                     tpl = ""
-            # 2026-09-13（用户决策）：**非 DeepSeek 官方**走"对话式一次流转"——
-            # 编译（L1 或 L1+L2 写在同一条 user）+ 翻译放在同一条对话里，请求数 3~4 → 2。
-            # 失败/覆盖不足 → 回退既有单发路径（`combined_translate` 原样保留）。
-            if not self._try_conversation_flow(paper, doc_json):
-                self.engine.combined_translate(doc_json, template=tpl or None)
+            # 2026-09-15 更正：编译合并**已移到 `parse_compile` 分支**（`_assemble_kb` 之后）——
+            # 放在这里会劫持 full 模式的翻译段，且 parse_compile 模式根本走不到这里。
+            self.engine.combined_translate(doc_json, template=tpl or None)
         except EngineError as e:
             self._fail(paper_id, f"翻译+总结失败: {e}")
             return
