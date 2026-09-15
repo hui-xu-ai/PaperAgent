@@ -313,48 +313,29 @@ class TaskManager:
                 return False
             provider = get_settings_service().get_active_provider(masked=False) or {}
             if str(provider.get("id") or "") == "deepseek":
-                return False
+                return False                   # DeepSeek 官方：既有单发方案不变
             kb = get_kbapi()
             _c = kb._need_compiler()           # noqa: SLF001 - 复用编译器的键归一化与产物路径
             if _c._note_path(key).exists():    # noqa: SLF001
                 return False                   # 已编译过 → 交给既有翻译路径
-            # 关键顺序：对话式直接用 paperkb 的取数口径（**kb 副本优先**），而此刻 document.json
-            # 还在 library（编译时才 `_ensure_source` 同步）⇒ 先显式纳入 kb，否则报
-            # "kb 中无 document.json"（实测踩到）。
-            try:
-                kb.sync_source_to_kb(key, force=False)
-            except Exception as e:  # noqa: BLE001 - 纳入失败 → 让对话式自己报错并回退
-                logger.warning("对话式前纳入 kb 失败（继续尝试）：%s", e)
-            vlevel = str(((kb.value_score(key) or {}).get("level")) or "L1")
-            levels = ("L1", "L2") if vlevel in ("L2", "L3") else ("L1",)
-            logger.info("对话式一次流转（任务流水线）: key=%s levels=%s l3=%s provider=%s",
-                        key, levels, vlevel == "L3", provider.get("name"))
-            import inspect as _inspect
-
-            try:
-                _sig = str(_inspect.signature(kb.conversation_compile))
-            except Exception as e:  # noqa: BLE001
-                _sig = f"(签名不可得: {e})"
-            logger.warning("[convo] 调用 conversation_compile：kb=%s 签名=%s key=%s levels=%s l3=%s",
-                           type(kb).__name__, _sig, key, levels, vlevel == "L3")
-            res = kb.conversation_compile(key, levels=levels, translate=True,
-                                          l3=(vlevel == "L3"))
-            logger.info("对话式完成: %s", {k: res.get(k) for k in
-                                          ("levels", "translated", "targets",
-                                           "coverage", "calls")})
-            # 译文已由对话式写好 ⇒ 只做渲染/变体（en_zh.md、kb 变体、清理旧结构），不再调 LLM 翻译
-            try:
-                self.engine.combined_translate(doc_json, template=None, skip_translate=True)
-            except Exception as e:  # noqa: BLE001 - 渲染失败不推翻已完成的翻译（导出会再兜一层）
-                logger.warning("对话式：渲染变体失败（不影响译文）：%s", e)
+            # 关键顺序：编译取数走 **kb 副本优先**，而此刻 document.json 还在 library
+            # （既有链路是编译时才 `_ensure_source` 同步）⇒ 先显式纳入 kb。
+            kb.sync_source_to_kb(key, force=False)
+            # 方案 A（用户 2026-09-14 拍板）：**编译合并成一次请求**（L1+L2 写在同一条 user），
+            # 翻译交回既有 `combined_translate`（不改动）。L1/L2 由此**必然同时产出**，
+            # 不再依赖 worker 的 L1→L2 升级链（此前只出 L1 就是断在这里）；L3 仍由升级链/手动触发。
+            logger.info("编译合并请求（L1+L2）：key=%s provider=%s", key, provider.get("name"))
+            res = kb.conversation_compile(key, levels=("L1", "L2"), translate=False)
+            logger.info("编译合并完成: %s", {k: res.get(k) for k in
+                                            ("levels", "notes", "calls")})
             return True
-        except Exception as e:  # noqa: BLE001 - 任何异常都回退既有路径（用户可见的失败信息由原路径给出）
-            from paperkb.convo import ConvoFallback
-
-            if isinstance(e, ConvoFallback):
-                logger.warning("对话式回退既有翻译路径: %s", e)
-            else:
-                logger.warning("对话式异常（回退既有翻译路径）：%s", e)
+        except Exception as e:  # noqa: BLE001 - 失败必须**可见**（不再静默降级）
+            logger.error("编译合并请求失败（将回退既有单发编译+翻译）：%s", e, exc_info=True)
+            if self.event_bus:
+                self.event_bus.publish(
+                    "warning", "task", "convo_fallback",
+                    f"编译合并请求失败，已回退既有流程：{type(e).__name__}: {str(e)[:120]}",
+                    {"key": locals().get("key", "")})
             return False
 
     def _convo_key(self, paper: dict, doc_json: str) -> str:

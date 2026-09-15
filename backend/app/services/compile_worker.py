@@ -155,62 +155,6 @@ class CompileWorker:
         except Exception as e:  # noqa: BLE001 - 升级失败不阻塞 worker
             logger.warning("编译自动升级失败 doi=%s: %s", doi, e)
 
-    # ---------------------------------------------------------- 对话式一次流转（非 DeepSeek 官方）
-    def conversation_flow(self) -> dict | None:
-        """把"编译（L1 或 L1+L2）+ 翻译"放进**同一条对话**一次跑完。
-
-        判定（单一来源 = container 当前激活供应商 id）：
-          · `deepseek`（DeepSeek 官方）⇒ 不启用（其前缀缓存跨请求有效，保持既有单发方案）；
-          · 其余（智谱/硅基/魔塔/自定义）⇒ 启用；env `PAPERAGENT_CONVO_FLOW=0` 可整体关闭。
-        只挑 `status=parsed`（尚未翻译）的篇目；返回结果 dict 或 None（交回原队列流程）。
-        """
-        import os
-
-        if (os.getenv("PAPERAGENT_CONVO_FLOW") or "1").strip().lower() in (
-                "0", "false", "no", "off"):
-            return None
-        provider: dict = {}
-        try:
-            from . import container
-
-            provider = container.get_settings_service().get_active_provider(masked=False) or {}
-            if str(provider.get("id") or "") == "deepseek":
-                return None
-        except Exception as e:  # noqa: BLE001 - 取不到供应商按"不启用"处理（安全侧）
-            logger.debug("对话式跳过（取供应商失败）：%s", e)
-            return None
-        if not self._llm_ready():
-            return None
-        try:
-            from . import container
-
-            papers = container.get_store().list_papers() or []
-            todo = [p for p in papers if (p.get("status") or "") == "parsed"]
-            if not todo:
-                return None
-            paper = todo[0]
-            key = paper.get("doi") or ""
-            if not key:
-                return None
-            vlevel = str((self._value_fn(key) or {}).get("level") or "L1")
-            levels = ("L1", "L2") if vlevel in ("L2", "L3") else ("L1",)
-            from paperkb.convo import ConvoFallback, conversation_compile
-
-            logger.info("对话式一次流转: key=%s levels=%s（供应商=%s）",
-                        key, levels, (provider or {}).get("name"))
-            try:
-                res = conversation_compile(key, levels=levels, translate=True)
-            except ConvoFallback as e:
-                logger.warning("对话式回退既有流程: %s", e)
-                return None
-            logger.info("对话式完成: %s", {k: res.get(k) for k in
-                                          ("levels", "translated", "targets",
-                                           "coverage", "calls")})
-            return res
-        except Exception as e:  # noqa: BLE001 - 失败不阻塞 worker（回退既有流程）
-            logger.warning("对话式流程失败（回退既有流程）：%s", e, exc_info=True)
-            return None
-
     # ---------------------------------------------------------- 循环
     def _loop(self) -> None:
         while not self._stop.is_set():

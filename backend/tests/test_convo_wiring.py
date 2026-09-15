@@ -50,11 +50,18 @@ class _FakeKb:
     def value_score(self, key):
         return {"level": self._level}
 
-    def conversation_compile(self, key, levels=("L1",), translate=True, l3=False):
+    def sync_source_to_kb(self, key, force=False):
+        if not hasattr(self, "synced"):
+            self.synced = []
+        self.synced.append(key)
+        return {"copied": [], "skipped": []}
+
+    def conversation_compile(self, key, levels=("L1",), translate=True, l3=False,
+                             context="compile"):
         if self._boom:
             raise RuntimeError(self._boom)
         self.calls.append((key, tuple(levels), translate, l3))
-        return {"status": "done", "conversation": True, "calls": 2}
+        return {"status": "done", "notes": True, "calls": 1}
 
 
 def _patch(monkeypatch, kb, provider_id="p_P_P_3FEA2D40"):
@@ -70,23 +77,24 @@ def _mgr(monkeypatch, engine=None):
     mgr = ts.TaskManager.__new__(ts.TaskManager)      # 不跑 __init__
     mgr.engine = engine or type("E", (), {
         "combined_translate": lambda self, *a, **kw: {"ok": True}})()
+    mgr.event_bus = None
     return mgr
 
 
-def test_conversation_flow_runs_for_non_deepseek(monkeypatch, doc_json):
-    kb = _FakeKb(level="L2")
+def test_conversation_flow_compiles_l1_and_l2_in_one_request(monkeypatch, doc_json):
+    """**方案 A 核心契约**：编译合并成一次请求，且**必须同时产出 L1+L2**。
+
+    此前只编 L1、L2 依赖 worker 升级链 → 实测"只能 L1"（回归事故，用户报障）。
+    """
+    kb = _FakeKb(level="L1")            # 即使价值分判 L1，也要给 L2（L2 不许丢）
     _patch(monkeypatch, kb)
     mgr = _mgr(monkeypatch)
     assert mgr._try_conversation_flow({"id": 1}, doc_json) is True
-    assert kb.calls == [("10.1/a", ("L1", "L2"), True, False)]
-
-
-def test_conversation_flow_passes_l3_flag(monkeypatch, doc_json):
-    kb = _FakeKb(level="L3")
-    _patch(monkeypatch, kb)
-    mgr = _mgr(monkeypatch)
-    assert mgr._try_conversation_flow({"id": 1}, doc_json) is True
-    assert kb.calls[0][1] == ("L1", "L2") and kb.calls[0][3] is True
+    key, levels, translate, l3 = kb.calls[0]
+    assert key == "10.1/a"
+    assert levels == ("L1", "L2"), "编译必须一次出 L1+L2"
+    assert translate is False, "翻译交回既有 combined_translate（方案 A）"
+    assert kb.synced == ["10.1/a"], "编译前必须先纳入 kb（否则报 kb 中无 document.json）"
 
 
 def test_conversation_flow_skips_deepseek_official(monkeypatch, doc_json):
