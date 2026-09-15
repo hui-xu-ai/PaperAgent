@@ -130,9 +130,14 @@ def test_rerender_paper(tmp_path, settings, monkeypatch):
 
 
 def test_combined_translate_writes_kb_variants(tmp_path, settings, monkeypatch):
-    """P0-B（2026-09-12）：combined_translate 变体单一来源在 **library**——
-    zh.md/en_zh.md 直写 `library/<资源目录>/`；kb 侧读取回退（见 test_kb_service）。
-    D16：summary.md 不再生成。library 旧结构（<DOI>.md / variants/）仍清理。"""
+    """变体写入语义（2026-09-16 更新为方案 A：**双写**）。
+
+    旧行为：变体单一来源在 **library**，kb 靠读取回退（历史原因：kb 副本曾比 library 少 87 段译文）。
+    现行为（用户决策：kb = 唯一成品区 + 阅读器"定版优先"）：变体**同时写 kb 与 library**——
+      · kb 那份是定版，阅读器直接读到；
+      · library 那份暂留兼容（迁移完成、验证无异常后可撤）。
+    D16：summary.md 不再生成。library 旧结构（<DOI>.md / variants/）仍清理。
+    """
     import shutil
     from pathlib import Path
 
@@ -162,8 +167,10 @@ def test_combined_translate_writes_kb_variants(tmp_path, settings, monkeypatch):
     eng = EngineService(settings)
     r = eng.combined_translate(doc, template="obsidian_bilingual")
     assert r["library_dir"] == str(out)
-    assert not (tmp_path / "knowledge_base" / "10.1002_adma.202407106" / "zh.md").exists(), \
-        "变体不再写 kb（单一来源 = library，kb 侧靠回退读取）"
+    # 定版 kb 必须拿到变体（阅读器"定版优先"才不会回退中转站）
+    kb_folder = tmp_path / "knowledge_base" / "10.1002_adma.202407106"
+    assert (kb_folder / "zh.md").exists(), "变体必须写进定版 kb"
+    assert (kb_folder / "en_zh.md").exists(), "变体必须写进定版 kb"
     for name in ("zh.md", "en_zh.md"):
         assert (out / name).is_file(), name
         assert r["variants"][name] == str(out / name)

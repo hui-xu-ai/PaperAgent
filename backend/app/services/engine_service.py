@@ -412,8 +412,19 @@ class EngineService:
         save_document(doc, p)
         doi_dir = output_dir_name(doc.metadata.doi, doc.metadata.source_pdf)
         paper_dir = _paper_dir(p)
-        # P0-B（2026-09-12）：变体（译文）写 library 资源目录 = 翻译的真相源
+        # 2026-09-16（方案 A）：变体（译文）写**定版 kb** + 保留 library 一份（双写过渡）。
+        # 依据：kb 是唯一成品区、阅读器读取已改为"定版优先"（`kb_service.read_file`），
+        # 只写 library 会让新译文在 kb 里缺位、读侧只能回退中转站（审计 §C5/C12 的残留）。
+        # library 那份暂留：兼容"变体真相源在 library"的旧数据与外部引用，验证无异常后即可撤。
         paths = self._write_kb_variants(doc, paper_dir)
+        try:
+            kb_dir = self._kb_dir_for_library(doi_dir)
+            kb_paths = self._write_kb_variants(doc, kb_dir)
+            for name, fp in kb_paths.items():
+                paths[f"kb/{name}"] = fp
+            logger.info("变体双写完成：library=%s kb=%s", sorted(paths)[:2], sorted(kb_paths))
+        except Exception as e:  # noqa: BLE001 - kb 侧写失败不推翻 library 产物（下一轮重渲染可补）
+            logger.warning("变体写 kb 失败（library 仍已写入）: %s", e)
         # 清理 library 旧结构残留（<DOI>.md/.zh.md/.summary.md/.en.md/.pdf、variants/）
         self._remove_stale_doi_files(paper_dir, doi_dir)
         self._remove_legacy_paper_md(paper_dir)
