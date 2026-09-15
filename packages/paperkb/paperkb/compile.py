@@ -197,24 +197,43 @@ class Compiler:
 
     # ---------------------------------------------------------- L1
     def _compile_l1(self, doi: str, force: bool) -> dict:
+        """L1 编译 = **一次请求同时产出 L1 笔记与 L2 详细笔记**（2026-09-16 用户决策）。
+
+        为什么合并（对所有供应商一致，不再按 provider 分叉）：
+          · 两级共用同一段共享全文前缀（~19k token）⇒ 合并后每篇少发一次全文前缀；
+          · L2 不再依赖 worker 的"编完 L1 再看价值分入队 L2"升级链 ⇒ 不会再出现"只出 L1"
+            （2026-09-15 实测事故）；L2 队列项此后会命中幂等跳过（`_compile_l2` 开头）。
+          · L3 保持原样：价值分 ≥4.0 时由升级链单独入队、单独一轮请求。
+        失败语义：组合请求失败 → 只落 L1（保持与旧行为一致），L2 由后续队列项单独重试。
+        """
         doc = self._doc(doi)
         meta = self._resolve_meta(doi, doc)
+        journal_meta = self._journal_meta(meta.journal, meta.issn, meta.eissn)
         note = self._note_path(doi)
+        details = self._details_path(doi)
+        meta_json = meta.model_dump(mode="json")
         if note.exists() and not force:
             return {"status": "skipped_existing", "doi": doi, "level": "L1"}
         llm = get_llm()
-        prompt = _prompt_l1(meta.model_dump(mode="json"), doc,
-                            self._journal_meta(meta.journal, meta.issn, meta.eissn))
+        prompt = _prompt_l1_l2(meta_json, doc, journal_meta)
         raw = llm.complete(prompt, context="compile")
         data = _parse_json(raw)
         if not isinstance(data, dict) or not data.get("one_liner"):
             raise CompileError("L1 编译输出无效（JSON 缺失 one_liner）")
-        note.write_text(_render_note(meta, data, self._journal_meta(
-            meta.journal, meta.issn, meta.eissn)), encoding="utf-8")
+        note.write_text(_render_note(meta, data, journal_meta), encoding="utf-8")
         self._save_ctx(doi, "L1", _ctx_from_l1(data))
         self._mark_done(doi, "L1")
+        l2_md = str(data.get(_L2_MD_KEY) or data.get("l2_md") or "").strip()
+        if l2_md:
+            details.write_text(l2_md + "\n", encoding="utf-8")
+            self._save_ctx(doi, "L2", l2_md[: _CTX_LIMIT])
+            self._mark_done(doi, "L2")
+            logger.info("编译合并完成: %s → _note.md + _details.md（一次请求）", doi)
+        else:
+            logger.warning("编译合并：本次输出缺 L2（%s）→ 留给 L2 队列项单独编译", doi)
         self._index_paper_notes(doi)
         return {"status": "done", "doi": doi, "level": "L1",
+                "l2_written": bool(l2_md),
                 "concepts": data.get("concepts", [])}
 
     # ---------------------------------------------------------- L2
@@ -463,6 +482,41 @@ class Compiler:
 
 
 # ---------------------------------------------------------------- 提示词
+
+# L1 合并请求里承载 L2 详细笔记的 JSON 键（单独常量，便于解析与测试）
+_L2_MD_KEY = "l2_md"
+
+
+def _prompt_l1_l2(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
+    """L1+L2 合并提示词：**一次请求**产出 L1 六维笔记（JSON）+ L2 详细笔记（Markdown）。
+
+    用户决策 2026-09-16：编译 L1/L2 合并，**对所有供应商一致生效**（不再按 provider 分叉）。
+    为什么能省：两级共用同一段共享全文前缀（`shared_ctx(doc)`，~19k token）⇒ 每篇少发一次全文。
+
+    输出形状（严格 JSON，L2 正文放字符串里）：
+        {"one_liner": "...", ..., "concepts": [...], "l2_md": "# 详细笔记\\n..."}
+    拼装方式保持"与既有两个构造点同源"：L1 任务文本取自 `_prompt_l1`，L2 任务文本取自 `_prompt_l2`
+    （在 `TASK_MARK` 处取任务部分），**不新造第二套任务描述**。
+    """
+    from .context import split_task
+
+    l1_task = split_task(_prompt_l1(meta, doc, journal_meta))[1]
+    l2_task = split_task(_prompt_l2(meta, doc, "(同一次调用内，请以上面 ① 的输出为准)"))[1]
+    task = (
+        "## 本次任务：论文知识编译（严格按顺序，只在最后输出一个 JSON）\n"
+        "先完成 ①，再**基于 ① 的输出**完成 ②（不要重复全景，只补充章节级细节）。\n\n"
+        "### ① L1 核心笔记\n" + l1_task + "\n\n"
+        "### ② L2 详细笔记（Markdown）\n" + l2_task + "\n\n"
+        "## 输出要求（只输出一个 JSON 对象，不要解释、不要 Markdown 代码围栏）\n"
+        "先输出 ① 的全部字段（含 one_liner / concepts 等），再加一个键 "
+        f"\"{_L2_MD_KEY}\"，值是 ② 的 Markdown 全文（JSON 字符串转义，\\n 换行）：\n"
+        "{\n  \"one_liner\": \"…\",\n  …① 的其余字段…,\n"
+        f"  \"{_L2_MD_KEY}\": \"# 详细笔记：<标题>\\n\\n## 章节要点\\n### <章节名>\\n- 要点（[P001]）…\"\n"
+        "}\n"
+        f"`{_L2_MD_KEY}` 必须存在且非空。"
+    )
+    return with_task(shared_ctx(doc), task)
+
 
 def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
     """L1 编译 prompt：**共享全文前缀**（header + 原文全文块）在前，任务指令在后。
