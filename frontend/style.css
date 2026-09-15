@@ -523,6 +523,65 @@ details.think-box .think-text { margin-top: 6px; white-space: pre-wrap; word-bre
 .md del { text-decoration: line-through; color: var(--muted); }
 .md em { font-style: italic; }
 .md br { line-height: 1; }
+
+/* ══════════ Obsidian 风格：文件属性面板（YAML frontmatter，2026-09-17）══════════
+   贴近 Obsidian：文件属性区、键名弱化色左列、值在右列、数组=chip 小标签 */
+.md-props {
+  border: 1px solid var(--border); border-radius: 10px; background: #fbfcfe;
+  padding: 8px 12px 10px; margin: 0 0 14px; font-size: .86em; line-height: 1.5;
+}
+.md-props .props-head {
+  font-size: .82em; letter-spacing: .12em; color: var(--muted);
+  margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.md-props .props-table { display: flex; flex-direction: column; }
+.md-props .prop-row {
+  display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px;
+  padding: 4px 0; border-top: 1px dashed var(--border);
+}
+.md-props .prop-row:first-child { border-top: none; }
+.md-props .prop-key {
+  color: var(--muted); font-size: .92em; overflow-wrap: anywhere;
+  padding-top: 1px; user-select: none;
+}
+.md-props .prop-val { min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.md-props .prop-line { display: block; }
+.md-props .prop-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.md-props .prop-chip {
+  display: inline-block; background: var(--primary-soft); color: var(--primary);
+  border-radius: 999px; padding: 1px 8px; font-size: .9em; line-height: 1.5; max-width: 100%;
+}
+.md-props a.prop-link { color: var(--primary); text-decoration: none; }
+.md-props a.prop-link:hover { text-decoration: underline; }
+
+/* ══════════ Obsidian callout（旧文件残留块，2026-09-17）══════════
+   左侧色条 + 图标 + 标题；未知类型走中性色（.callout 基类） */
+.md .callout {
+  --co: #64748b; --co-bg: #f8fafc;
+  border: 1px solid var(--border); border-left: 4px solid var(--co);
+  background: var(--co-bg); border-radius: 0 8px 8px 0;
+  margin: .7em 0; padding: 8px 12px; color: var(--text);
+}
+.md .callout-title {
+  font-weight: 600; color: var(--co); display: flex; align-items: center;
+  gap: 6px; margin: 0 0 4px; line-height: 1.4;
+}
+.md .callout-title::before { content: "📎"; font-weight: 400; }
+.md .callout-info    { --co: #2563eb; --co-bg: #eff6ff; }
+.md .callout-summary { --co: #7c3aed; --co-bg: #f5f3ff; }
+.md .callout-warning { --co: #d97706; --co-bg: #fffbeb; }
+.md .callout-note    { --co: #475569; --co-bg: #f8fafc; }
+.md .callout-tip     { --co: #059669; --co-bg: #ecfdf5; }
+.md .callout-info .callout-title::before    { content: "ℹ️"; }
+.md .callout-summary .callout-title::before { content: "📝"; }
+.md .callout-warning .callout-title::before { content: "⚠️"; }
+.md .callout-note .callout-title::before    { content: "📌"; }
+.md .callout-tip .callout-title::before     { content: "💡"; }
+.md .callout-body > p, .md .callout-body > ul, .md .callout-body > ol { text-indent: 0; }
+.md .callout-body ul, .md .callout-body ol { margin: .2em 0; }
+.md .callout-body > :first-child { margin-top: 0; }
+.md .callout-body > :last-child { margin-bottom: 0; }
 /* KaTeX MathML 标注（隐藏的无障碍元素）不参与选择/复制——消除复制公式时混入原始 TeX 与零宽字符 */
 .katex-mathml { user-select: none; }
 

@@ -3342,11 +3342,176 @@ async function loadReaderFile(dir, file) {
   }
 }
 
+/* ══════════ Obsidian 风格：YAML 属性面板 + callout（2026-09-17）══════════
+   设计约束：**不改渲染管线顺序**。frontmatter 仍在 marked.parse 之前从原文抽出
+   （抽出失败 = 保持旧行为"整块剥离、不渲染"），面板 HTML 直接拼在正文 HTML 最前面，
+   因此公式占位符/图片重写/标题锚点等后续环节完全不受影响。 */
+
+// 切分文件开头的 `---` 块 → { raw: 元数据行[], body: 正文 }；非 frontmatter 返回 null
+function splitFrontmatter(md) {
+  const lines = String(md).split(/\r?\n/);
+  if (!lines.length || lines[0].trim() !== '---') return null;
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t === '---' || t === '...') { end = i; break; }
+  }
+  if (end < 0) return null;                     // 没有收尾分隔符 → 不是 frontmatter
+  return { raw: lines.slice(1, end), body: lines.slice(end + 1).join('\n') };
+}
+
+function fmUnquote(v) {
+  const s = String(v).trim();
+  if (s.length >= 2) {
+    const q = s[0];
+    if ((q === '"' || q === "'") && s[s.length - 1] === q) {
+      let inner = s.slice(1, -1);
+      if (q === '"') inner = inner.replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\\\/g, '\\');
+      else inner = inner.replace(/''/g, "'");
+      return inner;
+    }
+  }
+  return s;
+}
+
+// 单个字段的值解析：标量 / 流式数组 / 块状列表（key: 换行 + "- item"）/ 块标量 / 空值
+// 返回 { values: string[], isList: bool, consumed: number }；空值 → values=[] （不出行）
+function fmParseValue(rawVal, rawLines, idx) {
+  const val = String(rawVal).trim();
+  if (!val) {
+    const items = [];
+    let k = idx + 1;
+    while (k < rawLines.length) {
+      const li = /^\s*[-*]\s+(.*)$/.exec(rawLines[k]);
+      if (!li) break;
+      items.push(fmUnquote(li[1].trim()));
+      k++;
+    }
+    if (items.length) return { values: items, isList: true, consumed: k - idx - 1 };
+    return { values: [], isList: false, consumed: 0 };
+  }
+  if (val === '|' || val === '>') {             // 块标量：吃掉后续缩进行
+    const buf = [];
+    let k = idx + 1;
+    while (k < rawLines.length && (!rawLines[k].trim() || /^\s+\S/.test(rawLines[k]))) {
+      buf.push(rawLines[k].replace(/^\s{1,4}/, ''));
+      k++;
+    }
+    while (buf.length && !buf[buf.length - 1].trim()) buf.pop();
+    return { values: [buf.join(' ').trim()], isList: false, consumed: k - idx - 1 };
+  }
+  if (val.startsWith('[') && val.endsWith(']')) {
+    const inner = val.slice(1, -1).trim();
+    let arr = null;
+    try { arr = JSON.parse(val); } catch (e) { /* 非严格 JSON：tags: [paper, xxx] 裸值数组 */ }
+    if (!Array.isArray(arr)) arr = inner ? inner.split(',').map(s => fmUnquote(s.trim())) : [];
+    return { values: arr.map(x => (x === null || x === undefined) ? '' : String(x)).filter(s => s !== ''),
+             isList: true, consumed: 0 };
+  }
+  return { values: [fmUnquote(val)], isList: false, consumed: 0 };
+}
+
+function parseFrontmatterEntries(rawLines) {
+  const out = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    if (/^\s*[-*]\s+/.test(line)) continue;                  // 已被上一字段消费的列表项
+    const m = /^([^:\s][^:]{0,63}?)\s*:\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const { values, isList, consumed } = fmParseValue(m[2], rawLines, i);
+    i += consumed;
+    const clean = values.map(v => String(v).trim()).filter(v => v !== '');
+    if (!clean.length) continue;                             // 空字段不出行（与新模板契约一致）
+    out.push({ key: fmUnquote(m[1]), values: clean, isList });
+  }
+  return out;
+}
+
+const FM_DOI_RE = /^10\.\d{4,9}\/\S+$/;
+
+function fmRenderValue(v) {
+  const s = String(v);
+  if (FM_DOI_RE.test(s)) {
+    return `<a class="prop-link" href="https://doi.org/${escapeHtml(s)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>`;
+  }
+  if (/^https?:\/\/[^\s]+$/i.test(s)) {
+    return `<a class="prop-link" href="${escapeHtml(s)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>`;
+  }
+  return escapeHtml(s);
+}
+
+function fmValueLines(v) {
+  // 标量字段**原样一行**：`通讯作者: "A；B"` / `研究单位: "X；Y"` 在 YAML 里是**一个字符串**
+  // （分号只是人读分隔），Obsidian 同样按单值显示。曾按分号拆成多行 ⇒ 视觉好看但
+  // `textContent` 拼接后变成 "AB"（选取/复制粘连，真实文件实测发现）⇒ 不拆，保留原分隔符。
+  return [String(v)];
+}
+
+function renderPropPanel(entries) {
+  if (!entries || !entries.length) return '';
+  const rows = entries.map(e => {
+    let valHtml;
+    if (e.isList) {
+      valHtml = '<span class="prop-chips">' + e.values.map(v =>
+        `<span class="prop-chip">${fmRenderValue(v)}</span>`).join('') + '</span>';
+    } else {
+      const lines = e.values.reduce((acc, v) => acc.concat(fmValueLines(v)), []);
+      valHtml = lines.map(l => `<span class="prop-line">${fmRenderValue(l)}</span>`).join('');
+    }
+    return `<div class="prop-row"><div class="prop-key" title="${escapeHtml(e.key)}">${escapeHtml(e.key)}</div>`
+         + `<div class="prop-val">${valHtml}</div></div>`;
+  }).join('');
+  return `<div class="md-props"><div class="props-head">属性</div><div class="props-table">${rows}</div></div>`;
+}
+
+const CALLOUT_DEFAULT_TITLE = { info: 'Info', summary: 'Summary', warning: 'Warning', note: 'Note', tip: 'Tip' };
+
+// 旧文件残留的 Obsidian callout：`> [!type] 标题` 起始的连续引用块 → 容器 HTML。
+// 逐行预处理（不解析 marked 输出）：注入的原始 HTML 块用空行与正文隔开，
+// marked 的 HTML 块遇空行即结束 ⇒ 块内正文仍按正常 markdown 流程渲染（列表/链接/公式都有效）。
+function transformCallouts(md) {
+  const lines = String(md).split('\n');
+  const out = [];
+  let i = 0, count = 0;
+  while (i < lines.length) {
+    const m = /^ {0,3}> ?\[!([A-Za-z][\w-]*)\]([+-]?)[ \t]*(.*)$/.exec(lines[i]);
+    if (!m) { out.push(lines[i]); i++; continue; }
+    const type = m[1].toLowerCase().replace(/[^a-z0-9-]/g, '') || 'note';
+    const title = m[3].trim() || CALLOUT_DEFAULT_TITLE[type] || m[1];
+    const body = [];
+    let j = i + 1;
+    while (j < lines.length) {
+      const q = /^ {0,3}> ?(.*)$/.exec(lines[j]);
+      if (!q) break;
+      body.push(q[1]);
+      j++;
+    }
+    while (body.length && !body[body.length - 1].trim()) body.pop();
+    out.push(`<div class="callout callout-${type}"><div class="callout-title">${escapeHtml(title)}</div><div class="callout-body">`);
+    out.push('');
+    for (const b of body) out.push(b);
+    out.push('');
+    out.push('</div></div>');
+    count++;
+    i = j;
+  }
+  return { md: out.join('\n'), count };
+}
+
 function renderMarkdown(md, baseDir, source) {
   if (typeof marked === 'undefined') return `<pre>${escapeHtml(md)}</pre>`;
   md = String(md);
-  // YAML frontmatter 剥离（Obsidian 风格：文件开头 --- 块为属性元数据，不渲染为正文）
-  md = md.replace(/^\uFEFF?---\s*\n[\s\S]*?\n---\s*(?:\n|$)/, '');
+  // Obsidian 风格属性面板：文件开头 `---` 块是元数据而非正文。抽出原文 → 面板渲染；
+  // 解析失败/无 frontmatter 时退回旧行为（不报错、不把 `---` 泄漏到正文）。
+  let propsHtml = '';
+  const fm = splitFrontmatter(md.replace(/^\uFEFF/, ''));
+  if (fm) {
+    md = fm.body;
+    propsHtml = renderPropPanel(parseFrontmatterEntries(fm.raw));
+  }
+  // 旧文件残留 callout（新模板不再生成，历史文件仍需好看）：预处理成容器 HTML
+  md = transformCallouts(md).md;
   // P2-C：兜底清理 MinerU 图片占位符（`<!-- image -->` / `<!-- image-1 -->` 等），
   // 避免残留注释让图片行缺失；后端已清洗，这里双保险（含已被翻译写进正文的旧产物）
   md = md.replace(/<!--\s*(?:image|img)[\s\-_]*\d*\s*-->/gi, '');
@@ -3422,7 +3587,7 @@ function renderMarkdown(md, baseDir, source) {
       return m;
     });
   }
-  return `<div class="md">${html}</div>`;
+  return `<div class="md">${propsHtml}${html}</div>`;
 }
 
 /* ══════════ P12F：复核区 diff 渲染（绕过 marked，直插 + 逐文本节点 KaTeX）══════════ */
