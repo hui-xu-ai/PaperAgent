@@ -433,15 +433,19 @@ class EngineService:
             note_header = render_info_header(meta)
         except Exception as e:  # noqa: BLE001 - 头部渲染失败不阻塞变体产出（模板会回退）
             logger.warning("变体头部（与 L1 同源）渲染失败，模板回退旧格式: %s", e)
-        paths = self._write_kb_variants(doc, paper_dir, note_header=note_header)
+        paths: dict[str, str] = {}
         try:
             kb_dir = self._kb_dir_for_library(doi_dir)
-            kb_paths = self._write_kb_variants(doc, kb_dir, note_header=note_header)
-            for name, fp in kb_paths.items():
-                paths[f"kb/{name}"] = fp
-            logger.info("变体双写完成：library=%s kb=%s", sorted(paths)[:2], sorted(kb_paths))
-        except Exception as e:  # noqa: BLE001 - kb 侧写失败不推翻 library 产物（下一轮重渲染可补）
-            logger.warning("变体写 kb 失败（library 仍已写入）: %s", e)
+            paths = self._write_kb_variants(doc, kb_dir, note_header=note_header)
+            logger.info("变体写入 kb 定版（library 不再放译文）: %s", sorted(paths))
+        except Exception as e:  # noqa: BLE001 - kb 侧写失败不推翻译文（重渲染可补）
+            logger.warning("变体写 kb 失败（译文已在 document.json）: %s", e)
+        # 2026-09-16（R3，用户："library 只存放 PDF 解析结果"）：清掉 library 里的旧译文本
+        # （历史版本曾把 zh.md/en_zh.md 写在 library）；**保留 source.pdf 等解析产物**。
+        try:
+            self._remove_stale_variants_in_library(paper_dir)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("清理 library 旧译文本失败: %s", e)
         # 清理 library 旧结构残留（<DOI>.md/.zh.md/.summary.md/.en.md/.pdf、variants/）
         self._remove_stale_doi_files(paper_dir, doi_dir)
         self._remove_legacy_paper_md(paper_dir)
@@ -450,6 +454,28 @@ class EngineService:
         if norm:
             result["normalized"] = norm
         return result
+
+    @staticmethod
+    def _remove_stale_variants_in_library(paper_dir: Path) -> list[str]:
+        """删除 library 资源目录里的**译文本**（`zh.md`/`en_zh.md`/`summary.md`）。
+
+        2026-09-16（用户："library 只存放 PDF 解析结果"）：译文归 kb 定版，library 不再保译本。
+        **明确保留**：`source.pdf`（解析原件）、`document.json`、`en.md`、`mineru_full.md`、
+        `images/`、`work/`（解析中间产物）——它们都是"PDF 解析结果"。
+        返回被删文件名清单（便于日志/验收断言）。
+        """
+        removed: list[str] = []
+        for name in ("zh.md", "en_zh.md", "summary.md"):
+            f = paper_dir / name
+            if f.is_file():
+                try:
+                    f.unlink()
+                    removed.append(name)
+                except OSError as e:  # noqa: BLE001 - 删不掉不阻塞（下次再试）
+                    logger.warning("删除 library 译文本失败 %s: %s", f, e)
+        if removed:
+            logger.info("已清理 library 译文本（library 只放解析结果）: %s", removed)
+        return removed
 
     def rerender_paper(self, document_json: str | Path, template: str) -> dict:
         """按模板重渲染中英对照主产物 `library/<资源目录>/en_zh.md`（不重新翻译）。

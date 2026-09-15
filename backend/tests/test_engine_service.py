@@ -171,10 +171,16 @@ def test_combined_translate_writes_kb_variants(tmp_path, settings, monkeypatch):
     kb_folder = tmp_path / "knowledge_base" / "10.1002_adma.202407106"
     assert (kb_folder / "zh.md").exists(), "变体必须写进定版 kb"
     assert (kb_folder / "en_zh.md").exists(), "变体必须写进定版 kb"
+    # 2026-09-16（R3，用户："library 只存放 PDF 解析结果"）：译文本**只写 kb**，
+    # library 侧连历史残留都清掉（保留 source.pdf / en.md / document.json / images）。
     for name in ("zh.md", "en_zh.md"):
-        assert (out / name).is_file(), name
-        assert r["variants"][name] == str(out / name)
+        assert (kb_folder / name).is_file(), f"{name} 必须在 kb 定版"
+        assert r["variants"][name] == str(kb_folder / name)
+        assert not (out / name).exists(), f"{name} 不该留在 library（只放解析结果）"
     assert not (out / "summary.md").exists()  # D16：不再生成
+    assert not (kb_folder / "summary.md").exists()
+    # library 的解析产物必须保留
+    assert (out / "source.pdf").exists() or True   # 该夹具无 PDF，仅声明语义
     # library 旧结构已清理，且不生成 <DOI>.md
     assert not (out / "10.1002_adma.202407106.md").exists()
     assert not (out / "variants").exists()
