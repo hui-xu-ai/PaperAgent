@@ -317,6 +317,53 @@ def journals_lookup_issn(issn: str, eissn: str = "") -> dict | None:
     return _journals.lookup_issn(issn, eissn)
 
 
+# ---------------------------------------------------------------- 变体头部（frontmatter）
+
+def variant_frontmatter(key: str, doc_meta: dict | None = None,
+                        tags: list[str] | None = None) -> str:
+    """`zh.md` / `en_zh.md` 头部 YAML frontmatter 的**唯一装配入口**。
+
+    2026-09-16 用户要求：头部元数据按「作者、通讯作者、研究单位、年份、期刊、影响因子、
+    JCR分区、中科院分区、DOI、被引、关键词」排列，并**删掉重复的 `> [!info] 文献信息`**。
+    此前模板自己从 `doc.metadata`（document.json，**没有期刊/年份/被引/指标**）拼块，
+    与 `_note.md`（走 papers_meta + journals.db）各说各话 ⇒ 本次统一到本函数。
+
+    取值（字段级，与 L1 编译 `_resolve_meta` 同精神）：
+      `papers_meta`（权威，键可为 RID / DOI / **DOI 目录名**）优先 → `document.json` 兜底；
+      期刊指标（JIF / JCR / 中科院分区）经 `journals.db`（ISSN 优先 → 期刊名）。
+    """
+    from .headmeta import journal_info, render_frontmatter
+
+    store = _need_store()
+    dm = doc_meta or {}
+    meta = store.get_meta(key)
+
+    merged: dict = {
+        "authors": dm.get("authors") or [],
+        "journal": dm.get("journal") or "",
+        "year": dm.get("year") or "",
+        "doi": dm.get("doi") or "",
+        "keywords": dm.get("keywords") or [],
+    }
+    if meta is not None:
+        for field in ("authors", "journal", "year", "doi", "keywords",
+                      "corresponding", "affiliations"):
+            v = getattr(meta, field, None)
+            if v not in (None, "", [], {}):
+                merged[field] = v
+        if isinstance(meta.times_cited, int):
+            merged["times_cited"] = meta.times_cited
+
+    year = str(merged.get("year") or "").strip()
+    info = journal_info(_journals, str(merged.get("journal") or ""),
+                        getattr(meta, "issn", "") if meta else "",
+                        getattr(meta, "eissn", "") if meta else "",
+                        year=int(year) if year.isdigit() else None)
+    title = str(dm.get("title") or "") or (getattr(meta, "title", "") if meta else "")
+    return render_frontmatter(merged, info=info, title=title, tags=tags,
+                              source="pdf", created=str(dm.get("extraction_time") or ""))
+
+
 def journals_stats() -> dict:
     _need_store()
     if _journals is None:

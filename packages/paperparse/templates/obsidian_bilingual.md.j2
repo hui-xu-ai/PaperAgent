@@ -1,25 +1,6 @@
----
-title: "{{ doc.metadata.title }}"
-authors: {{ doc.metadata.authors | tojson }}
-{% if doc.metadata.article_type %}type: "{{ doc.metadata.article_type }}"
-{% endif %}year: {{ doc.metadata.year if doc.metadata.year else "" }}
-journal: "{{ doc.metadata.journal or "" }}"
-doi: "{{ doc.metadata.doi or "" }}"
-keywords: {{ doc.metadata.keywords | tojson }}
-tags: {{ tags_json }}
-source: pdf
-created: {{ doc.metadata.extraction_time }}
----
-
-# {{ doc.metadata.title }}
-
-> [!info] 文献信息
-{% if note_header %}{{ note_header }}
-{% else %}> - **作者**: {{ doc.metadata.authors | join("; ") if doc.metadata.authors else "—" }}
-{% if doc.metadata.article_type %}> - **类型**: {{ doc.metadata.article_type }}
-{% endif %}> - **期刊**: {{ doc.metadata.journal or "—" }} | **年份**: {{ doc.metadata.year if doc.metadata.year else "—" }} | **DOI**: {{ doc.metadata.doi or "—" }}
-{% endif %}
-{% for item in items %}
+{% if frontmatter %}{{ frontmatter }}
+{% endif %}# {{ doc.metadata.title }}
+{%- for item in items %}
 {%- if item.type == "heading" %}
 
 ## {{ item.text }}

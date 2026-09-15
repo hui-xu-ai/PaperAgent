@@ -716,45 +716,6 @@ def _render_note(meta, data: dict, journal_meta: str) -> str:
         tags=tags)
 
 
-def render_info_header(meta, journal_meta: str = "") -> str:
-    """**`> [!info] 文献信息` 的正文行（唯一来源）**——变体渲染与 L1 笔记共用。
-
-    2026-09-16 用户给定**目标格式**（逐字照抄，不再自作主张增删行）：
-        - 作者：A, B, * and C*
-        - 期刊/年份：Advanced Materials 2024（IF x.x / 一区）
-        - DOI：[10.1002/adma.202407106](https://doi.org/10.1002/adma.202407106)
-        - 被引：12
-
-    说明：期刊/年份取不到时按用户示例输出 `期刊/年份： （无指标）`（空值 + 无指标），
-    不引入 `—` 之类的自造占位。`meta` 可为 `PaperMeta` 对象或等价 dict。
-    """
-    def _g(key: str, default=""):
-        if isinstance(meta, dict):
-            return meta.get(key, default)
-        return getattr(meta, key, default)
-
-    authors = [a for a in (_g("authors") or []) if a]
-    corr = [c for c in (_g("corresponding") or []) if c]
-
-    def _is_corr(a: str) -> bool:
-        return any(a == c or (c and (c in a or a in c)) for c in corr)
-
-    a_line = ", ".join(a + ("*" if _is_corr(a) else "") for a in authors)
-    journal = str(_g("journal") or "").strip()
-    year = str(_g("year") or "").strip()
-    jy = (journal + (" " + year if year else "")).strip()
-    doi = str(_g("doi") or "").strip()
-    cited = _g("times_cited", 0)
-    # 期刊/年份为空时保留一个空格（用户给定格式 `期刊/年份： （无指标）` 逐字一致）
-    jy_part = f"{jy}（{journal_meta or '无指标'}）" if jy else f" （{journal_meta or '无指标'}）"
-    return "\n".join([
-        f"> - 作者：{a_line}",
-        f"> - 期刊/年份：{jy_part}",
-        f"> - DOI：[{doi}](https://doi.org/{doi})",
-        f"> - 被引：{cited}",
-    ])
-
-
 def _render_wiki(meta, data: dict) -> str:
     return (f"---\ntype: paper-wiki\ndoi: {meta.doi}\n---\n\n"
             f"# 深度编译：{meta.title}\n\n"

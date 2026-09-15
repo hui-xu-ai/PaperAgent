@@ -35,7 +35,10 @@ def test_e2e_real_sample(tmp_work):
     # 结构断言（不读正文）
     assert md.startswith("---")                       # frontmatter
     assert "tags:" in md                              # Obsidian 全局搜索
-    assert "> [!info]" in md                          # 文献信息 callout
+    # 2026-09-16（用户指示）：`> [!info] 文献信息` 与 frontmatter 重复 ⇒ 整块删除；
+    # 元数据统一进 frontmatter（键名/顺序见 paperkb.headmeta.FIELD_ORDER）。
+    assert "> [!info]" not in md, "文献信息 callout 必须已删除（元数据统一进 frontmatter）"
+    assert "作者: " in md, "frontmatter 必须含作者"
     # 2026-09-16（用户指示）：删除 `> [!summary] AI 阅读总结 … 由 AI 总结阶段（M5）填充` 占位块
     # ——模板仅在 doc.ai_summary 非空时才输出该 callout ⇒ 此处断言占位文本不再出现。
     assert "由 AI 总结阶段（M5）填充" not in md, "无信息量的总结占位块必须已删除"

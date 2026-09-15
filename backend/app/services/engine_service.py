@@ -361,14 +361,14 @@ class EngineService:
         return folder
 
     @staticmethod
-    def _write_kb_variants(doc, kb_dir: Path, note_header: str = "") -> dict:
+    def _write_kb_variants(doc, kb_dir: Path, frontmatter: str = "") -> dict:
         """渲染 zh.md / en_zh.md 写入目标目录。
 
         2026-09-16（用户指示）：
-          · 头部 `> [!info] 文献信息` **必须与编译 L1 开头一致** ⇒ 由 `note_header` 注入
-            （内容来自 `paperkb.compile.render_info_header(meta)`，与 `_render_note` 同一份元数据）；
-          · 删除 `> [!summary] AI 阅读总结 … 由 AI 总结阶段（M5）填充` 这个无信息量占位块
-            （模板层已改：仅当 `doc.ai_summary` 非空时才输出该 callout）。
+          · 头部元数据（YAML frontmatter）**只由 `frontmatter` 注入**——装配在
+            `paperkb.api.variant_frontmatter()`（papers_meta + journals.db 权威值，
+            顺序=作者/通讯作者/研究单位/年份/期刊/影响因子/JCR分区/中科院分区/DOI/被引/关键词）；
+          · **删除** `> [!info] 文献信息` callout（与 frontmatter 重复，用户要求直接删）。
 
         zh      ← render_variant("zh")       纯中文，无对照
         en_zh   ← render_variant("translated")  英上中下双语对照
@@ -377,8 +377,8 @@ class EngineService:
         from paperparse.core.markdown_render import render_variant
 
         files = {
-            "zh.md": render_variant(doc, "zh", note_header=note_header),
-            "en_zh.md": render_variant(doc, "translated", note_header=note_header),
+            "zh.md": render_variant(doc, "zh", frontmatter=frontmatter),
+            "en_zh.md": render_variant(doc, "translated", frontmatter=frontmatter),
         }
         kb_dir.mkdir(parents=True, exist_ok=True)
         paths: dict[str, str] = {}
@@ -414,49 +414,30 @@ class EngineService:
         # 依据：kb 是唯一成品区、阅读器读取已改为"定版优先"（`kb_service.read_file`），
         # 只写 library 会让新译文在 kb 里缺位、读侧只能回退中转站（审计 §C5/C12 的残留）。
         # library 那份暂留：兼容"变体真相源在 library"的旧数据与外部引用，验证无异常后即可撤。
-        # 头部与 L1 同源：走**同一条兜底链**（papers_meta 权威 → document.json 兜底）。
-        # 教训（2026-09-16 用户指出）：我先前只调 `get_paper_meta()`，没走 L1 用的
-        # `resource.meta_for()` 兜底 ⇒ `papers_meta` 没行时头部全空，而 L1 却能显示作者/期刊
-        # （那些值本来就在解析产物的 document.json 里）。两处必须**同源**。
-        note_header = ""
+        # 头部**唯一装配入口**：`paperkb.api.variant_frontmatter()`（papers_meta → document.json
+        # 字段级兜底 + journals.db 指标）。教训（2026-09-16 用户指出）：先前两处各拼一份——
+        #   ① 键形态错：这里传的是**目录名** `doi_dir`，而 paperkb 的键解析只认 RID / 裸 DOI
+        #      ⇒ `get_paper_meta` 恒 None（实测 `probe_key_forms.py`），兜底链永远走 document.json；
+        #   ② 时序错：翻译发生在 `_assemble_kb`（Crossref 富化写 papers_meta）**之前**
+        #      ⇒ 渲染那一刻库里还没有期刊/年份/被引（实测 zh.md 00:30:21 < identifiers 00:30:23）。
+        #   ③ 指标漏传：`render_info_header` 没传 journal_meta ⇒ 恒显示「（无指标）」。
+        frontmatter = ""
+        md = doc.metadata
         try:
-            from paperkb.compile import render_info_header
+            from paperparse.core.markdown_render import variant_tags
 
-            db_meta = None
-            try:
-                db_meta = self._get_kbmeta().get_paper_meta(doi_dir)
-            except Exception as e:  # noqa: BLE001 - 无 kbmeta（单测/CLI）→ 直接用解析产物
-                logger.debug("取 papers_meta 失败（改用 document.json 兜底）：%s", e)
-            md = doc.metadata
-
-            def _pick(db_key: str, doc_val, default=""):
-                """字段级取值：papers_meta 优先，空则用 document.json（与 meta_for 的兜底精神一致）。"""
-                if isinstance(db_meta, dict):
-                    v = db_meta.get(db_key)
-                else:
-                    v = getattr(db_meta, db_key, None) if db_meta is not None else None
-                if v not in (None, "", [], {}):
-                    return v
-                return doc_val if doc_val not in (None, "", [], {}) else default
-
-            merged = {
-                "authors": _pick("authors", list(getattr(md, "authors", []) or [])),
-                "corresponding": _pick("corresponding", []),
-                "journal": _pick("journal", getattr(md, "journal", "") or ""),
-                "year": _pick("year", getattr(md, "year", "") or ""),
-                "doi": _pick("doi", getattr(md, "doi", "") or ""),
-                "times_cited": _pick("times_cited", 0, 0),
-            }
-            note_header = render_info_header(merged)
-            logger.info("变体头部（与 L1 同源）：作者 %d 位 / 期刊=%r 年份=%r DOI=%s",
-                        len(merged["authors"] or []), merged["journal"], merged["year"],
-                        merged["doi"])
-        except Exception as e:  # noqa: BLE001 - 头部渲染失败不阻塞变体产出（模板会回退）
-            logger.warning("变体头部（与 L1 同源）渲染失败，模板回退旧格式: %s", e)
+            key = str(getattr(md, "doi", "") or "") or doi_dir   # 两者现在都能解析到同一 rid
+            frontmatter = self._get_kbmeta().variant_frontmatter(
+                key, md.model_dump() if hasattr(md, "model_dump") else dict(md),
+                variant_tags(doc))
+            logger.info("变体头部（papers_meta + journals.db 权威值）：%s",
+                        frontmatter.replace("\n", " | ")[:300])
+        except Exception as e:  # noqa: BLE001 - 头部渲染失败不阻塞变体产出
+            logger.warning("变体头部装配失败（本次不写 frontmatter）: %s", e)
         paths: dict[str, str] = {}
         try:
             kb_dir = self._kb_dir_for_library(doi_dir)
-            paths = self._write_kb_variants(doc, kb_dir, note_header=note_header)
+            paths = self._write_kb_variants(doc, kb_dir, frontmatter=frontmatter)
             logger.info("变体写入 kb 定版（library 不再放译文）: %s", sorted(paths))
         except Exception as e:  # noqa: BLE001 - kb 侧写失败不推翻译文（重渲染可补）
             logger.warning("变体写 kb 失败（译文已在 document.json）: %s", e)
@@ -502,14 +483,25 @@ class EngineService:
 
         T06：模板切换后重渲染；P0-B（2026-09-12）起变体真相源在 **library**
         （kb 侧读取回退 + 按 mtime 择新，旧 kb 副本不会遮住新渲染结果）。
+        2026-09-16：头部 frontmatter 与 `combined_translate` **同一装配入口**注入
+        （模板已不再自己拼元数据，不注入就等于没有元数据块）。
         """
-        from paperparse.core.markdown_render import render
+        from paperparse.core.markdown_render import render, variant_tags
         from paperparse.core.document_builder import load_document, output_dir_name
 
         p = Path(document_json).resolve()
         doc = load_document(str(p))
         doi_dir = output_dir_name(doc.metadata.doi, doc.metadata.source_pdf)
-        md = render(doc, template=template)
+        frontmatter = ""
+        try:
+            md = doc.metadata
+            key = str(getattr(md, "doi", "") or "") or doi_dir
+            frontmatter = self._get_kbmeta().variant_frontmatter(
+                key, md.model_dump() if hasattr(md, "model_dump") else dict(md),
+                variant_tags(doc))
+        except Exception as e:  # noqa: BLE001 - 头部装配失败不阻塞重渲染
+            logger.warning("重渲染头部装配失败（本次不写 frontmatter）: %s", e)
+        md = render(doc, template=template, frontmatter=frontmatter)
         paper_dir = _paper_dir(p)
         paper_dir.mkdir(parents=True, exist_ok=True)
         en_zh = paper_dir / "en_zh.md"

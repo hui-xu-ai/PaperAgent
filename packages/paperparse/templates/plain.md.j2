@@ -1,16 +1,6 @@
----
-title: "{{ doc.metadata.title }}"
-authors: {{ doc.metadata.authors | tojson }}
-year: {{ doc.metadata.year if doc.metadata.year else "" }}
-doi: "{{ doc.metadata.doi or "" }}"
-keywords: {{ doc.metadata.keywords | tojson }}
-tags: {{ tags_json }}
-source: pdf
----
-
-# {{ doc.metadata.title }}
-
-{% for item in items %}
+{% if frontmatter %}{{ frontmatter }}
+{% endif %}# {{ doc.metadata.title }}
+{%- for item in items %}
 {% if item.type == "heading" %}
 ## {{ item.text }}
 {% elif item.type == "figure" %}

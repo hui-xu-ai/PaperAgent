@@ -28,7 +28,8 @@ from paperparse.config import templates_dir
 from paperparse.middleware.errors import PaperError
 from paperparse.middleware.schema import ArticleDocument
 
-__all__ = ["render", "list_templates", "render_variant"]
+__all__ = ["render", "list_templates", "render_variant", "variant_tags",
+           "fallback_frontmatter", "FIELD_ORDER"]
 
 # recognized 变体排除的章节（翻译/识别校准版不需要）
 EXCLUDE_SECTIONS = {
@@ -41,6 +42,71 @@ EXCLUDE_SECTIONS = {
 def _tag(keyword: str) -> str:
     """[局部] 关键词 → Obsidian 标签（空格/特殊字符 → 下划线）"""
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]", "_", keyword.strip()).strip("_") or "keyword"
+
+
+def variant_tags(doc: ArticleDocument, base: str = "文献") -> list[str]:
+    """[全局] 变体 frontmatter 的 tags（**唯一来源**：模板兜底与 backend 注入共用）。
+
+    = 基础标签 + 文章类型 + 关键词（逐项过 `_tag` 净化）。backend 注入 frontmatter 时
+    必须用它取值——否则两侧各算一套，tags 会随路径不同而不同。
+    """
+    tags = [base]
+    if doc.metadata.article_type:
+        tags.append(_tag(doc.metadata.article_type))
+    tags += [_tag(k) for k in doc.metadata.keywords]
+    return tags
+
+
+# 头部字段顺序（**用户 2026-09-16 给定**）。与 `paperkb.headmeta.FIELD_ORDER` 必须一致；
+# 两个包**互不依赖**（paperkb 不 import paperparse，反之亦然），故顺序在两处各写一次，
+# 由 `backend/tests/test_headmeta_contract.py` 跨包断言守卫（backend 同时依赖两者）。
+FIELD_ORDER = ("作者", "通讯作者", "研究单位", "年份", "期刊", "影响因子",
+               "JCR分区", "中科院分区", "DOI", "被引", "关键词")
+
+
+def _yaml_scalar(value) -> str:
+    """[局部] 标量 → YAML 行内文本（字符串一律 JSON 双引号转义；数字裸写）。"""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def fallback_frontmatter(doc: ArticleDocument, tags: list[str] | None = None) -> str:
+    """[全局] 未注入 `frontmatter` 时的**兜底头部**（仅有 document.json 能给的字段）。
+
+    为什么需要：paperparse 独立 CLI / parse-only 导出（`api._export_parse_only`）不经过
+    backend，拿不到 `papers_meta`/`journals.db`。此时输出**同一套键名与顺序**（字段更少：
+    无期刊指标/分区/被引），而不是退回旧的英文字段集（`authors:` / `journal:` 那套）。
+    正常链路（backend 的 `variant_frontmatter()`）永远注入，不走这里。
+    """
+    m = doc.metadata
+    fields: dict = {}
+    if m.authors:
+        fields["作者"] = ", ".join(str(a).strip() for a in m.authors if str(a).strip())
+    year = str(m.year or "").strip()
+    if year:
+        fields["年份"] = int(year) if year.isdigit() else year
+    if (m.journal or "").strip():
+        fields["期刊"] = str(m.journal).strip()
+    if (m.doi or "").strip():
+        fields["DOI"] = str(m.doi).strip()
+    if m.keywords:
+        fields["关键词"] = ", ".join(str(k).strip() for k in m.keywords if str(k).strip())
+
+    lines = ["---"]
+    if (m.title or "").strip():
+        lines.append(f"title: {_yaml_scalar(m.title)}")
+    for key in FIELD_ORDER:
+        if key in fields:
+            lines.append(f"{key}: {_yaml_scalar(fields[key])}")
+    lines.append("tags: " + json.dumps(list(tags or []), ensure_ascii=False))
+    lines.append("source: pdf")
+    if (m.extraction_time or "").strip():
+        lines.append(f"created: {m.extraction_time}")
+    lines.append("---")
+    return "\n".join(lines) + "\n"
 
 
 _LIG_FOLD = str.maketrans({"\ufb01": "fi", "\ufb02": "fl", "\ufb03": "ffi", "\ufb04": "ffl"})
@@ -181,17 +247,25 @@ def _strip_ref_num(raw: str) -> str:
 
 def render(doc: ArticleDocument, template: str = "obsidian_bilingual",
            exclude_sections: set[str] | None = None,
-           note_header: str = "") -> str:
+           frontmatter: str = "") -> str:
     """[全局] 渲染 document.json → Obsidian 兼容 Markdown
 
     参数:
         doc: ArticleDocument（单一事实源）
         template: 模板名（skill/templates/<name>.md.j2）
         exclude_sections: 需排除的章节名集合（小写；recognized 变体用）
-        note_header: `> [!info] 文献信息` 的正文行（**由 backend 用 L1 同一套元数据渲染后传入**）。
-            2026-09-16 用户要求：变体头部必须与编译 L1 开头一致——模板自己只能拿到 `doc.metadata`
-            （解析产物，**没有期刊/被引**，所以曾恒显示 `期刊: —`），故改为由调用方注入权威文本；
-            为空时模板回退旧的 `doc.metadata` 渲染（保持旧行为可跑）。
+        frontmatter: **完整 YAML frontmatter 块**（含首尾 `---`），由调用方注入。
+
+    2026-09-16 用户要求（逐字）："元数据，按照作者、通讯作者、研究单位、年份、期刊、影响因子、
+    JCR分区、中科院分区、DOI、被引、关键词排列。模板统一更换成这个样式。元数据显示，模板中重复的
+    这个：`[!info] 文献信息`，这部分直接删除。"
+    ⇒ 本模块**不再自己拼头部**：模板只输出 `{{ frontmatter }}`。
+      为什么必须外部注入：期刊/年份/被引/影响因子/分区都不在 `document.json`（本模块唯一能拿到的
+      `doc.metadata`）里，而在 `papers_meta` + `journals.db` —— 模板自己拼必然拼出空值
+      （实测变体显示 `期刊: ""`、`被引：0`，而 `_note.md` 有真值）。唯一装配入口 =
+      `paperkb.api.variant_frontmatter()`（backend 侧）⇒ 头部只有一份实现，不再两处分叉。
+      未注入（如 tools/测试直调）时用 `fallback_frontmatter()` 兜底——**同一套键名与顺序**，
+      只是字段少（document.json 里没有期刊指标/分区/被引）。
     """
     env = Environment(
         loader=FileSystemLoader(str(templates_dir())),
@@ -200,36 +274,36 @@ def render(doc: ArticleDocument, template: str = "obsidian_bilingual",
     env.filters["strip_ref_num"] = _strip_ref_num
     try:
         tpl = env.get_template("%s.md.j2" % template)
-        tags = ["文献"]
-        if doc.metadata.article_type:
-            tags.append(_tag(doc.metadata.article_type))
-        tags += [_tag(k) for k in doc.metadata.keywords]
+        tags = variant_tags(doc)
         tags_json = json.dumps(tags, ensure_ascii=False)
         items = _filter_excluded(_build_items(doc), exclude_sections or set())
+        fm = frontmatter or fallback_frontmatter(doc, tags)
         return tpl.render(doc=doc, items=items, tags=tags, tags_json=tags_json,
-                          note_header=note_header)
+                          frontmatter=fm)
     except Exception as exc:
         raise PaperError("PAPER-0040", stage="S7",
                          detail={"template": template, "exc": str(exc)[:300]}) from exc
 
 
 def render_variant(doc: ArticleDocument, variant: str = "recognized",
-                   note_header: str = "") -> str:
+                   frontmatter: str = "") -> str:
     """[全局] 变体渲染（M5 输出结构）：
       recognized：识别校准版（英文正文+图，排除参考文献/致谢/COI 等章节）
       translated ：中英对照版（英文上中文下，不折叠）
       zh         ：纯中文版（保留标题结构，移除英文对照，未译段回退英文）——备份包 .zh.md
       summary    ：AI 阅读总结版（仅 frontmatter + 总结 callout + 标题）
+
+    `frontmatter`：见 `render()`（由 `paperkb.api.variant_frontmatter()` 装配后注入）。
     """
     if variant == "recognized":
         return render(doc, template="recognized", exclude_sections=EXCLUDE_SECTIONS,
-                      note_header=note_header)
+                      frontmatter=frontmatter)
     if variant == "translated":
-        return render(doc, template="obsidian_bilingual", note_header=note_header)
+        return render(doc, template="obsidian_bilingual", frontmatter=frontmatter)
     if variant == "zh":
-        return render(doc, template="zh_only", note_header=note_header)     # 纯中文版（保留标题结构，移除英文对照）
+        return render(doc, template="zh_only", frontmatter=frontmatter)     # 纯中文版（保留标题结构，移除英文对照）
     if variant == "summary":
-        return render(doc, template="summary_variant", note_header=note_header)
+        return render(doc, template="summary_variant", frontmatter=frontmatter)
     raise PaperError("PAPER-0501", stage="S7",
                      detail={"reason": "未知变体",
                              "available": ["recognized", "translated", "zh", "summary"]})

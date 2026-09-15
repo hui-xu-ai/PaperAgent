@@ -290,6 +290,28 @@ class TaskManager:
         except Exception as e:  # noqa: BLE001 - 清理失败不阻塞流水线
             logger.warning("清理上传暂存失败: %s", e)
 
+    def _enrich_meta_before_render(self, doc_json: str, paper_id: int) -> None:
+        """变体（zh.md/en_zh.md）渲染**之前**富化 papers_meta（幂等；失败只告警）。
+
+        2026-09-16 用户报障「zh.md/en_zh.md 头部期刊/年份空、被引 0，而 _note.md 有真值」：
+        根因之一是**时序**——富化原本只在 `_assemble_kb`（翻译/导出之后）里跑，
+        于是变体渲染那一刻 papers_meta 还没有行（实测时间线：zh.md 00:30:21 < identifiers
+        00:30:23 < _note.md 00:30:59）。这里把它提前到渲染前，与 `_assemble_kb` 的调用
+        靠 `_meta_ready` 幂等去重。
+        """
+        try:
+            import json
+            from pathlib import Path
+
+            data = json.loads(Path(doc_json).read_text(encoding="utf-8"))
+            doi = str((data.get("metadata") or {}).get("doi") or "").strip()
+            if doi:
+                self._ensure_meta_for_doi(doi, paper_id)
+            else:
+                logger.info("渲染前元数据富化跳过：该篇无 DOI（%s）", doc_json)
+        except Exception as e:  # noqa: BLE001 - 富化失败不阻塞翻译
+            logger.warning("渲染前元数据富化失败（不影响翻译）: %s", e)
+
     def _translate_and_export(self, paper_id: int, paper: dict, doc_json: str,
                               parse_src: str, parse_label: str) -> None:
         """翻译+导出段（_run_pipeline 与复核门控续跑共用；翻译输入=复核后最终 document）。"""
@@ -316,6 +338,8 @@ class TaskManager:
                     tpl = get_settings_service().get_md_template()
                 except Exception:  # noqa: BLE001
                     tpl = ""
+            # 头部元数据（frontmatter）渲染前先富化 papers_meta（否则头部缺期刊/年份/被引）
+            self._enrich_meta_before_render(doc_json, paper_id)
             self.engine.combined_translate(doc_json, template=tpl or None)
         except EngineError as e:
             self._fail(paper_id, f"翻译+总结失败: {e}")

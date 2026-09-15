@@ -65,42 +65,59 @@ def test_translation_target_never_loses_write(tmp_path):
     assert kbapi.translation_target(str(ghost)) == str(ghost)
 
 
-# ---------------------------------------------------------------- [!info] 文献信息 头部格式
-# 用户 2026-09-16 给定目标格式（逐字锁定，防再漂移）。四行：作者 / 期刊·年份（指标）/ DOI / 被引。
+# ---------------------------------------------------------------- 变体头部 frontmatter
+# 用户 2026-09-16 重新给定（覆盖上一版的"四行 callout"，callout 已整块删除）：
+#   "元数据，按照作者、通讯作者、研究单位、年份、期刊、影响因子、JCR分区、中科院分区、
+#    DOI、被引、关键词排列。模板统一更换成这个样式。…重复的这个：[!info] 文献信息，直接删除。"
 
-_USER_TARGET = (
-    "> - 作者：Zhenjin Xu, Keqi Deng, Yang Zhang, Bin Zhu, Jianhui Yang, Mingcheng Xue, "
-    "Hang Jin, Gonghan He, Gaofeng Zheng, Jianyi Zheng, * and Dezhi Wu*\n"
-    "> - 期刊/年份： （无指标）\n"
-    "> - DOI：[10.1002/adma.202407106](https://doi.org/10.1002/adma.202407106)\n"
-    "> - 被引：0"
-)
+def test_frontmatter_field_order_matches_user_given_order():
+    from paperkb.headmeta import FIELD_ORDER
 
-
-def test_info_header_matches_user_given_format_exactly():
-    from paperkb.compile import render_info_header
-
-    meta = {"authors": ["Zhenjin Xu", "Keqi Deng", "Yang Zhang", "Bin Zhu", "Jianhui Yang",
-                        "Mingcheng Xue", "Hang Jin", "Gonghan He", "Gaofeng Zheng",
-                        "Jianyi Zheng", "* and Dezhi Wu*"],
-            "journal": "", "year": "", "doi": "10.1002/adma.202407106", "times_cited": 0}
-    assert render_info_header(meta) == _USER_TARGET
+    assert FIELD_ORDER == ("作者", "通讯作者", "研究单位", "年份", "期刊", "影响因子",
+                           "JCR分区", "中科院分区", "DOI", "被引", "关键词")
 
 
-def test_info_header_with_values_and_corresponding_star():
-    """有值时四行同样成立；通信作者加 `*`；无自造占位符（不出现 `—` / 多余"通信作者/研究单位"行）。"""
-    from paperkb.compile import render_info_header
+def test_render_frontmatter_full_shape_and_corresponding_star():
+    """全字段渲染：顺序 = 用户给定顺序；通信作者标 `*`；空字段不出行（不造 `—` 占位）。"""
+    from paperkb.headmeta import render_frontmatter
 
-    out = render_info_header({"authors": ["A B", "C D"], "corresponding": ["C D"],
-                              "journal": "Advanced Materials", "year": "2024",
-                              "doi": "10.1002/x", "times_cited": 12}, "IF 27.4 / 一区")
+    meta = {"title": "T", "authors": ["A B", "C D"], "corresponding": ["C D"],
+            "affiliations": ["X University"], "journal": "Advanced Materials",
+            "year": "2024", "doi": "10.1002/x", "times_cited": 12,
+            "keywords": ["Graphene", "Actuator"]}
+    out = render_frontmatter(meta, info={"jif": 26.8, "jcr": "Q1", "cas": "1区"},
+                             title=meta["title"], tags=["文献"], source="pdf",
+                             created="2026-09-16T00:00:00+00:00")
     lines = out.splitlines()
-    assert lines[0] == "> - 作者：A B, C D*"
-    assert lines[1] == "> - 期刊/年份：Advanced Materials 2024（IF 27.4 / 一区）"
-    assert lines[2] == "> - DOI：[10.1002/x](https://doi.org/10.1002/x)"
-    assert lines[3] == "> - 被引：12"
-    assert len(lines) == 4, "只允许四行（不自作主张增删）"
-    assert "—" not in out
+    assert lines[0] == "---" and lines[-1] == "---"
+    assert lines[1] == 'title: "T"'
+    assert lines[2] == '作者: "A B, C D*"'
+    assert lines[3] == '通讯作者: "C D"'
+    assert lines[4] == '研究单位: "X University"'
+    assert lines[5] == "年份: 2024"
+    assert lines[6] == '期刊: "Advanced Materials"'
+    assert lines[7] == "影响因子: 26.8"
+    assert lines[8] == 'JCR分区: "Q1"'
+    assert lines[9] == '中科院分区: "1区"'
+    assert lines[10] == 'DOI: "10.1002/x"'
+    assert lines[11] == "被引: 12"
+    assert lines[12] == '关键词: "Graphene, Actuator"'
+    assert lines[13] == 'tags: ["文献"]'
+    assert lines[14] == "source: pdf"
+    assert lines[15] == "created: 2026-09-16T00:00:00+00:00"
+    assert "—" not in out and "无指标" not in out
+
+
+def test_render_frontmatter_omits_empty_fields():
+    """取不到的字段**整行不出**（空值不许写成 `期刊: ""` 这种自造占位）。"""
+    from paperkb.headmeta import render_frontmatter
+
+    out = render_frontmatter({"title": "T", "authors": ["A B"], "doi": "10.1002/x"},
+                             title="T", tags=[], source="pdf", created="")
+    assert '作者: "A B"' in out
+    assert "期刊" not in out and "影响因子" not in out and "被引" not in out
+    assert "created:" not in out
+    assert "source: pdf" in out
 
 # 为什么不用 JSON 承载 L2：2026-09-15 真实链路实测——让模型把长 Markdown 塞进 JSON 字符串时
 # 它给不全 ⇒ 整个 JSON 解析失败 ⇒ **连 L1 都丢**（比旧行为更坏）。改两段式后 L1 独立可解析。

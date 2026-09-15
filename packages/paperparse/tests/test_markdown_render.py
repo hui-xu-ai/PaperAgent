@@ -46,11 +46,38 @@ def _doc() -> ArticleDocument:
 
 
 def test_frontmatter_and_tags():
+    """2026-09-16 新契约：兜底头部用**用户给定键名/顺序**（作者/年份/期刊/DOI/关键词…）。"""
     md = render(_doc())
-    assert "---" in md
+    assert md.startswith("---\n")
     assert 'tags: ["文献", "artificial_muscle", "soft_actuator"]' in md
     assert 'title: "Test Paper"' in md
-    assert 'doi: "10.1002/adma.202407106"' in md
+    assert '作者: "A. One, B. Two"' in md
+    assert "年份: 2024" in md
+    assert 'DOI: "10.1002/adma.202407106"' in md
+    assert '关键词: "artificial muscle, soft actuator"' in md
+    # 旧英文字段集不得再出现（用户："模板统一更换成这个样式"）
+    assert "\nauthors:" not in md
+    assert "\ndoi:" not in md
+
+
+def test_injected_frontmatter_is_used_verbatim():
+    """backend 注入的 frontmatter（papers_meta + journals.db 权威值）**原样**进文件。"""
+    fm = ('---\ntitle: "T"\n作者: "A*, B"\n通讯作者: "A"\n研究单位: "X 大学"\n'
+          '年份: 2024\n期刊: "Advanced Materials"\n影响因子: 26.8\nJCR分区: "Q1"\n'
+          '中科院分区: "1区"\nDOI: "10.1002/adma.202407106"\n被引: 11\n'
+          '关键词: "Graphene"\ntags: ["文献"]\nsource: pdf\ncreated: 2025-01-01\n---\n')
+    md = render(_doc(), frontmatter=fm)
+    assert md.startswith(fm)
+    assert '期刊: "Advanced Materials"' in md
+
+
+def test_no_info_callout_in_any_template():
+    """用户 2026-09-16：`> [!info] 文献信息`（与 frontmatter 重复）**直接删除**。"""
+    for tpl in ("obsidian_bilingual", "zh_only", "recognized", "plain",
+                "obsidian_bilingual_alt"):
+        md = render(_doc(), template=tpl)
+        assert "> [!info]" not in md, tpl
+        assert "文献信息" not in md, tpl
 
 
 def test_bilingual_details():
@@ -129,8 +156,8 @@ def test_ai_summary_block_removed_from_variants():
     assert "> [!summary]" not in md, "总结 callout 必须已删除（总结归编译）"
     assert "AI 阅读总结" not in md
     assert "由 AI 总结阶段" not in md
-    # 文献信息 callout 仍必须在
-    assert "> [!info] 文献信息" in md
+    # 2026-09-16：`> [!info] 文献信息` 也已整块删除（元数据统一进 frontmatter）
+    assert "> [!info]" not in md
 
 
 def test_abstract_section_inserted():
@@ -192,9 +219,10 @@ def test_recognized_variant_excludes_sections():
     assert "English paragraph text here." in md
 
 
-def test_article_type_in_frontmatter_and_tags():
+def test_article_type_in_tags():
+    """文章类型不再进 frontmatter（用户给定字段表里没有"类型"），只作 tag。"""
     doc = _doc()
     doc.metadata.article_type = "Research Article"
     md = render(doc)
-    assert 'type: "Research Article"' in md
     assert '"Research_Article"' in md            # tags 含文章类型
+    assert "\ntype:" not in md                   # 不再写 type 属性

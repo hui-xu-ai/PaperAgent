@@ -199,6 +199,8 @@ class KBStore:
         - 真实 DOI → 查 identifiers(kind='doi')；未登记则按规则算 `doi-…`
           （保证"先导入 bib 还是先编译"都能命中同一 rid）
         - 其他（md5 目录名 / 历史目录名）→ 原样返回（宽松，不阻断既有流程）
+        - **DOI 目录名**（`10.1002_adma.202407106`）→ 反推 DOI 再解析（2026-09-16：
+          引擎层确有拿目录名当键的调用点，不归一化就会"同一条目两种键、其中一个查空"）
         """
         value = (key or "").strip()
         if not value:
@@ -207,12 +209,30 @@ class KBStore:
                              "nd-", "si__", "review__", "book__", "chapter__",
                              "thesis__", "note__", "patent__", "std__")):
             return value
-        if is_doi(value):
+        doi = value if is_doi(value) else ""
+        if not doi:
+            # 目录名形态（`10.1002_adma.202407106`，= doi_to_dirname 产物）→ 反推 DOI。
+            # 2026-09-16 修：引擎/任务层多处用**目录名**当键（如
+            # `engine_service.combined_translate` 传 `doi_dir` 给 `get_paper_meta`），
+            # 旧实现只认 RID 与裸 DOI ⇒ 恒落到既有行之外 ⇒ `has_meta=False`、
+            # `get_meta=None`，变体头部期刊/年份/被引全空（实测 `probe_key_forms.py`）。
+            # 不可逆目录名（带 --xxxxxx 消歧后缀）走 doi_md5_map 反查。
+            from .doi import dirname_to_doi
+
+            doi = dirname_to_doi(value)
+            if not doi:
+                try:
+                    row = self.get_doi_md5_map(value)
+                except Exception:  # noqa: BLE001 - 无映射表按未命中处理
+                    row = None
+                cand = str((row or {}).get("doi") or "").strip()
+                doi = cand if is_doi(cand) else ""
+        if doi:
             with self._conn() as conn:
                 row = conn.execute(
                     "SELECT rid FROM identifiers WHERE kind='doi' AND value=?",
-                    (value,)).fetchone()
-            return row["rid"] if row else make_rid("paper", doi=value)
+                    (doi,)).fetchone()
+            return row["rid"] if row else make_rid("paper", doi=doi)
         return value
 
     def register_identifier(self, kind: str, value: str, rid: str) -> None:

@@ -187,6 +187,55 @@ def test_combined_translate_writes_kb_variants(tmp_path, settings, monkeypatch):
     assert r["translate"]["translated"] == 3
 
 
+def test_combined_translate_injects_authoritative_frontmatter(tmp_path, settings, monkeypatch):
+    """2026-09-16（用户报障"头部元数据混乱"）：变体头部由 `variant_frontmatter()` 注入，
+    模板不再自己从 document.json 拼（那里没有期刊/年份/被引/指标）。
+
+    本测试锁定三件事：
+      ① 键用**真 DOI**（不是目录名——目录名形态曾取不到 papers_meta，见 paperkb 测试）；
+      ② 注入的 frontmatter **原样**进 zh.md / en_zh.md 头部；
+      ③ callout `> [!info] 文献信息` 已消失（用户要求删除）。
+    """
+    import shutil
+    from pathlib import Path
+
+    import app.config as cfg
+    from app.services.engine_service import EngineService
+    from app.services import kbmeta_service
+
+    monkeypatch.setattr(cfg, "APP_DATA_DIR", tmp_path)
+    seen: dict = {}
+
+    class _FakeKbMeta:
+        def translate_now(self, doc_json):
+            return {"translated": 1}
+
+        def variant_frontmatter(self, key, doc_meta, tags):
+            seen["key"] = key
+            seen["tags"] = list(tags)
+            return ('---\ntitle: "T"\n作者: "A*, B"\n年份: 2024\n'
+                    '期刊: "Advanced Materials"\n影响因子: 26.8\nDOI: "10.1002/adma.202407106"\n'
+                    '被引: 11\ntags: ["文献"]\nsource: pdf\n---\n')
+
+    monkeypatch.setattr(kbmeta_service, "get_kbmeta", lambda: _FakeKbMeta())
+    lib = Path(settings.engine_work_root)
+    doc_dir = lib / "10.1002_adma.202407106" / "intermediate"
+    doc_dir.mkdir(parents=True)
+    doc = doc_dir / "document.json"
+    shutil.copy2(ENGINE_DOC, doc)
+
+    r = EngineService(settings).combined_translate(doc, template="obsidian_bilingual")
+    assert seen["key"] == "10.1002/adma.202407106", "必须用真 DOI 取元数据（目录名曾恒取不到）"
+    assert "文献" in seen["tags"]
+    for name in ("zh.md", "en_zh.md"):
+        text = Path(r["variants"][name]).read_text(encoding="utf-8")
+        assert text.startswith("---\ntitle: \"T\"\n"), f"{name} 头部必须是注入的 frontmatter"
+        assert '期刊: "Advanced Materials"' in text
+        assert "被引: 11" in text
+        assert "> [!info]" not in text, "文献信息 callout 必须已删除"
+        assert "\nauthors:" not in text, "旧英文字段集不得再出现"
+
+
 def test_g5_figures_restored(tmp_path, settings):
     """G5：导出 md 补齐图片行（![](images/F001.png)）且无 `<!-- image -->` 占位符残留。"""
     import shutil
