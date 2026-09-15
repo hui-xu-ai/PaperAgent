@@ -414,24 +414,43 @@ class EngineService:
         # 依据：kb 是唯一成品区、阅读器读取已改为"定版优先"（`kb_service.read_file`），
         # 只写 library 会让新译文在 kb 里缺位、读侧只能回退中转站（审计 §C5/C12 的残留）。
         # library 那份暂留：兼容"变体真相源在 library"的旧数据与外部引用，验证无异常后即可撤。
-        # 头部与 L1 同源：用 `papers_meta` 渲染（取不到 meta 则用 doc.metadata 兜底）
+        # 头部与 L1 同源：走**同一条兜底链**（papers_meta 权威 → document.json 兜底）。
+        # 教训（2026-09-16 用户指出）：我先前只调 `get_paper_meta()`，没走 L1 用的
+        # `resource.meta_for()` 兜底 ⇒ `papers_meta` 没行时头部全空，而 L1 却能显示作者/期刊
+        # （那些值本来就在解析产物的 document.json 里）。两处必须**同源**。
         note_header = ""
         try:
             from paperkb.compile import render_info_header
 
-            meta = None
+            db_meta = None
             try:
-                meta = self._get_kbmeta().get_paper_meta(doi_dir)
-            except Exception as e:  # noqa: BLE001 - 无 kbmeta（单测/CLI）→ 用 doc.metadata
-                logger.debug("取 papers_meta 失败（用 doc.metadata 兜底）：%s", e)
-            if not isinstance(meta, dict) and meta is None:
-                _m = doc.metadata
-                meta = {"authors": list(getattr(_m, "authors", []) or []),
-                        "journal": getattr(_m, "journal", "") or "",
-                        "year": getattr(_m, "year", "") or "",
-                        "doi": getattr(_m, "doi", "") or "",
-                        "times_cited": 0}
-            note_header = render_info_header(meta)
+                db_meta = self._get_kbmeta().get_paper_meta(doi_dir)
+            except Exception as e:  # noqa: BLE001 - 无 kbmeta（单测/CLI）→ 直接用解析产物
+                logger.debug("取 papers_meta 失败（改用 document.json 兜底）：%s", e)
+            md = doc.metadata
+
+            def _pick(db_key: str, doc_val, default=""):
+                """字段级取值：papers_meta 优先，空则用 document.json（与 meta_for 的兜底精神一致）。"""
+                if isinstance(db_meta, dict):
+                    v = db_meta.get(db_key)
+                else:
+                    v = getattr(db_meta, db_key, None) if db_meta is not None else None
+                if v not in (None, "", [], {}):
+                    return v
+                return doc_val if doc_val not in (None, "", [], {}) else default
+
+            merged = {
+                "authors": _pick("authors", list(getattr(md, "authors", []) or [])),
+                "corresponding": _pick("corresponding", []),
+                "journal": _pick("journal", getattr(md, "journal", "") or ""),
+                "year": _pick("year", getattr(md, "year", "") or ""),
+                "doi": _pick("doi", getattr(md, "doi", "") or ""),
+                "times_cited": _pick("times_cited", 0, 0),
+            }
+            note_header = render_info_header(merged)
+            logger.info("变体头部（与 L1 同源）：作者 %d 位 / 期刊=%r 年份=%r DOI=%s",
+                        len(merged["authors"] or []), merged["journal"], merged["year"],
+                        merged["doi"])
         except Exception as e:  # noqa: BLE001 - 头部渲染失败不阻塞变体产出（模板会回退）
             logger.warning("变体头部（与 L1 同源）渲染失败，模板回退旧格式: %s", e)
         paths: dict[str, str] = {}
