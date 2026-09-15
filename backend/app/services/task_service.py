@@ -231,15 +231,6 @@ class TaskManager:
             if mode == "parse_compile":
                 self._write_doi_md5_map(doc_json, paper_id)  # 先登记目录↔DOI/md5 映射
                 kb_status = self._assemble_kb(doc_json, paper_id)  # kb 登记 + 自动编译 L1 入队（不翻译）
-                # 2026-09-15（用户报障修复）：编译合并**必须挂在 `_assemble_kb` 之后**——
-                #   · `_assemble_kb` 负责把 library 的「原文层四件」（含 **source.pdf**）纳入 kb，
-                #     并 `ensure_paper_registered`（元数据/被引/价值分的前提）；
-                #   · 之前挂在"翻译段"里，而 `parse_compile` 模式在下面 L250 就 return，
-                #     根本不会进翻译段 ⇒ 该模式下**零翻译**；且编译抢在 `_assemble_kb` 前跑会把
-                #     kb 建好、让 source.pdf 永远补不进去（实测：kb 缺 source.pdf、译文 0 段）。
-                if self._try_conversation_flow(paper, doc_json):
-                    kb_status = dict(kb_status or {})
-                    kb_status["compile"] = "merged_L1L2"
                 done_msg = parse_compile_done_msg(parse_label, kb_status)
             else:
                 kb_status = None
@@ -299,79 +290,6 @@ class TaskManager:
         except Exception as e:  # noqa: BLE001 - 清理失败不阻塞流水线
             logger.warning("清理上传暂存失败: %s", e)
 
-    def _try_conversation_flow(self, paper: dict, doc_json: str) -> bool:
-        """非 DeepSeek 官方：用**对话式一次流转**替代"单发编译 + 单发翻译"。
-
-        判定链（任一不满足 → 返回 False，走既有 `combined_translate`）：
-          1. env `PAPERAGENT_CONVO_FLOW` 未关；
-          2. 当前激活供应商 id ≠ `deepseek`（DeepSeek 官方前缀缓存跨请求有效，保持原方案）；
-          3. 该篇尚未编译出 `_note.md`（已编译过 → 翻译阶段无需再编译）；
-          4. paperkb 适配器支持 `chat_messages`；调用成功且译文覆盖达标。
-        成功时把 L1(+L2) 的编译任务标记为 done（**避免后台 worker 再单发编译一次**）。
-        """
-        import os
-
-        if (os.getenv("PAPERAGENT_CONVO_FLOW") or "1").strip().lower() in (
-                "0", "false", "no", "off"):
-            return False
-        try:
-            from .container import get_kbapi, get_settings_service
-
-            key = self._convo_key(paper, doc_json)
-            if not key:
-                return False
-            provider = get_settings_service().get_active_provider(masked=False) or {}
-            if str(provider.get("id") or "") == "deepseek":
-                return False                   # DeepSeek 官方：既有单发方案不变
-            kb = get_kbapi()
-            _c = kb._need_compiler()           # noqa: SLF001 - 复用编译器的键归一化与产物路径
-            if _c._note_path(key).exists():    # noqa: SLF001
-                return False                   # 已编译过 → 交给既有翻译路径
-            # 关键顺序：编译取数走 **kb 副本优先**，而此刻 document.json 还在 library
-            # （既有链路是编译时才 `_ensure_source` 同步）⇒ 先显式纳入 kb。
-            kb.sync_source_to_kb(key, force=False)
-            # 方案 A（用户 2026-09-14 拍板）：**编译合并成一次请求**（L1+L2 写在同一条 user），
-            # 翻译交回既有 `combined_translate`（不改动）。L1/L2 由此**必然同时产出**，
-            # 不再依赖 worker 的 L1→L2 升级链（此前只出 L1 就是断在这里）；L3 仍由升级链/手动触发。
-            logger.info("编译合并请求（L1+L2）：key=%s provider=%s", key, provider.get("name"))
-            res = kb.conversation_compile(key, levels=("L1", "L2"), translate=False)
-            logger.info("编译合并完成: %s", {k: res.get(k) for k in
-                                            ("levels", "notes", "calls")})
-            return True
-        except Exception as e:  # noqa: BLE001 - 失败必须**可见**（不再静默降级）
-            logger.error("编译合并请求失败（将回退既有单发编译+翻译）：%s", e, exc_info=True)
-            if self.event_bus:
-                self.event_bus.publish(
-                    "warning", "task", "convo_fallback",
-                    f"编译合并请求失败，已回退既有流程：{type(e).__name__}: {str(e)[:120]}",
-                    {"key": locals().get("key", "")})
-            return False
-
-    def _convo_key(self, paper: dict, doc_json: str) -> str:
-        """对话式路径的资源键（**与 `_assemble_kb` 同一约定**）：document.json 的 metadata.doi 优先；
-        无 DOI 时用内容指纹登记出的 RID。**不能只读 `paper["doi"]`**——实测 papers 表该列为 NULL
-        （DOI 在 document.json/papers_meta 里），只读它会让门禁静默返回 False。
-        """
-        import json
-        from pathlib import Path
-
-        try:
-            data = json.loads(Path(doc_json).read_text(encoding="utf-8", errors="replace"))
-            doi = str(((data.get("metadata") or {}).get("doi")) or "").strip()
-            if doi:
-                return doi
-        except Exception as e:  # noqa: BLE001 - 读不到就按无 DOI 处理
-            logger.debug("对话式取 key：读 document.json 失败（%s）", e)
-        try:
-            from .kbmeta_service import get_kbmeta
-
-            pdf_md5 = str((self.store.get_paper(paper.get("id")) or {}).get("pdf_md5") or "")
-            return get_kbmeta().ensure_paper_registered(
-                doc_json, paper_id=int(paper.get("id") or 0), pdf_md5=pdf_md5) or ""
-        except Exception as e:  # noqa: BLE001 - 登记失败 → 回退既有路径
-            logger.warning("对话式取 key 失败（回退既有路径）：%s", e)
-            return ""
-
     def _translate_and_export(self, paper_id: int, paper: dict, doc_json: str,
                               parse_src: str, parse_label: str) -> None:
         """翻译+导出段（_run_pipeline 与复核门控续跑共用；翻译输入=复核后最终 document）。"""
@@ -398,8 +316,6 @@ class TaskManager:
                     tpl = get_settings_service().get_md_template()
                 except Exception:  # noqa: BLE001
                     tpl = ""
-            # 2026-09-15 更正：编译合并**已移到 `parse_compile` 分支**（`_assemble_kb` 之后）——
-            # 放在这里会劫持 full 模式的翻译段，且 parse_compile 模式根本走不到这里。
             self.engine.combined_translate(doc_json, template=tpl or None)
         except EngineError as e:
             self._fail(paper_id, f"翻译+总结失败: {e}")

@@ -141,41 +141,6 @@ class KbMetaService:
             pass
         return kbapi.translate_paper(doc_json)
 
-    def conversation_compile(self, key: str, levels: tuple[str, ...] = ("L1",),
-                             translate: bool = True, l3: bool = False,
-                             context: str = "compile") -> dict:
-        """**对话式一次流转**（非 DeepSeek 官方）：编译（L1 或 L1+L2）+ 翻译 同一条 messages。
-
-        2026-09-13 用户决策；`l3=True` 时在最后**单独追加一轮** L3 深度知识卡请求。
-        不可用时抛 `paperkb.convo.ConvoFallback`，调用方回退既有单发路径。
-        ⚠️ 签名必须与 `paperkb.convo.conversation_compile` 保持一致——包装层漏参会变成
-        `unexpected keyword argument` 而被宽 except 吞掉（2026-09-13 实测踩过一次）；
-        守卫见 `backend/tests/test_convo_wiring.py::test_kbmeta_wrapper_signature_matches_paperkb`。
-        """
-        self._ensure()
-        from paperkb.convo import conversation_compile as _convo
-
-        # 运行时自证 + 适配：不同构建里 paperkb 副本的参数集可能滞后（实测报
-        # `conversation_compile() got an unexpected keyword argument 'l3'` 却查不出调用点）。
-        # 这里按**被调函数的真实签名**过滤关键字，并把双方签名写进日志，永不因此静默回退。
-        import inspect as _inspect
-
-        try:
-            params = set(_inspect.signature(_convo).parameters)
-        except Exception:  # noqa: BLE001 - 取不到签名就按老参数集发
-            params = {"key", "levels", "translate"}
-        kwargs = {"levels": levels, "translate": translate}
-        if "l3" in params:
-            kwargs["l3"] = l3
-        elif l3:
-            logger.warning("paperkb.convo 不支持 l3（签名=%s）→ 本次跳过 L3，"
-                           "其余流程照常", sorted(params))
-        if "context" in params:
-            kwargs["context"] = context
-        logger.warning("[convo] 转发 paperkb.convo.conversation_compile：目标签名=%s 实发=%s",
-                       sorted(params), sorted(kwargs))
-        return _convo(key, **kwargs)
-
     # ---------------------------------------------------------- 文献阅读日记
     # 数据聚合 + 用户笔记。与 paperkb.api 解耦：直接构造 KBStore(ROOTS)，
     # 不依赖 init_kb 后的 _store 单例（避免与 api.py 并行改动冲突）。
@@ -222,22 +187,6 @@ class _KBLLMAdapter:
         # 翻译补全上限走 base（DeepSeekAI）实例的 max_tokens（build_ai 按供应商透传，
         # 默认 DEFAULT_MAX_OUTPUT_TOKENS=16384）——翻译/总结共用该上限，防批量译文被截断。
         # 批3：**思考档决策用真实 context**（compile/l1/l2/l3…）；`mapped` 只用于 TokenGuard 分组。
-        return self._base.complete(prompt, context=mapped, effort_context=context)
-
-    def chat_messages(self, messages: list[dict], context: str = "compile") -> str:
-        """对话式（编译+翻译共用一条 messages）——非 DeepSeek 官方供应商的优化路径用。
-
-        TokenGuard 分组与 `complete` 同源（translate 单列，其余归 engine），避免第二套判据。
-        防御：若 base 没有该通道（旧构建/其它适配器），退回"拼成单条 prompt 再 complete"，
-        保证对话式路径**至少能跑**而不是整篇回退（实测：exe 里 `DeepSeekAI` 缺该方法）。
-        """
-        mapped = {"translate": "translate", "ask": "ask"}.get(context, "engine")
-        fn = getattr(self._base, "chat_messages", None)
-        if callable(fn):
-            return fn(messages, context=mapped)
-        logger.warning("base 无 chat_messages 通道（%s）→ 退回单条 prompt 方式",
-                       type(self._base).__name__)
-        prompt = "\n\n".join(str(m.get("content") or "") for m in messages)
         return self._base.complete(prompt, context=mapped, effort_context=context)
 
 

@@ -102,113 +102,6 @@ def cache_hit_tokens(usage) -> int:
     return 0
 
 
-# ---------------------------------------------------------------- 请求体调试探针（env 开关）
-# TRAPS §22：智谱前缀缓存只认 system 消息，形状已改对、供应商侧直打也命中，但应用仍恒 0 ⇒
-# 唯一未验证的环节是**应用真正发出去的请求体**。这里加一次性排障日志：默认关闭（零副作用），
-# 置 PAPERAGENT_LOG_REQUESTS=1 后每次调用落一行 `[llm-req]`，外加一条 `[llm-usage]` 原文 usage。
-# 安全：**只打 role / 长度 / sha256 / 是否含 marker，不打 prompt 正文**（`_DBG_PREVIEW=1` 才给
-# 上下文两侧各 60 字符，且已把换行折成 ⏎）。
-def _req_debug_enabled() -> bool:
-    import os
-    return (os.getenv("PAPERAGENT_LOG_REQUESTS") or "").strip().lower() in (
-        "1", "true", "yes", "on")
-
-
-def _blob_sha(text: str) -> str:
-    import hashlib
-    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
-
-
-def _first_diff_pos(a: str, b: str) -> int:
-    """首个不同字符位置；完全相同 → -1。"""
-    for i, (x, y) in enumerate(zip(a, b)):
-        if x != y:
-            return i
-    return -1 if len(a) == len(b) else min(len(a), len(b))
-
-
-def _dbg_slice(a: str, b: str, pos: int) -> str:
-    import os
-    if (os.getenv("PAPERAGENT_LOG_REQUESTS_PREVIEW") or "").strip() not in (
-            "1", "true", "yes", "on"):
-        return ""
-    lo = max(0, pos - 60)
-    return (f"  A@{lo}: {(a[lo:lo + 120] or '')!r}".replace("\\n", "⏎")
-            + f"\n  B@{lo}: {(b[lo:lo + 120] or '')!r}".replace("\\n", "⏎"))
-
-
-def debug_request(where: str, model: str, messages: list[dict], context: str = "",
-                  extra: dict | None = None) -> str:
-    """按 env 开关打印**真实请求体指纹**：每条消息 role/长度/sha256 + 是否含任务 marker，
-    并与**同 key 上一次**调用对比（相同 → 命中缓存的条件成立）。
-
-    只在 `PAPERAGENT_LOG_REQUESTS` 打开时动作；异常一律吞掉（排障日志绝不打断业务）。
-    返回指纹串（同 key 对比用），供调用方与响应 usage 一起打。
-    """
-    if not _req_debug_enabled():
-        return ""
-    try:
-        from paperkb.context import TASK_MARK
-
-        parts, sys_text, sys_role = [], "", ""
-        for m in messages:
-            c = m.get("content") or ""
-            if not isinstance(c, str):
-                c = str(c)
-            role = m.get("role") or "?"
-            parts.append(f"{role}:len={len(c)},sha={_blob_sha(c)},mark={TASK_MARK in c}")
-            if role == "system" and not sys_text:
-                sys_text, sys_role = c, role
-        e = extra or {}
-        logger.warning("[llm-req] %s ctx=%s model=%s msgs=%d [%s] effort=%s max_tokens=%s%s",
-                       where, context, model, len(messages), " | ".join(parts),
-                       e.get("effort"), e.get("max_tokens"),
-                       f" {e}" if e else "")
-        digest = "|".join(parts)
-        key = f"{sys_role}:{context}"
-        prev = _LAST_SYS.get(key)
-        _LAST_SYS[key] = (digest, sys_text)
-        if prev:
-            prev_digest, prev_text = prev
-            if prev_digest == digest:
-                logger.warning("[llm-req] 同 key(%s) 指纹与上次**完全相同** ⇒ 缓存条件成立", key)
-            else:
-                pos = _first_diff_pos(prev_text, sys_text)
-                logger.warning(
-                    "[llm-req] ⚠ 同 key(%s) system 内容**不同**：第一个差异字符位置=%s "
-                    "（len %d→%d）%s", key, pos, len(prev_text), len(sys_text),
-                    _dbg_slice(prev_text, sys_text, pos) if pos >= 0 else "")
-        return digest
-    except Exception:  # noqa: BLE001 - 排障日志绝不影响调用
-        return ""
-
-
-def debug_usage(where: str, context: str, model: str, usage, cache_hit: int,
-                extra: dict | None = None) -> None:
-    """按 env 开关打印**响应 usage 原文**（含 hit/miss token 与 finish/错误），排障用。"""
-    if not _req_debug_enabled():
-        return
-    try:
-        detail = ""
-        if isinstance(usage, dict):
-            detail = (f"prompt_cache_hit_tokens={usage.get('prompt_cache_hit_tokens')} "
-                      f"cached_tokens={(usage.get('prompt_tokens_details') or {}).get('cached_tokens')} ")
-        elif usage is not None:
-            detail = ""
-        logger.warning("[llm-usage] %s ctx=%s model=%s hit=%s %sprompt=%s completion=%s%s",
-                       where, context, model, cache_hit, detail,
-                       getattr(usage, "prompt_tokens", None) if not isinstance(usage, dict)
-                       else usage.get("prompt_tokens"),
-                       getattr(usage, "completion_tokens", None) if not isinstance(usage, dict)
-                       else usage.get("completion_tokens"),
-                       f" {extra}" if extra else "")
-    except Exception:  # noqa: BLE001 - 排障日志绝不影响调用
-        return
-
-
-_LAST_SYS: dict[str, tuple[str, str]] = {}
-
-
 class DeepSeekError(Exception):
     """LLM 调用失败（重试耗尽后抛出）。"""
 
@@ -446,8 +339,6 @@ class DeepSeekAI(AIProvider):
                          {"role": "user", "content": _user}]
         else:
             _messages = [{"role": "user", "content": _user}]
-        debug_request("complete", self.model, _messages, context=str(context),
-                      extra={"effort_ctx": effort_context or context})
         import requests as _req
         last_err: Exception | None = None
         for attempt in range(self.max_retries + 1):
@@ -502,10 +393,6 @@ class DeepSeekAI(AIProvider):
                     raise DeepSeekError(
                         f"响应无内容（finish_reason={ch.get('finish_reason')}）: {str(data)[:200]}")
                 usage = data.get("usage")
-                if usage is not None:
-                    debug_usage("complete", str(context), self.model, usage,
-                                cache_hit_tokens(usage),
-                                extra={"finish": ch.get("finish_reason")})
                 if usage is not None and self.guard:
                     cache_hit = cache_hit_tokens(usage)
                     self.guard.record_usage(
@@ -544,65 +431,6 @@ class DeepSeekAI(AIProvider):
         raise DeepSeekError(
             f"DeepSeek 调用失败（已重试 {self.max_retries} 次）: {last_err}{self._hint}") \
             from last_err
-
-    # ---------------------------------------------------------- 对话式（多消息）通道
-    def chat_messages(self, messages: list[dict[str, str]],
-                      context: str = "compile") -> str:
-        """**对话式**多消息补全（paperkb 编译+翻译共用一条对话时用）。
-
-        与 `complete()` 的差别：接收**完整 messages 列表**（含 assistant 历史），而不是单条 prompt。
-        `context` 用于 TokenGuard 分组（`translate` 单列，其余归 engine）。思考档沿用
-        `_resolve_effort` 的单一判据（translate=low / 其余映射），否则 GLM 会把 max_tokens
-        全用在思考上、正文 0 字符（2026-09-13 实测）。
-        """
-        if self.guard:
-            input_chars = sum(len(m.get("content") or "") for m in messages)
-            self.guard.begin_call(context, input_chars)
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-        }
-        effort, explicit = self._resolve_effort(context)
-        if effort and (explicit or self._reasoning_supported):
-            payload["reasoning_effort"] = effort
-        debug_request("chat_messages", self.model, messages, context=str(context),
-                      extra={"effort": effort, "max_tokens": self.max_tokens})
-        import requests as _req
-
-        resp = _req.post(
-            self._base_url + "/chat/completions",
-            headers={"Authorization": "Bearer " + self._api_key,
-                     "Content-Type": "application/json"},
-            json=payload, timeout=self.timeout_sec)
-        resp.raise_for_status()
-        data = resp.json()
-        try:
-            ch = data["choices"][0]
-        except (KeyError, IndexError, TypeError) as e:
-            raise DeepSeekError(f"对话式补全返回异常信封: {str(data)[:200]}") from e
-        msg = ch.get("message") or ch.get("delta") or {}
-        text = str(msg.get("content") or "").strip()
-        if not text:
-            text = str(msg.get("reasoning_content") or "").strip()
-        import re as _re3
-        text = _re3.sub(r"</?think>", "", text).strip()
-        usage = data.get("usage")
-        if usage is not None:
-            debug_usage("chat_messages", str(context), self.model, usage,
-                        cache_hit_tokens(usage), extra={"finish": ch.get("finish_reason")})
-        if usage is not None and self.guard:
-            self.guard.record_usage(
-                context,
-                int(usage.get("prompt_tokens", 0) or 0),
-                int(usage.get("completion_tokens", 0) or 0),
-                provider=self.provider_id, model=self.model,
-                cache_hit_tokens=cache_hit_tokens(usage))
-        if ch.get("finish_reason") == "length":
-            logger.warning("对话式补全输出被 max_tokens 截断（model=%s, chars=%d）",
-                           self.model, len(text))
-        return text
 
 
 # ---------------------------------------------------------------- 对话通道
@@ -729,8 +557,6 @@ class ChatCompleter:
         }
         if eff:
             payload["reasoning_effort"] = eff
-        debug_request("stream", self.model, messages, context=str(context),
-                      extra={"effort": eff, "max_tokens": self.max_tokens})
         try:
             stream = self._client.chat.completions.create(**payload)
         except Exception as e:  # noqa: BLE001 - 端点不支持该参数：降级重试一次
@@ -757,21 +583,12 @@ class ChatCompleter:
                 yield {"type": "delta", "text": text}
         if usage is not None and self.guard:
             cache_hit = cache_hit_tokens(usage)
-            debug_usage("stream", str(context), self.model, usage, cache_hit)
             self.guard.record_usage(
                 context,
                 int(getattr(usage, "prompt_tokens", 0) or 0),
                 int(getattr(usage, "completion_tokens", 0) or 0),
                 provider=self.provider_id, model=self.model,
                 cache_hit_tokens=cache_hit)
-
-    def chat_messages(self, messages: list[dict[str, str]], context: str = "compile") -> str:
-        """**对话式**多消息补全（paperkb 编译+翻译共用一条对话时用）。
-
-        与 `complete(messages, context="chat")` 的区别只在 context 语义：本方法用于**编译/翻译**
-        分组（`context="compile"/"translate"`），让 TokenGuard 记账与既有链路一致。
-        """
-        return self.complete(messages, context=context)
 
     def complete(self, messages: list[dict[str, str]], context: str = "chat") -> str:
         """非流式对话补全（用于回答缓存回填/离线场景）。"""

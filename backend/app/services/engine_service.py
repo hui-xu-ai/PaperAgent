@@ -390,8 +390,7 @@ class EngineService:
             paths[name] = str(fp)
         return paths
 
-    def combined_translate(self, document_json: str | Path, template: str | None = None,
-                           skip_translate: bool = False) -> dict:
+    def combined_translate(self, document_json: str | Path, template: str | None = None) -> dict:
         """M5 combined：翻译+总结（★paperkb 执行，写回 document.json）→ 渲染变体。
 
         M3b：LLM 翻译/总结已迁 paperkb（共用上下文缓存命中；产物落盘不进问答上下文）；
@@ -401,12 +400,9 @@ class EngineService:
         template: 保留签名兼容（模板切换重渲染走 rerender_paper，重渲染 kb en_zh.md）。
         """
         p = str(Path(document_json).resolve())
-        logger.info("M5 combined 翻译+总结（paperkb）: %s template=%s skip_translate=%s",
-                    p, template, skip_translate)
+        logger.info("M5 combined 翻译+总结（paperkb）: %s template=%s", p, template)
         # 1) paperkb 翻译+总结（写回 text_zh/ai_summary；LLM 由注入的 kbmeta 适配）
-        #    `skip_translate=True`：译文已由**对话式一次流转**写好（2026-09-13），这里只做渲染/变体，
-        #    避免二次翻译（既省钱又不会覆盖对话式产物）。
-        tr = {"skipped": True} if skip_translate else self._get_kbmeta().translate_now(p)
+        tr = self._get_kbmeta().translate_now(p)
         # 2) 渲染（paperparse 保留段：LaTeX 规范化 + 变体直写 **library**）
         from paperparse.core.document_builder import load_document, output_dir_name, save_document
         from paperparse.core.latex_normalize import normalize_document

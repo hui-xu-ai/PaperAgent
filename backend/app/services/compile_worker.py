@@ -139,10 +139,6 @@ class CompileWorker:
         level = r.get("level")
         if not doi or not level:
             return
-        if r.get("conversation"):
-            # 2026-09-13（用户决策）：非 DeepSeek 官方走"对话式一次流转"——L1(+L2) 已在
-            # 同一条 user 内一次做完，这里不再入队升级（避免重复编译已产出的级别）。
-            return
         try:
             value = self._value_fn(doi) or {}
             vlevel = str(value.get("level") or "L1")
@@ -159,10 +155,6 @@ class CompileWorker:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                # 对话式一次流转**不在 worker 里做**（2026-09-13 实测教训）：它挂在流水线的
-                # 翻译段（`task_service._translate_and_export`）——因为解析后会立刻入队编译并
-                # 马上进翻译，worker 这一环根本接管不到，反而会和流水线抢同一篇（曾出现
-                # L1 单发 + 翻译单发 + L2 升级三条链并行）。worker 只保留原队列逻辑。
                 if self.process_one() is not None:
                     continue  # 刚处理完一项 → 立即检查队列（自动升级项也在此被处理）
             except Exception as e:  # noqa: BLE001 - 单轮异常不杀线程
