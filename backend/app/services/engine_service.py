@@ -175,7 +175,12 @@ class EngineService:
                 wrapped = _wrap("process_pdf", result)
                 # G13：若发生过云端通道失败（降级到更低精度通道），附上失败原因供任务提示
                 if errors:
-                    wrapped["warnings"] = errors
+                    wrapped["warnings"] = list(errors)
+                    # ★2026-09-17 P5（用户实测教训）：**降级必须是显式事实**——此前只在日志里
+                    # warning，用户拿到明显更差的产物却不知道（NC 篇双通道失败静默回落老链，
+                    # 产物把 "Received 8 Jan 2015…" 当成 H1 标题，用户以为是解析质量崩了）。
+                    wrapped["degraded"] = True
+                    wrapped["degraded_reason"] = errors[0]
                 # P2-B：保证解析来源始终返回（引擎缺失时按实际通道兜底）
                 if not wrapped.get("parse_source"):
                     wrapped["parse_source"] = p
@@ -184,6 +189,10 @@ class EngineService:
                     self._post_parse_clean(wrapped["document_json"])
                 except Exception as e:  # noqa: BLE001 - 清洗失败不阻塞主流程
                     logger.warning("解析后清洗失败（不阻塞）: %s", e)
+                    # ★2026-09-17 P5：清洗失败会让**未清洗的原始 en.md**（可能带参考文献表/
+                    # 缺图片行）留在产物里 → 同样必须显式记录，不能只写日志。
+                    wrapped.setdefault("warnings", []).append(f"post_parse_clean: {e}")
+                self._record_parse_warnings(wrapped)
                 return wrapped
             except EngineError as e:
                 errors.append(f"{p}: {e}")
@@ -191,6 +200,36 @@ class EngineService:
         raise EngineError("解析失败（全部通道尝试完毕）: " + " | ".join(errors))
 
     # ---------------------------------------------------------- P12/P14 管线
+    @staticmethod
+    def _record_parse_warnings(wrapped: dict) -> None:
+        """★2026-09-17 P5：把"降级 / 清洗失败"等**静默事件**落盘到产物目录。
+
+        背景（用户实测教训）：双通道失败会静默回落老链（只写日志），用户拿到明显更差的产物却
+        不知道；`_post_parse_clean` 失败（会把带参考文献表的原始 en.md 留给用户）同样只写日志。
+        落盘：`library/<RID>/work/parse_warnings.json`（含 degraded / parse_source / warnings）。
+        """
+        import json
+        import time
+
+        warns = list(wrapped.get("warnings") or [])
+        degraded = bool(wrapped.get("degraded"))
+        if not warns and not degraded:
+            return
+        try:
+            doc = Path(str(wrapped.get("document_json") or ""))
+            if not doc.name:
+                return
+            work = doc.parent / "work"
+            work.mkdir(parents=True, exist_ok=True)
+            (work / "parse_warnings.json").write_text(json.dumps(
+                {"degraded": degraded,
+                 "parse_source": wrapped.get("parse_source"),
+                 "warnings": warns,
+                 "created": time.strftime("%Y-%m-%d %H:%M:%S")},
+                ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 - 落盘失败不影响解析
+            logger.warning("parse_warnings 落盘失败: %s", e)
+
     def _parse_mode_dual(self) -> bool:
         """解析模式：settings_service（SQLite）覆盖 > 环境变量（默认 dual）。"""
         try:

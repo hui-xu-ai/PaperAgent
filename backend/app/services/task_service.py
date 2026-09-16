@@ -212,11 +212,21 @@ class TaskManager:
             if parse_src in ("dual", "p14") and warns:
                 extra = "（" + "；".join(warns) + "）"
             if self.event_bus:
-                self.event_bus.publish(
-                    "info", "task", "parse_done",
-                    f"论文[{paper_id}] 解析完成，来源：{parse_label}{extra}",
-                    {"paper_id": paper_id, "parse_source": parse_src,
-                     "parse_label": parse_label, "warnings": warns})
+                if result.get("degraded"):
+                    # ★2026-09-17 P5：降级必须以 **warning** 事件显式告知（此前混在
+                    # "解析完成"的 info 里，用户不会注意到产物其实走了低精度老链）。
+                    self.event_bus.publish(
+                        "warning", "task", "parse_degraded",
+                        f"论文[{paper_id}] 解析**已降级**（双通道未生效）："
+                        f"{result.get('degraded_reason') or '；'.join(warns) or '未知原因'}",
+                        {"paper_id": paper_id, "parse_source": parse_src,
+                         "warnings": warns, "degraded": True})
+                else:
+                    self.event_bus.publish(
+                        "info", "task", "parse_done",
+                        f"论文[{paper_id}] 解析完成，来源：{parse_label}{extra}",
+                        {"paper_id": paper_id, "parse_source": parse_src,
+                         "parse_label": parse_label, "warnings": warns})
         self._set_task(paper_id, "running", 40, f"解析完成（{parse_label}），开始 AI 翻译+总结")
 
         # V11：仅解析模式（mode=parse）→ 跳过翻译/总结/导出

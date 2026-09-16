@@ -439,7 +439,11 @@ def test_parse_pdf_p14_default_uses_v2(tmp_path, settings, monkeypatch):
 
 
 def test_parse_pdf_p14_fallback_single(tmp_path, settings, monkeypatch):
-    """P15 Step5：p14 管线失败 → 自动降级单通道（Q2 语义保留），warnings 附原因。"""
+    """P15 Step5：p14 管线失败 → 自动降级单通道（Q2 语义保留），warnings 附原因。
+
+    ★2026-09-17 P5：降级必须**显式**（`degraded=True` + 落盘 `work/parse_warnings.json`）
+    —— 用户实测教训：NC 篇双通道静默回落老链，产物明显更差却无人知道。
+    """
     from app.services.engine_service import EngineService
     eng = EngineService(settings)   # pipeline 默认 p14
     fake = _FakeDualApi(dual_ok=False)
@@ -452,6 +456,16 @@ def test_parse_pdf_p14_fallback_single(tmp_path, settings, monkeypatch):
     assert fake.calls == ["v2", "single:mineru-v4"]
     assert r["parse_source"] == "mineru-v4"
     assert any("v2" in w for w in (r.get("warnings") or []))
+    assert r.get("degraded") is True and r.get("degraded_reason")
+
+    import json
+    from pathlib import Path
+
+    wp = Path(r["document_json"]).parent / "work" / "parse_warnings.json"
+    assert wp.exists(), "降级未落盘 ⇒ 用户事后无从追查"
+    payload = json.loads(wp.read_text(encoding="utf-8"))
+    assert payload["degraded"] is True
+    assert any("v2" in w for w in payload["warnings"])
 
 
 def test_ensure_mineru_md_cache_and_refetch(tmp_path, settings, monkeypatch):
