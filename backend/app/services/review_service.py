@@ -162,6 +162,11 @@ class ReviewService:
                 continue
             if ((it.get("mineru") or {}).get("kind", "") in ("meta", "footer", "header")):
                 continue
+            # ★2026-09-16：**质量提示项（misaligned/低重叠段）不门控翻译**——它们只是
+            # "本段未做双通道比对"的可见性提示，若计入会让每篇论文都卡在"待复核"。
+            # `blocking` 缺省视为 True（兼容 2026-09-16 之前写入的 review.json）。
+            if it.get("blocking") is False:
+                continue
             pending += 1
         return pending
 
@@ -204,6 +209,10 @@ class ReviewService:
             items.append({
                 "idx": idx,
                 "page": it.get("page", 0),
+                # ★2026-09-16：复核项分两类——blocking=True（待确认冲突，门控翻译）与
+                # blocking=False（质量提示：misaligned/低重叠/第三信号不一致，仅展示）。
+                "blocking": it.get("blocking") is not False,
+                "item_kind": it.get("item_kind", "conflict"),
                 "bbox": (pb.get("bbox") or mb.get("bbox") or [0, 0, 0, 0]),
                 # 行级精确高亮（P12 反馈修复）：PDF 文本层定位（PDF 坐标，与页图同系）
                 "line_bboxes": self._line_bboxes(pdf_path, it.get("page", 1),
@@ -230,6 +239,8 @@ class ReviewService:
             page_count = 0
         return {"available": True, "items": items, "page_count": page_count,
                 "ai_stats": review.get("ai", {}),
+                "blocking_count": sum(1 for i in items if i.get("blocking")),
+                "quality_count": sum(1 for i in items if not i.get("blocking")),
                 "work_dir": str(d), "total": len(items)}
 
     @staticmethod

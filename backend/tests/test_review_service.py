@@ -77,6 +77,45 @@ def test_get_review(env):
     assert r["total"] == 1
     it = r["items"][0]
     assert it["page"] == 1 and it["ai_verdict"] == "paddleocr"
+
+
+def test_quality_items_visible_but_do_not_block_translation(env):
+    """★2026-09-16：质量提示项（misaligned/低重叠）必须**可见但不门控翻译**。
+
+    背景：复核门控（translate_gate=wait）按 `pending_review_count` 决定是否停在"待复核"。
+    若把质量提示算进去，每篇论文都会多出十几项、每次都卡住翻译。
+    """
+    doc_json = _make_document(env["tmp"] / "doc.json")
+    paper = _make_paper(env["tmp"], env["work"], doc_json)
+    rev = env["work"] / "testpaper" / "review.json"
+    data = json.loads(rev.read_text(encoding="utf-8"))
+    data["items"].append({
+        "report_idx": 1, "page": 2, "blocking": False, "item_kind": "quality",
+        "mineru": {"block_id": "para-RP009", "kind": "body", "text": "only mineru"},
+        "paddleocr": {"block_id": "paddle-RP009", "kind": "body", "text": ""},
+        "ai": {"verdict": "unresolved", "reason": "段首对齐失败 → 本段未做双通道比对",
+               "confidence": 0.0, "applied": False},
+        "user_choice": "", "auto_resolved": ""})
+    data["total"] = 2
+    data["quality_count"] = 1
+    rev.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    svc = ReviewService(env["settings"])
+    assert svc.pending_review_count(paper) == 1, "只有 blocking 项算待复核"
+    r = svc.get_review(paper)
+    assert r["total"] == 2 and r["blocking_count"] == 1 and r["quality_count"] == 1
+    q = [i for i in r["items"] if not i["blocking"]][0]
+    assert q["item_kind"] == "quality" and "对齐失败" in q["ai_reason"]
+
+
+def test_legacy_items_without_blocking_field_still_gate(env):
+    """向后兼容：2026-09-16 之前写入的 review.json 没有 `blocking` 字段 → 仍算待复核。"""
+    doc_json = _make_document(env["tmp"] / "doc.json")
+    paper = _make_paper(env["tmp"], env["work"], doc_json)
+    svc = ReviewService(env["settings"])
+    assert svc.pending_review_count(paper) == 1
+    it = svc.get_review(paper)["items"][0]
+    assert it["blocking"] is True
     assert it["mineru_text"] == MINERU_TEXT
     assert it["bbox"] == [90, 90, 810, 160]     # 以 PaddleOCR bbox 为准
 

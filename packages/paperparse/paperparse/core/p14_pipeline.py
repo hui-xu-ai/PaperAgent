@@ -213,69 +213,6 @@ def _md_of_local(skeleton, line_map) -> dict:
     return out
 
 
-def _pair_paddle_by_text(repair_text: str, pblocks, pages: list) -> tuple[str, int]:
-    """[局部] 修复段 ↔ paddleocr 段：**内容 Dice 段落级配对**（坐标归属不可靠——
-    paddle 块为段落级、y 范围大，y 重叠会把多段内容混入同一对照文本，造成
-    整段垃圾 diff）。取该段 pages 范围内 Dice 最高的非噪声块；< 0.3 不配对。
-    返回 (text, page)；page 供 M7 复核清单定位（P15 对齐失败段兜底用）。
-
-    P15：**段首对齐校验**——两通道段落边界可能不同（mineru 长段 vs paddle
-    从段中间开始，共享尾部 → Dice 0.9+ 仍错配，如 "After determining…" vs
-    "difference in the diameters…" 都到 "(Fig. S7b)" 结尾）→ 配对块**前 15 词**
-    与 md 段前 15 词 Dice ≥ 0.5 才算对齐（用户原则：先两通道完全对齐再审核；
-    段首不对齐 → 不配对，宁缺毋滥不进复核清单）。
-    """
-    if not pblocks or not getattr(pblocks, "blocks", None):
-        return "", 0
-    r_norm = norm_text(repair_text)
-    if not r_norm:
-        return "", 0
-    r_head = " ".join(r_norm.split()[:15])
-    best_t, best_d, best_page = "", 0.0, 0
-    for b in pblocks.blocks:
-        if b.kind in _PADDLE_NOISE:
-            continue
-        if b.page not in pages:
-            continue
-        b_norm = norm_text(b.text)
-        d = _dice(r_norm, b_norm)
-        if d > best_d:
-            # P15：段首对齐（前 15 词）——边界不对齐的错配拒绝（宁缺毋滥）
-            b_head = " ".join(b_norm.split()[:15])
-            if r_head and b_head \
-                    and _dice(r_head, b_head) < 0.5:
-                continue
-            best_d, best_t, best_page = d, b.text, b.page
-    if best_d < 0.3:
-        return "", 0
-    return best_t, best_page
-
-
-def _paddle_text_for(local_para, pblocks) -> str:
-    """[局部] 本地段 → 该段覆盖的 paddleocr 块文本（同页 y 重叠，去重保序）"""
-    if not pblocks or not getattr(pblocks, "blocks", None):
-        return ""
-    # 按页索引块
-    by_page: dict[int, list] = {}
-    for b in pblocks.blocks:
-        if b.kind in _PADDLE_NOISE:
-            continue
-        by_page.setdefault(b.page, []).append(b)
-    parts: list[str] = []
-    seen: set = set()
-    for ln in getattr(local_para, "lines", []) or []:
-        page, (_, y0, _, y1) = ln.page, ln.bbox
-        for b in by_page.get(page, []):
-            by0, by1 = b.bbox[1], b.bbox[3]
-            if by1 < y0 - 2 or by0 > y1 + 2:
-                continue
-            t = (b.text or "").strip()
-            if t and t not in seen:
-                seen.add(t)
-                parts.append(t)
-    return " ".join(parts)
-
-
 def _is_paddle_noise(b) -> bool:
     """[局部] 百度块噪声判定：kind 噪声（页眉/页脚/页码/参考文献——用户：参考文献不
     拼接）+ 元数据文本模式（ORCID/Received/Revised/Accepted/Published online/Supporting
@@ -429,137 +366,6 @@ def _content_pair_paddle(repair_items, pblocks, *,
         if best_b is not None and best_d >= 0.5:
             assigned[pid].insert(0, best_b.text)
     return ({pid: " ".join(t) for pid, t in assigned.items()}, page_of)
-
-
-def _strip_math_tokens(text: str) -> list[str]:
-    """[局部] 去 $..$/$$..$$/HTML/控制符 → token（对齐校验用，容 OCR 差异）。
-    与匹配用 norm_text 不同：本函数**剥公式**（用户要求：对比段落开头/结尾/字数时
-    都去掉 $$ 内容），仅保留散文 token 做端到端校验。"""
-    t = re.sub(r"\$\$[\s\S]+?\$\$|\$[^$\n]+?\$", " ", text or "")
-    t = re.sub(r"<[^>]+>", " ", t)
-    t = t.replace("\ufffd", " ").replace("\u2212", "-").lower()
-    return [w for w in t.split()
-            if w and (w.isalnum() or all(c.isalnum() or c in "-'" for c in w))]
-
-
-def _validate_ref(ref_tokens: list[str], stitched_tokens: list[str],
-                  wc_lo: float = 0.5, wc_hi: float = 2.5) -> bool:
-    """[局部] 拼接结果 vs 参考段端到端校验（都剥 $$ 后比）：
-    - 开头前4词、结尾后4词需有重叠（**对齐保证**——用户核心要求段首尾匹配）；
-    - 字数为**松的 sanity check**：仅当 stitched < 0.5x 或 > 2.5x ref 才判失败
-      （容忍公式膨胀：百度明文含公式词、ref 剥 $..$ 后词少，故不能死卡比例）。"""
-    if not ref_tokens or not stitched_tokens:
-        return False
-    head_r, head_s = set(ref_tokens[:4]), set(stitched_tokens[:4])
-    if len(head_r & head_s) < max(1, len(head_r) // 2):
-        return False
-    tail_r, tail_s = set(ref_tokens[-4:]), set(stitched_tokens[-4:])
-    if len(tail_r & tail_s) < max(1, len(tail_r) // 2):
-        return False
-    rl, sl = len(ref_tokens), len(stitched_tokens)
-    if sl < rl * wc_lo or sl > rl * wc_hi:
-        return False
-    return True
-
-
-def _find_subseq(tokens: list[str], anchor: list[str],
-                 last: bool = False) -> tuple[int, int] | None:
-    """[局部] 在 tokens 中按**有序子序列**找 anchor（容中间夹杂其他 token——OCR 噪声）。
-    last=False 找最早出现（首锚）；last=True 找最晚出现（尾锚）。返回 (start, end) 或 None。"""
-    if not anchor or not tokens:
-        return None
-    m = len(anchor)
-    n = len(tokens)
-    if not last:
-        for start in range(n - m + 1):
-            j, k = 0, start
-            while k < n and j < m:
-                if tokens[k] == anchor[j]:
-                    j += 1
-                k += 1
-            if j == m:
-                return start, k
-        return None
-    for start in range(n - m, -1, -1):
-        j, k = m - 1, start + m - 1
-        while k >= 0 and j >= 0:
-            if tokens[k] == anchor[j]:
-                j -= 1
-            k -= 1
-        if j < 0:
-            return start, k + 1
-    return None
-
-
-def _trim_to_ref(stitched_text: str, ref_tokens: list[str]) -> str:
-    """[局部] 把拼接文本**裁剪到参考段首尾边界**（有序锚定位，容 OCR 夹杂）：
-    用 ref 首 4 词找 stitched 中**最早**有序出现 → 裁掉之前；用 ref 尾 4 词找**最晚**
-    出现 → 裁掉之后。解决 content 配对 36/103 段首/尾错位（2026-08-25 实测）。"""
-    if not stitched_text or len(ref_tokens) < 4:
-        return stitched_text
-    st = stitched_text.split()
-    head = ref_tokens[:4]
-    tail = ref_tokens[-4:]
-    mh = _find_subseq(st, head)
-    mt = _find_subseq(st, tail, last=True)
-    if mh is None or mt is None or mh[0] >= mt[0]:
-        return stitched_text          # 锚定位失败 → 原样（宁缺毋滥）
-    return " ".join(st[mh[0]:mt[1]])
-
-
-def _pair_paddle_by_md(repair_items, pblocks, *, min_cov: float = 0.5):
-    """[局部] ★markdown 参考拼接对齐（P16 用户方案 v3：**双序列单调对齐**）：
-    百度 OCR 与参考 markdown **都在阅读序**（左→右、上→下）——这是单调序列匹配，
-    不是全局搜索、不是首尾锚定（v1 贪心前缀欠拼/过拼、v2 常见词锚带偏，均弃）：
-    - 百度片段按阅读序逐个处理，在**未配对参考段（指针 p 起）**中找**全片段重叠
-      比例最高**的段；
-    - 命中 → 片段归入该段（一个参考段可由多个片段 A+B 组成）；匹配到更晚的段才
-      推进指针 p（之前的段视为完成、排除）；
-    - 拼接后校验：段首/尾 + 字数（剥 $..$ 后比），超差弃配对。
-    返回 ({para_id: paddle_text}, {para_id: page})。"""
-    paras = [r for r in repair_items
-             if getattr(r, "kind", "") in ("body", "caption")]
-    segs = [b for b in (getattr(pblocks, "blocks", None) or [])
-            if getattr(b, "kind", "") not in _PADDLE_NOISE]
-    segs.sort(key=lambda b: (getattr(b, "page", 0),
-                             getattr(b, "bbox", (0, 0, 0, 0))[1]))
-    # 参考段（阅读序）+ 全片段 token 集
-    ref_rows: list[tuple] = []      # (para_id, set(tokens), tokens)
-    for r in paras:
-        toks = _strip_math_tokens(r.text)
-        if len(toks) >= 4:
-            ref_rows.append((r.para_id, set(toks), toks))
-    blks: list[tuple] = [(b, set(_strip_math_tokens(b.text)))
-                         for b in segs]
-    group: dict[str, list] = {}
-    page_of: dict[str, int] = {}
-    p = 0                                   # 指针：参考段 p..end 未配对
-    for b, bset in blks:
-        if not bset:
-            continue
-        best, best_d = -1, 0.0
-        for i in range(p, len(ref_rows)):
-            rset = ref_rows[i][1]
-            d = len(bset & rset) / len(bset)      # 片段在参考段中的覆盖
-            if d > best_d:
-                best_d, best = d, i
-        if best < 0 or best_d < min_cov:
-            continue                              # 无有效匹配 → 跳过（不消耗）
-        p = best                                  # 推进到命中段（单调不回溯）
-        pid = ref_rows[best][0]
-        group.setdefault(pid, []).append(b.text)
-        page_of.setdefault(pid, b.page)
-    assigned: dict[str, str] = {}
-    result_page: dict[str, int] = {}
-    for pid, _rset, rtoks in ref_rows:
-        parts = group.get(pid)
-        if not parts:
-            continue
-        stitched = _strip_math_tokens(" ".join(parts))
-        if _validate_ref(rtoks, stitched):
-            assigned[pid] = " ".join(parts)
-            result_page[pid] = page_of.get(pid, 0)
-    return assigned, result_page
 
 
 def _in_word_env(text: str, i1: int, i2: int) -> bool:
@@ -1218,6 +1024,8 @@ def _build_domain_review_item(r, orig_text: str, sugg_text: str,
     return {
         "report_idx": 0,                       # 合并时重排
         "page": page,                          # md 段→本地行反查；无则 1（页图可加载）
+        "blocking": True,                      # ★2026-09-16：与仲裁项统一 schema
+        "item_kind": "domain",                 # 词典层（共识错误）修复项
         "mineru": {"block_id": mid, "kind": r.kind, "text": orig_text},
         "paddleocr": {"block_id": "paddle-" + r.para_id, "kind": r.kind,
                       "text": sugg_text},
@@ -1255,17 +1063,88 @@ def _build_review_items(review_cands: list[dict],
             p_text = (c.get("paddleocr") or {}).get("text", "")
             if not m_text and not p_text:
                 continue
+            # ★2026-09-16：第三信号（PDF 文本层）作为**证据**进复核项——人工/AI 判不准时，
+            # "PDF 原文支持哪一侧"是最强旁证（不自动落地，权限仍在复核环节）。
+            tv = c.get("third_vote") or {}
+            reason = (a.reason or "")[:80]
+            if tv.get("verdict") and tv["verdict"] != "unknown":
+                if tv.get("decisive") is False:
+                    _tv_txt = "文本层未区分（%s）" % tv["verdict"]
+                else:
+                    _tv_txt = "文本层支持：%s" % ("MinerU" if tv["verdict"] == "mineru"
+                                                  else "PaddleOCR")
+                reason = (reason + "｜" + _tv_txt)[:110]
             items.append({
                 "report_idx": len(items),
                 "page": page_by_para.get(r.para_id, 0),
+                "blocking": True,                 # ★阻断翻译门控（待用户确认）
+                "item_kind": "conflict",
                 "mineru": {"block_id": mid, "kind": r.kind, "text": m_text},
                 "paddleocr": {"block_id": "paddle-" + r.para_id, "kind": r.kind,
                               "text": _wrap_paddle_formulas(p_text)},
-                "ai": {"verdict": a.verdict, "reason": (a.reason or "")[:80],
+                "ai": {"verdict": a.verdict, "reason": reason,
                        "confidence": a.confidence, "applied": False},
+                "third_vote": tv or {},
                 "user_choice": "", "auto_resolved": "",
                 "evidence": {"para_id": r.para_id, "md_idx": r.md_idx or [],
-                             "conflict_idx": a.id}})
+                             "conflict_idx": a.id,
+                             "third_vote": (tv.get("verdict") if tv else "")}})
+    return items
+
+
+def _build_skip_items(skips: list[dict], page_by_para: dict[str, int]) -> list[dict]:
+    """[局部] 未能自动落地的冲突项（`skip_p_ambiguous`）→ **阻断**复核项。
+
+    2026-09-16 收口：`_apply_arbitrations` 对"片段在段内多次出现"的冲突主动放弃替换
+    （宁缺毋滥），但此前只写进无人读的 arbitration_audit.jsonl ⇒ 用户看不到"有冲突没修"。
+    """
+    items: list[dict] = []
+    for s in skips:
+        r = s["r"]
+        mid = ("md%d" % (r.md_idx or [1])[0]) if r.md_idx else ("para-" + r.para_id)
+        items.append({
+            "report_idx": 0,                  # 合并后统一重编号
+            "page": page_by_para.get(r.para_id, 0),
+            "blocking": True,
+            "item_kind": "skip_ambiguous",
+            "mineru": {"block_id": mid, "kind": r.kind, "text": s.get("chunk", "")},
+            "paddleocr": {"block_id": "paddle-" + r.para_id, "kind": r.kind, "text": ""},
+            "ai": {"verdict": "unresolved", "confidence": 0.0, "applied": False,
+                   "reason": "该片段在段落中出现 %s 次，未自动替换（需人工确认）"
+                             % s.get("count", 0)},
+            "user_choice": "", "auto_resolved": "",
+            "evidence": {"para_id": r.para_id, "md_idx": r.md_idx or [],
+                         "conflict_idx": -1, "source": "apply_skip"}})
+    return items
+
+
+def _build_quality_items(flags: list[dict]) -> list[dict]:
+    """[局部] 质量提示项（misaligned / 低重叠段）→ **非阻断**（不门控翻译，只求可见）。
+
+    2026-09-16（用户："看不到的错误要可见"）：这些段此前被静默跳过（不一致也不告警），
+    ⇒ 它们永远只用 MinerU 结果。现在进同一份 review.json 供前端"质量提示"区展示；
+    `blocking=False` 保证不会把每篇论文都卡在"待复核"。
+    """
+    items: list[dict] = []
+    for f in flags:
+        para_id = f.get("para_id", "")
+        mid = "para-" + para_id
+        items.append({
+            "report_idx": 0,                  # 合并后统一重编号
+            "page": f.get("page", 0),
+            "blocking": False,
+            # 来源分类：quality（misaligned/低重叠）| third_signal（共识错误/丢内容）
+            "item_kind": f.get("item_kind") or "quality",
+            "mineru": {"block_id": mid, "kind": f.get("kind", "body"),
+                       "text": f.get("mineru_text", "")},
+            "paddleocr": {"block_id": "paddle-" + para_id, "kind": f.get("kind", "body"),
+                          "text": _wrap_paddle_formulas(f.get("paddle_text", ""))},
+            "ai": {"verdict": "unresolved", "confidence": 0.0, "applied": False,
+                   "reason": (f.get("reason") or "")[:120]},
+            "user_choice": "", "auto_resolved": "",
+            "evidence": {"para_id": para_id, "md_idx": [], "conflict_idx": -1,
+                         "source": "verify", "verify_verdict": f.get("verdict", ""),
+                         "overlap_set": f.get("overlap_set", 0.0)}})
     return items
 
 
@@ -1501,11 +1380,12 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
     # ---- M7 双通道验证 + M8 字符仲裁（paddleocr 通道）----
     verify_items: list[dict] = []
     arb_stats = {"arbitrated": 0, "unresolved": 0, "applied_p": 0}
+    _third_stats: dict = {}       # ★2026-09-16：第三信号（PDF 文本层）统计
     if paddle:
         pblocks = None
-        sf_para_text: dict[str, str] = {}
-        # 2026-08-26：sf_ocr（硅基流动）分支已移除（P15 弃用，模块归档）；
-        # sf_ocr=True 静默回落官方云通道。
+        # 2026-08-26：sf_ocr（硅基流动）通道已移除（P15 弃用，模块归档）；
+        # 2026-09-16：其残留判据（sf_para_text / paddle_source=="sf"）一并删除——
+        # 该变量恒空、判据恒假，官方云 PaddleOCR 是唯一辅通道。
         if paddle_blocks_path:
             try:
                 from paperparse.middleware.schema import ParserBlocks
@@ -1546,40 +1426,92 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
             except Exception as e:  # noqa: BLE001
                 pblocks = None
                 stats["paddle_error"] = str(e)[:160]
-        if (pblocks and getattr(pblocks, "blocks", None)) or sf_para_text:
+        if pblocks and getattr(pblocks, "blocks", None):
             md_of_local = _md_of_local(skeleton, align.line_map)
             local_by_id = {p.para_id: p for p in skeleton.paragraphs}
             conflicts_all: list[dict] = []
             pv_by_para: dict[str, dict] = {}
+            quality_flags: list[dict] = []             # ★2026-09-16：非阻断质量提示
+            skipped_ambiguous: list[dict] = []         # ★2026-09-16：有冲突但未能自动落地
             paddle_text_by_para: dict[str, str] = {}   # P15 复核清单：段落对照文本
             page_by_para: dict[str, int] = {}
             # 内容锚定配对（P16：百度段→修复段对照文本，替代坐标法 _paddle_join_for）
-            md_of_local = _md_of_local(skeleton, align.line_map)
-            if stats.get("paddle_source") == "sf":
-                content_pair, content_page = {}, {}
-                for r in repair.paragraphs:
-                    if r.kind != "body":
-                        continue
-                    _txts, _pg = [], 0
-                    for mid in (r.md_idx or []):
-                        for _lp in md_of_local.get(mid, []):
-                            if _lp.para_id in sf_para_text:
-                                _txts.append(sf_para_text[_lp.para_id])
-                                _pg = _pg or ((_lp.pages or [0])[0])
-                    if _txts:
-                        content_pair[r.para_id] = " ".join(_txts)
-                        content_page[r.para_id] = _pg
-            else:
-                content_pair, content_page = _content_pair_paddle(
-                    repair.paragraphs, pblocks,
-                    md_of_local=md_of_local)
+            # 2026-09-16：删除 sf（硅基流动）分支残留——`sf_para_text` 恒空、判据恒假，
+            # 官方云 PaddleOCR 现在是唯一辅通道（sf_ocr 形参仅保留 API 兼容）。
+            content_pair, content_page = _content_pair_paddle(
+                repair.paragraphs, pblocks,
+                md_of_local=md_of_local)
+            # ★2026-09-16 M8d：**第三信号 = PDF 自带文本层**（0 API 成本；按页门控）。
+            # 双通道是"分歧检测器"而非"正确性检测器"（两侧同错 ⇒ 零报告），文本层用来
+            # ① 给冲突项投第三票（不自动落地，只进复核证据）；② 检测共识错误；③ 检测丢内容。
+            # 扫描件文本层接近 0 ⇒ usable 为空集时整块跳过，行为与旧版完全一致。
+            _local_pages: dict[int, str] = {}
+            _local_usable: set[int] = set()
+            try:
+                from paperparse.core.local_text import (page_texts, unverified_tokens,
+                                                        usable_pages, vote_conflict)
+                _local_pages = page_texts(str(pdf))
+                _local_usable = usable_pages(_local_pages)
+            except Exception as e:  # noqa: BLE001 - 第三信号不可用不影响解析
+                stats["third_signal_error"] = str(e)[:120]
+            _third_stats = {"pages_total": len(_local_pages), "pages_usable": len(_local_usable),
+                            "votes": {}, "unverified": 0, "enabled": bool(_local_usable)}
+            _page_cache: dict[int, str] = {}
+
+            def _pages_for(md_idx) -> list[int]:
+                """该修复段涉及的本地页号（`LocalPara.pages` 是列表、`LocalLine.page` 是单值）。"""
+                out: list[int] = []
+                for mid in (md_idx or []):
+                    for _lp in md_of_local.get(mid, []):
+                        _pgs = list(getattr(_lp, "pages", None) or [])
+                        if not _pgs:
+                            _pg = getattr(_lp, "page", 0)
+                            _pgs = [_pg] if _pg else []
+                        for pg in _pgs:
+                            if pg and pg not in out:
+                                out.append(pg)
+                return out
+
+            def _page_text_for(md_idx) -> str:
+                """该段所在**页**的文本层内容（token 级核对与冲突第三票都用页级：
+                段落级映射（md 段 ↔ 本地行组）并非一一对应，实测误报严重，已弃用）。"""
+                key = (md_idx or [0])[0]
+                if key in _page_cache:
+                    return _page_cache[key]
+                txt = ""
+                if _local_usable:
+                    pgs = [p for p in _pages_for(md_idx) if p in _local_usable]
+                    txt = " ".join(_local_pages.get(p, "") for p in pgs).strip()
+                _page_cache[key] = txt
+                return txt
+
             for r in repair.paragraphs:
                 if r.kind not in ("body", "caption"):   # P16：图注也参与对照修正
                     continue
                 paddle_text = content_pair.get(r.para_id, "")
+                local_txt = _page_text_for(r.md_idx)
                 if not paddle_text:
                     stats.setdefault("pairing", {}).setdefault("none", 0)
                     stats["pairing"]["none"] += 1
+                    _third_stats.setdefault("no_paddle_pair", 0)
+                    _third_stats["no_paddle_pair"] += 1
+                    # ③ token 级共识检查：辅通道没配上（无对照）时，用文本层核对
+                    #    "公式/带单位数值"是否真的存在于该页 —— 专治两通道同错的盲区
+                    #    （段落级 Dice/长度比版本在真实论文上误报严重，已弃用，见 local_text.py）。
+                    if local_txt:
+                        bad = unverified_tokens(r.text, local_txt)
+                        if bad:
+                            _third_stats["unverified"] += len(bad)
+                            _pgs = _pages_for(r.md_idx)
+                            quality_flags.append({
+                                "para_id": r.para_id,
+                                "page": (_pgs or [0])[0],
+                                "verdict": "unpaired", "overlap_set": 0.0, "kind": r.kind,
+                                "mineru_text": r.text[:400], "paddle_text": "",
+                                "local_text": local_txt[:400],
+                                "item_kind": "third_signal",
+                                "reason": "PDF 文本层中找不到这些公式/数值：%s（可能两通道同错）"
+                                          % "、".join(b["token"] for b in bad[:6])})
                     continue
                 stats.setdefault("pairing", {}).setdefault("content", 0)
                 stats["pairing"]["content"] += 1
@@ -1597,13 +1529,57 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                 if pv.verdict == "misaligned":
                     stats.setdefault("pairing", {}).setdefault("misaligned", 0)
                     stats["pairing"]["misaligned"] += 1
+                    quality_flags.append({
+                        "para_id": r.para_id, "page": page, "verdict": pv.verdict,
+                        "overlap_set": pv.overlap_set, "kind": r.kind,
+                        "mineru_text": r.text[:400], "paddle_text": paddle_text[:400],
+                        "reason": "段首对齐失败（配对错位/误拼接）→ 本段未做双通道比对"})
                     continue
                 # M8：只对高重叠段做字符级 diff（真实拼写/标点差异）
                 if pv.overlap_set >= 0.9:
                     conflicts = char_conflicts(r.text, paddle_text, page)
                     for c in conflicts:
                         c["para_id"] = r.para_id
+                        # ① 第三票：文本层支持哪一侧（只进复核证据，**不自动落地**）。
+                        #    用 **±60 字符上下文窗口**（evidence.m_ctx/p_ctx）而不是那 1~2 个
+                        #    字符的差异片段——实测冲突绝大多数是"插一个空格/字母"，片段本身
+                        #    短到无法判定；上下文窗口≥12 字符才有区分度，且两侧窗口天然只差
+                        #    冲突处那几个字符 ⇒ "哪一侧窗口在 PDF 文本层里逐字出现"即可裁决。
+                        if local_txt:
+                            tv = vote_conflict(c, local_txt)
+                            if tv.get("verdict") not in (None, "unknown"):
+                                c["third_vote"] = tv
+                                _third_stats["votes"][tv["verdict"]] = \
+                                    _third_stats["votes"].get(tv["verdict"], 0) + 1
+                                if tv.get("decisive") is False:
+                                    _third_stats.setdefault("inconclusive", 0)
+                                    _third_stats["inconclusive"] += 1
                     conflicts_all.extend(conflicts)
+                    # ② token 级共识检查（**已配对**的段也要做：两通道一致但与 PDF 文本层
+                    #    不符 = 共识错误，char_conflicts 永远看不到）
+                    if local_txt:
+                        bad = unverified_tokens(r.text, local_txt)
+                        if bad:
+                            _third_stats["unverified"] += len(bad)
+                            quality_flags.append({
+                                "para_id": r.para_id, "page": page,
+                                "verdict": "consensus", "overlap_set": pv.overlap_set,
+                                "kind": r.kind, "mineru_text": r.text[:400],
+                                "paddle_text": paddle_text[:400],
+                                "local_text": local_txt[:400],
+                                "item_kind": "third_signal",
+                                "reason": "PDF 文本层中找不到这些公式/数值：%s（可能两通道同错）"
+                                          % "、".join(b["token"] for b in bad[:6])})
+                else:
+                    # ★2026-09-16 收口：**低重叠段（0.7~0.9）此前静默跳过**，既不出冲突项
+                    # 也不告警 ⇒ 这些段永远只用 MinerU 结果。现在记进"质量提示"清单
+                    # （非阻断：可见、不影响翻译门控，见 blocking=False）。
+                    quality_flags.append({
+                        "para_id": r.para_id, "page": page, "verdict": pv.verdict,
+                        "overlap_set": pv.overlap_set, "kind": r.kind,
+                        "mineru_text": r.text[:400], "paddle_text": paddle_text[:400],
+                        "reason": "两通道重合度 %.2f < 0.9 → 未做字符级仲裁（仅 MinerU 结果）"
+                                  % pv.overlap_set})
             (work / "verify.json").write_text(
                 json.dumps({"items": verify_items}, ensure_ascii=False, indent=1),
                 encoding="utf-8")
@@ -1665,7 +1641,11 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                     from paperparse.core.dual_ai_review import arbitrate
                     try:
                         ai_items = [conflicts_all[i] for i in ai_ids]
-                        ai_results = arbitrate(ai_items, paper=stem)
+                        # ★2026-09-16 修：**必须传注入的 provider**——此前不传 ⇒ 内部回落
+                        # env 链（DEEPSEEK_*），导致 ①GUI 切换供应商对 M8 仲裁无效；
+                        # ②provider 的 on_usage 永不触发 ⇒ 仲裁 token 不进 llm_usage 台账
+                        # （实测台账 0 行，成本不可观测）。provider=None 时行为与旧版一致。
+                        ai_results = arbitrate(ai_items, provider=provider, paper=stem)
                         for gi, ai_arb in zip(ai_ids, ai_results):
                             if ai_arb is not None:
                                 ai_arb.id = gi          # 全局索引
@@ -1673,6 +1653,11 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                         arb_stats["ai_reviewed"] = len(ai_ids)
                     except Exception as e:  # noqa: BLE001 - AI 失败不阻塞
                         stats["ai_review_error"] = str(e)[:120]
+                # ★2026-09-16：**挖掘用快照**——下面 _apply_arbitrations 前会把 a.id 重映射成
+                # 段内局部索引（1696-1698），M8c 却按**全局**索引取（原实现因此拿到了错位的
+                # arbitration，且调用处传了未定义名 `arb` → 被 except 吞成 char_rules_error，
+                # 实测 100% 从未产出 mined_rules.json）。
+                arb_snapshot = {i: a for i, a in arb_by_idx.items()}
                 arb_stats["arbitrated"] = sum(
                     1 for a in arb_by_idx.values() if a.verdict != "unresolved")
                 arb_stats["unresolved"] = sum(
@@ -1706,57 +1691,76 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                             "a", encoding="utf-8").write(
                             json.dumps({"para_id": para_id, "items": audit},
                                        ensure_ascii=False) + "\n")
-                    # P15：该段任一仲裁 unresolved 或 (verdict=P & conf<0.8)
-                    # → 进复核清单（段落聚合；conf<0.8 不自动落地）
+                        # ★2026-09-16 收口：`skip_p_ambiguous`（片段在段内多次出现→放弃替换）
+                        # 此前只写进**无人读**的 audit 文件 ⇒ 用户完全看不到"有冲突没修"。
+                        # 现在作为阻断项进复核清单。
+                        for _au in audit:
+                            if _au.get("action") == "skip_p_ambiguous":
+                                skipped_ambiguous.append({
+                                    "para_id": para_id, "r": r,
+                                    "chunk": _au.get("chunk", ""),
+                                    "count": _au.get("count", 0)})
+                    # P15：该段任一仲裁 unresolved / (verdict=P & conf<0.8) / **neither（AI 判
+                    # 两侧都错）** → 进复核清单（段落聚合；不自动落地）。
+                    # ★2026-09-16 修：`neither` 此前**被静默吞掉**——不改文本、不进复核、
+                    # audit 也不记（audit 只在文本真变时写）⇒ 用户永远看不到"这段两边都错"。
                     pending = [a for a in sub_arb if a is not None
-                               and (a.verdict == "unresolved"
+                               and (a.verdict in ("unresolved", "neither")
                                     or (a.verdict == "paddleocr"
                                         and a.confidence < 0.8))]
                     if pending:
                         review_cands.append({"para_id": para_id, "r": r,
                                              "pending": pending})
                 arb_stats["applied_p"] = applied
-                # ---- M8b 复核清单（P15：conf<0.85/unresolved → review.json，
+                arb_stats["neither"] = sum(
+                    1 for a in arb_snapshot.values() if a.verdict == "neither")
+                arb_stats["skipped_ambiguous"] = len(skipped_ambiguous)
+                arb_stats["quality_flags"] = len(quality_flags)
+                # ---- M8b 复核清单（P15：conf<0.8/unresolved/neither → review.json，
                 #      与 P12 同位置同格式，GUI 复核复用 ReviewService）----
                 # 2026-08-26：review.json 归位解析产物目录 <out_dir>/work/
                 # （用户决策：library/<DOI>/work/ 自包含，清理简单；不再写
                 # 全局 work/dual/ 避免与测试/其他论文互相污染）
-                if review_cands:
-                    review_items = _build_review_items(
-                        review_cands, by_para, page_by_para)
-                    rev_dir = out / "work"
-                    rev_dir.mkdir(parents=True, exist_ok=True)
-                    (rev_dir / "review.json").write_text(
-                        json.dumps({"count": len(review_items),
-                                    "items": review_items,
-                                    "ai": {**arb_stats,
-                                           "source": "p14",
-                                           "pending_review": len(review_items)}},
-                                   ensure_ascii=False, indent=1),
-                        encoding="utf-8")
-                    arb_stats["pending_review"] = len(review_items)
-                    stats["review_json"] = str(rev_dir / "review.json")
-                else:
+                # ★2026-09-16 收口（用户要求"看不到的错误要可见"）：
+                #   · blocking=True（阻断翻译门控）= 待确认冲突项 + 未能自动落地的冲突项；
+                #   · blocking=False（只提示、不门控）= misaligned / 低重叠段（此前静默跳过）；
+                #   · 两类同放 items（GUI 一份清单），各自带 item_kind/blocking 供前端区分。
+                review_items = _build_review_items(review_cands, by_para, page_by_para)
+                skip_items = _build_skip_items(skipped_ambiguous, page_by_para)
+                quality_items = _build_quality_items(quality_flags)
+                all_items = review_items + skip_items + quality_items
+                for _i, _it in enumerate(all_items):
+                    _it["report_idx"] = _i
+                blocking_count = len(review_items) + len(skip_items)
+                rev_dir = out / "work"
+                rev_dir.mkdir(parents=True, exist_ok=True)
+                rev_payload: dict = {
+                    "count": blocking_count,
+                    "quality_count": len(quality_items),
+                    "total": len(all_items),
+                    "items": all_items,
+                    "ai": {**arb_stats, "source": "p14",
+                           "pending_review": blocking_count}}
+                if not all_items:
                     # 2026-09-12（用户实测报障）：**零待复核项也要落一份显式空清单**——
                     # 否则复核服务找不到 review.json，把"本次无待复核项"误报成
                     # "该文献未走双通道解析"（仲裁其实跑了：arbitration_audit.jsonl 在）。
-                    rev_dir = out / "work"
-                    rev_dir.mkdir(parents=True, exist_ok=True)
-                    (rev_dir / "review.json").write_text(
-                        json.dumps({"count": 0, "items": [],
-                                    "ai": {**arb_stats, "source": "p14",
-                                           "pending_review": 0},
-                                    "note": "双通道已执行，本次无待复核项"},
-                                   ensure_ascii=False, indent=1),
-                        encoding="utf-8")
-                    arb_stats["pending_review"] = 0
-                    stats["review_json"] = str(rev_dir / "review.json")
+                    rev_payload["note"] = "双通道已执行，本次无待复核项"
                     stats["review_empty"] = True
+                (rev_dir / "review.json").write_text(
+                    json.dumps(rev_payload, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+                arb_stats["pending_review"] = blocking_count
+                stats["review_json"] = str(rev_dir / "review.json")
+                stats["review_quality"] = len(quality_items)
                 # ---- M8c 字符级规则挖掘（P15：拼写/断词词对 → mined_rules.json，
                 #      与 P12 同位置同格式，tools/aggregate_dual_rules.py 跨篇聚合复用）----
                 try:
                     from paperparse.core.rule_mining import mine_char_rules
-                    char_cands = mine_char_rules(conflicts_all, arb, paper=stem)
+                    # 2026-09-16 修：改用**全局索引快照** arb_snapshot（旧代码变量名 `arb`
+                    # 未定义 → NameError 被 except 吞掉，规则挖掘从未真正运行）。
+                    char_cands = mine_char_rules(conflicts_all,
+                                                 list(arb_snapshot.values()), paper=stem)
                     if char_cands:
                         mined = [c.to_rule() for c in char_cands]
                         rev_dir = out / "work"
@@ -1765,6 +1769,8 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                             json.dumps(mined, ensure_ascii=False, indent=1),
                             encoding="utf-8")
                         arb_stats["char_rules"] = len(mined)
+                    else:
+                        arb_stats["char_rules"] = 0
                 except Exception as e:  # noqa: BLE001 - 挖掘失败不阻塞
                     stats["char_rules_error"] = str(e)[:120]
             (work / "char_conflicts.json").write_text(
@@ -1774,6 +1780,8 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
         else:
             stats["paddle_error"] = stats.get("paddle_error") or "paddleocr 无有效块"
     stats["arbitration"] = arb_stats
+    if _third_stats:
+        stats["third_signal"] = {**_third_stats, "votes": dict(_third_stats["votes"])}
 
     # ---- P16 � 乱码兜底解析（百度通道对齐 + 骨架 PyMuPDF 兜底）----
     # char_conflicts 把无 ASCII 字母的 �(U+FFFD) 碎片当"纯符号"过滤 → 双通道抓不到；
@@ -1892,7 +1900,12 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
         for i, it in enumerate(dom_all_items):
             it["report_idx"] = base + i
             review["items"].append(it)
-        review["count"] = len(review["items"])
+        # ★2026-09-16：`count` 的语义 = **阻断项数**（门控翻译），不能等于全部 items——
+        # 否则质量提示项（blocking=False）会被算成"待复核"，把每篇论文都卡住。
+        review["total"] = len(review["items"])
+        review["count"] = sum(1 for it in review["items"] if it.get("blocking") is not False)
+        review["quality_count"] = sum(1 for it in review["items"]
+                                      if it.get("blocking") is False)
         review["ai"]["domain"] = {"scan": len(dom_stats.get("scan_items") or []),
                                   "review": len(dom_stats["review_items"]),
                                   "auto": len(dom_stats["auto_items"])}
@@ -1935,6 +1948,15 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
         from paperparse.core.md_qa_check import check_markdown_qa
         qa = check_markdown_qa(md_out, doc_json=str(doc_json))
         qa["formula_self_check"] = _formula_issues
+        # ★2026-09-16（用户："看不到的错误要可见"）：把双通道仲裁统计与复核清单规模写进
+        # qa_report（此前 qa_report 只写不读、且不含仲裁信息 ⇒ 质量信号对界面不可见）。
+        qa["arbitration"] = dict(arb_stats)
+        if _third_stats:
+            qa["third_signal"] = {**_third_stats, "votes": dict(_third_stats["votes"])}
+        qa["review"] = {"blocking": int(arb_stats.get("pending_review") or 0),
+                        "quality": int(stats.get("review_quality") or 0)}
+        if stats.get("verify"):
+            qa["verify"] = dict(stats["verify"])
         if dom_stats.get("fixes"):
             qa["domain_fix"] = dom_stats
         (out / "qa_report.json").write_text(
