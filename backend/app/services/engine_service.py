@@ -153,9 +153,13 @@ class EngineService:
         # 双通道是增强路径：任何异常都降级单通道（Q2），不阻塞任务
         if parser is None and self._parse_mode_dual():
             try:
-                return self._parse_pdf_dual(pdf_path, run_id,
+                _res = self._parse_pdf_dual(pdf_path, run_id,
                                             cancel_check=cancel_check,
                                             on_wait=on_wait)
+                # ★2026-09-17 L2/L3：**成功路径也要落盘**审计/告警（此前只在降级分支落盘，
+                # 于是"双通道成功但审计有可疑"这类信息拿不到）。
+                self._record_parse_warnings(_res)
+                return _res
             except TaskCancelled:
                 raise
             except EngineError as e:
@@ -311,6 +315,24 @@ class EngineService:
                 wrapped.setdefault("stats", {})["mineru_params"] = wrapped["mineru_params"]
             except Exception:  # noqa: BLE001 - stats 非 dict 时忽略
                 pass
+        # ★2026-09-17 L2/L3 兜底（用户："触发判据误判导致漏开 OCR 怎么办？"）：
+        # 把解析后审计结论转成**任务可见的 warning**（并随 `_record_parse_warnings` 落盘）。
+        # 注意"建议动作"取决于本次是否**已经**用了 OCR 模式：已用则不必再重解析，改提示人工复核。
+        try:
+            _st = wrapped.get("stats") or {}
+            _aud = _st.get("text_layer_audit") or {}
+            _q = _st.get("quality_assertions") or {}
+            _is_ocr = bool((_mp or {}).get("is_ocr"))
+            _warns = wrapped.setdefault("warnings", []) if (_aud or _q) else None
+            if _warns is not None and _aud.get("severity") in ("medium", "high"):
+                _act = ("已用 OCR 模式解析，仍可疑 ⇒ 建议人工复核"
+                        if _is_ocr else "建议以 OCR 模式重解析本篇")
+                _warns.append("文本层审计：%s（可疑 %s 处，%s）"
+                              % (_aud.get("severity"), _aud.get("suspect_total"), _act))
+            if _warns is not None and _q and _q.get("passed") is False:
+                _warns.append("产物质量断言未过：" + "；".join(_q.get("failed") or [])[:200])
+        except Exception as e:  # noqa: BLE001 - 审计提示失败不影响解析
+            logger.warning("解析后审计提示组装失败: %s", e)
         try:
             self._post_parse_clean(wrapped["document_json"])
         except Exception as e:  # noqa: BLE001 - 清洗失败不阻塞主流程

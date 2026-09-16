@@ -2014,6 +2014,7 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
     verify_items: list[dict] = []
     arb_stats = {"arbitrated": 0, "unresolved": 0, "applied_p": 0}
     _third_stats: dict = {}       # ★2026-09-16：第三信号（PDF 文本层）统计
+    _audit_items: list = []       # ★2026-09-17：L2 事后审计原料（最终文本 ↔ 该页文本层原文）
     if paddle:
         pblocks = None
         # 2026-08-26：sf_ocr（硅基流动）通道已移除（P15 弃用，模块归档）；
@@ -2540,6 +2541,18 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                                                     "local_text": _page_text_for(r.md_idx)})
                             arb_stats["rule_audit"] = arb_stats.get("rule_audit", 0) + 1
                 arb_stats["applied_p"] = applied
+                # ★2026-09-17 L2：收集"最终文本 ↔ 所在页文本层原文"对（供事后一致性审计）。
+                # 放在落地**之后**、且遍历**全部** body/caption 段（不只冲突段）——
+                # 审计的意义就是不依赖冲突/触发判据，独立看"产物 vs 纸面"。
+                for _r in repair.paragraphs:
+                    if _r.kind not in ("body", "caption"):
+                        continue
+                    _audit_items.append({
+                        "para_id": _r.para_id,
+                        "page": page_by_para.get(_r.para_id, 0),
+                        "text": _r.text or "",
+                        "page_raw": _page_text_for(_r.md_idx),
+                    })
                 arb_stats["neither"] = sum(
                     1 for a in arb_snapshot.values() if a.verdict == "neither")
                 arb_stats["skipped_ambiguous"] = len(skipped_ambiguous)
@@ -2801,6 +2814,21 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
             qa["third_signal"] = {**_third_stats, "votes": dict(_third_stats["votes"])}
         qa["review"] = {"blocking": int(arb_stats.get("pending_review") or 0),
                         "quality": int(stats.get("review_quality") or 0)}
+        # ★2026-09-17 L2/L3（用户："触发判据误判导致漏开 OCR 怎么办？"）——**事后兜底**：
+        #   L2 文本层一致性审计（不依赖任何事前判据，只看结果）
+        #   L3 产物质量硬断言（控制符/$ 配平/图数/公式自检）
+        try:
+            from paperparse.core.parse_audit import assert_quality, build_text_layer_audit
+            _audit = build_text_layer_audit(_audit_items)
+            qa["text_layer_audit"] = _audit
+            stats["text_layer_audit"] = {k: _audit[k] for k in
+                                         ("severity", "counts", "suspect_total",
+                                          "suggested_action")}
+            _q = assert_quality(en_md=md_out, doc=doc, stats=stats)
+            qa["quality_assertions"] = _q
+            stats["quality_assertions"] = _q
+        except Exception as e:  # noqa: BLE001 - 审计失败不影响解析
+            stats["parse_audit_error"] = str(e)[:160]
         if stats.get("verify"):
             qa["verify"] = dict(stats["verify"])
         if dom_stats.get("fixes"):

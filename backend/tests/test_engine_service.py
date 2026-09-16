@@ -346,6 +346,7 @@ class _FakeDualApi:
         self.dual_ok = dual_ok
         self.calls: list[str] = []
         self.v2_kwargs: dict = {}
+        self.v2_result_extra: dict = {}       # 让用例注入额外字段（如审计结论）
 
     def process_pdf_dual(self, pdf_path, **kw):
         self.calls.append("dual")
@@ -361,8 +362,10 @@ class _FakeDualApi:
         if not self.dual_ok:
             from app.services.engine_service import EngineError
             raise EngineError("v2 失败（模拟）")
-        return {"status": "success", "document_json": str(pdf_path),
-                "parse_source": "p14", "warnings": []}
+        out = {"status": "success", "document_json": str(pdf_path),
+               "parse_source": "p14", "warnings": []}
+        out.update(self.v2_result_extra)
+        return out
 
     def process_pdf(self, pdf_path, **kw):
         self.calls.append("single:" + kw.get("parser", ""))
@@ -466,6 +469,39 @@ def test_parse_pdf_p14_fallback_single(tmp_path, settings, monkeypatch):
     payload = json.loads(wp.read_text(encoding="utf-8"))
     assert payload["degraded"] is True
     assert any("v2" in w for w in payload["warnings"])
+
+
+def test_parse_warnings_surface_audit_and_failed_assertions(tmp_path, settings, monkeypatch):
+    """★2026-09-17 L2/L3 兜底：解析后审计（文本层可疑 / 质量断言未过）必须变成**任务可见的 warning**
+    并落盘 `work/parse_warnings.json`——否则"判据误判导致漏开 OCR"这类问题没人看得见。
+
+    同时验证建议动作的**模式感知**：本次已用 OCR 模式 → 提示人工复核，而不是再让用户重解析。
+    """
+    import json
+    from pathlib import Path
+
+    from app.services.engine_service import EngineService
+
+    eng = EngineService(settings)
+    fake = _FakeDualApi(dual_ok=True)
+    fake.v2_result_extra = {                      # 让打桩返回带审计结论的 stats
+        "stats": {"text_layer_audit": {"severity": "medium", "suspect_total": 6,
+                                       "suggested_action": "rescan_ocr",
+                                       "counts": {"page_ctrl": 277}},
+                  "quality_assertions": {"passed": False,
+                                         "failed": ["figure_match: 图标记 5 与图注 6 不一致"]}},
+    }
+    monkeypatch.setattr(eng, "_api", fake)
+    monkeypatch.setattr(eng, "_ensure_mineru_md", lambda pdf, work: tmp_path / "fake.md")
+    eng._mineru_last_params = {"is_ocr": True, "is_ocr_reason": "cmap"}
+    pdf = tmp_path / "t.pdf"
+    pdf.write_bytes(b"%PDF-1.7")
+    r = eng.parse_pdf(str(pdf))
+    warns = " ".join(r.get("warnings") or [])
+    assert "文本层审计" in warns and "人工复核" in warns      # 已用 OCR ⇒ 不再建议重解析
+    assert "figure_match" in warns                          # L3 断言未过也可见
+    wp = Path(r["document_json"]).parent / "work" / "parse_warnings.json"
+    assert wp.exists() and "文本层审计" in wp.read_text(encoding="utf-8")
 
 
 def test_ensure_mineru_md_cache_and_refetch(tmp_path, settings, monkeypatch):
