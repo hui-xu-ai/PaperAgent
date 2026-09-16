@@ -23,9 +23,17 @@ class _StubProvider:
     def available(self) -> bool:
         return True
 
-    def complete(self, messages, max_tokens=4096):
+    def complete(self, messages, max_tokens=4096, extra_body=None):
         self.prompts.append(messages[-1]["content"])
         return self.replies.pop(0) if self.replies else "[]"
+
+
+class _LegacyStubProvider(_StubProvider):
+    """不认识 `extra_body` 的旧 provider（注入的第三方 adapter）：必须走 TypeError 降级，
+    不能让整篇 AI 判定全部静默丢失（2026-09-17 T9 回归防线）。"""
+
+    def complete(self, messages, max_tokens=4096):
+        return super().complete(messages, max_tokens=max_tokens)
 
 
 class _NoKeyProvider(_StubProvider):
@@ -88,6 +96,14 @@ class TestSynthesize:
                               '[{"id":1,"action":"keep","suggested_text":"","confidence":0.5,"reason":"r"}]'])
         out = synthesize(items, provider=prov, batch_size=4, paper="t")
         assert sum(1 for a in out if a.verdict != "unresolved") >= 1
+
+    def test_legacy_provider_without_extra_body(self):
+        """旧 provider 不认识 `extra_body` → 降级重调，不得让整篇判定丢失。"""
+        prov = _LegacyStubProvider(['[{"id":0,"response":1,"a":"k"}]'])
+        out = synthesize([ITEM], provider=prov, paper="t")
+        assert out[0].verdict != "unresolved" and out[0].action == "keep"
+        assert "CoO_x@LIG" in prov.prompts[0]
+
 
 
 class TestGuards:

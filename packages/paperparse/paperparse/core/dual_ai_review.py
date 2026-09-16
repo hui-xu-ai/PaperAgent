@@ -75,6 +75,38 @@ _SYSTEM_SYNTH = (
 )
 
 
+_SYSTEM_SYNTH_SHORT = (
+    "你是学术论文 OCR 修复专家。每项给出同一位置的 M（MinerU）/P（PaddleOCR）两个解析结果、"
+    "各自句内上下文，以及可选的 PDF 文本层旁证；这些结果可能都不完美。\n"
+    "逐项给出**该处正确的最终片段**（可与 M、P 都不同），或判定无需改动。\n"
+    "硬性约束：1) **只改冲突处那几个字**（单词/公式/标点/空格/上下标/单位/大小写），"
+    "禁止重写整句、禁止增删实词；2) 公式保持 `$...$` 与 `_`/`^` 写法；3) 新增字母/数字必须"
+    "能在给出的证据里找到依据，不许凭空造；4) **公式若与 M 内容等价，只允许 k**"
+    "（保留 MinerU 的 LaTeX，禁止改写成明文/HTML）；5) 判不了就 k。\n"
+    "**第一行就输出 JSON 数组**（无任何思考/解释/前言），每项形如："
+    '{"id":<int>,"a":"k|r|i|d","t":"<仅 r/i/d 时给最终片段>"}；'
+    "a 含义：k=保持 MinerU 原文、r=替换为 t、i=插入 t、d=删除。"
+)
+
+
+def _short_mode() -> bool:
+    """[局部] 是否用**短 schema + 关思考**（T9，默认开）。
+    `PARSE_AI_SHORT=0` 回退旧的 `_SYSTEM_SYNTH` 长 schema（逃生门）。"""
+    return str(os.environ.get("PARSE_AI_SHORT", "1")).strip().lower() \
+        not in ("0", "false", "no", "off", "")
+
+
+def _no_thinking() -> bool:
+    """[局部] 是否请求关闭"思考"（T9，默认关思考）。
+    `PARSE_AI_THINKING=1` 恢复让模型思考（旧行为）。"""
+    return str(os.environ.get("PARSE_AI_THINKING", "0")).strip().lower() \
+        not in ("1", "true", "yes", "on")
+
+
+# 供应商兼容：关思考的请求体写法（魔塔/DeepSeek 系 `thinking.type=disabled`）
+_THINKING_OFF_BODY = {"thinking": {"type": "disabled"}}
+
+
 @dataclass
 class Arbitration:
     """[全局] 一条仲裁结果"""
@@ -127,28 +159,44 @@ class OpenAICompatProvider:
         return bool(self.api_key)
 
     def complete(self, messages: list[dict], *, temperature: float = 0.1,
-                 max_tokens: int = 8192) -> str:
+                 max_tokens: int = 8192, extra_body: dict | None = None) -> str:
         """[全局] chat 补全（OpenAI 兼容协议）
 
         P12 适配思考型模型（如魔塔 deepseek-ai/DeepSeek-V4-Flash-0731）：
         content 可能为空（token 被 reasoning_content 思考占用，finish_reason=length）
         → content 为空时回退取 reasoning_content（常含 JSON 草稿）；
         max_tokens 默认 8192（思考 + 输出留足余量）。
+
+        ★2026-09-17（T9）：新增 `extra_body`（如 `{"thinking":{"type":"disabled"}}`
+        关思考）——实测现状 13 次调用里 7 次被思考挤到 `finish_reason=length`、
+        输出 1,842 token/项；关思考 + 短 schema 后为 1 次调用 / 197 输出 token。
+        **扩展参数不被端点接受（400/422）时自动去掉重试一次**（跨供应商降级，
+        不打死整轮仲裁）。
         """
         if not self.available():
             raise RuntimeError("AI 仲裁 provider 未配置（DEEPSEEK_API_KEY / SILICONFLOW_API_KEY 均缺失）")
         # 魔塔空信封（200 + choices=null + usage 全 0）= 间歇限流占位（L013）→
         # 客户端自动重试（2s/4s/6s 退避），仲裁层 attempt 重试仅兜底
         last_data = {}
+        _extra = dict(extra_body or {})
         for _attempt in range(3):
-            resp = requests.post(
-                "%s/chat/completions" % self.base,
-                headers={"Authorization": "Bearer %s" % self.api_key,
-                         "Content-Type": "application/json"},
-                json={"model": self.model, "messages": messages,
-                      "temperature": temperature, "max_tokens": max_tokens},
-                timeout=self.timeout)
-            resp.raise_for_status()
+            payload = {"model": self.model, "messages": messages,
+                       "temperature": temperature, "max_tokens": max_tokens}
+            if _extra:
+                payload.update(_extra)
+            try:
+                resp = requests.post(
+                    "%s/chat/completions" % self.base,
+                    headers={"Authorization": "Bearer %s" % self.api_key,
+                             "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=self.timeout)
+                resp.raise_for_status()
+            except requests.HTTPError:
+                if _extra:
+                    _extra = {}          # 端点不认扩展参数 → 去掉重试一次
+                    continue
+                raise
             data = resp.json()
             if not data.get("choices"):
                 last_data = data
@@ -328,8 +376,14 @@ def arbitrate(items: list[dict], *, provider: OpenAICompatProvider | None = None
     return out
 
 
-def _synthesize_once(batch: list, provider, paper: str, with_local: bool) -> dict:
-    """[局部] 单批请求 → {id: 建议 dict}（解析不到就返回已拿到的部分）。"""
+def _synthesize_once(batch: list, provider, paper: str, with_local: bool,
+                     *, short: bool = True, no_thinking: bool = True) -> dict:
+    """[局部] 单批请求 → {id: 建议 dict}（解析不到就返回已拿到的部分）。
+
+    ★2026-09-17（T9）：`short=True` 用极短 schema（`{"id","a","t"}`）+ 小 max_tokens；
+    `no_thinking=True` 一并请求关闭"思考"。二者**必须同时用**——实测只改 schema 不关思考
+    时模型把预算全花在推理上、两次调用都撞满 1024 上限且 **JSON 解析 0/10**。
+    """
     lines = ["论文：%s" % (paper or "-")]
     for i, it in batch:
         ev = it.get("evidence") or {}
@@ -350,11 +404,18 @@ def _synthesize_once(batch: list, provider, paper: str, with_local: bool) -> dic
                                                 "(决定性)" if tv.get("decisive") else "(未区分)"))
     got: dict = {}
     for attempt in range(2):
+        _sys_prompt = _SYSTEM_SYNTH_SHORT if short else _SYSTEM_SYNTH
+        _max = 1024 if short else 4096
+        _extra = _THINKING_OFF_BODY if (short and no_thinking) else None
         try:
-            resp = provider.complete([
-                {"role": "system", "content": _SYSTEM_SYNTH},
-                {"role": "user", "content": "\n".join(lines)},
-            ], max_tokens=4096)
+            msgs = [{"role": "system", "content": _sys_prompt},
+                    {"role": "user", "content": "\n".join(lines)}]
+            try:
+                resp = provider.complete(msgs, max_tokens=_max, extra_body=_extra)
+            except TypeError:
+                # 兼容不认识 `extra_body` 的 provider/adapter（注入的第三方实现）——
+                # 不能因为多传一个参数就让整篇的 AI 判定全部丢失（静默失效防线）。
+                resp = provider.complete(msgs, max_tokens=_max)
             try:
                 _RAW_LOG.parent.mkdir(parents=True, exist_ok=True)
                 with _RAW_LOG.open("a", encoding="utf-8") as f:
@@ -376,7 +437,9 @@ def _synthesize_once(batch: list, provider, paper: str, with_local: bool) -> dic
 
 def synthesize(items: list[dict], *, provider: OpenAICompatProvider | None = None,
                batch_size: int = 10, paper: str = "",
-               with_local: bool = True, depth: int = 0) -> list[Arbitration]:
+               with_local: bool = True, depth: int = 0,
+               short: bool | None = None,
+               no_thinking: bool | None = None) -> list[Arbitration]:
     """[全局] **AI 综合建议**（用户 2026-09-16："让 AI 综合这些解析结果进行综合判断，
     给出自己的修改建议"）——与 `arbitrate()` 的本质区别：
 
@@ -388,10 +451,18 @@ def synthesize(items: list[dict], *, provider: OpenAICompatProvider | None = Non
     `evidence.m_ctx|p_ctx` / 可选 `evidence.local_snippet` 与 `third_vote`）。
     输出：`Arbitration`（含 `action`/`suggested_text`/`confidence`/`reason`/`evidence`）。
 
+    ★2026-09-17（T9，A/B 实测换来的默认值）：`short=None` → 取 `PARSE_AI_SHORT`（默认 1）
+    用极短 schema `{"id","a","t"}`；`no_thinking=None` → 取 `PARSE_AI_THINKING`（默认 0）
+    一并请求关闭"思考"。实测（真实付费 AI，20 项/10 项）：现状 13 次调用 / 输出 36,832 token
+    （1,842/项，7 次被推理挤到 `length`）⇒ 短 schema + 关思考后 1 次调用 / 输出 197 token
+    （10/10 解析成功，语义与现状在"真正会送 AI 的项"上 5/5 一致）。两者**必须同时生效**。
+
     **可靠性**（实测：思考型模型在大批时会输出长篇推理而丢 JSON）：批内 2 次尝试仍拿不全时，
     把**未解析的项**降半批重试（最多 3 层）——小批时模型倾向直接给 JSON。
     """
     provider = provider or OpenAICompatProvider()
+    short = _short_mode() if short is None else short
+    no_thinking = _no_thinking() if no_thinking is None else no_thinking
     if not provider.available():
         return [_unresolved(_as_dict(it), i, "AI 综合建议不可用（未配置 Key）")
                 for i, it in enumerate(items)]
@@ -400,7 +471,8 @@ def synthesize(items: list[dict], *, provider: OpenAICompatProvider | None = Non
     size = max(1, batch_size)
     for start in range(0, len(work), size):
         batch = work[start:start + size]
-        out_map.update(_synthesize_once(batch, provider, paper, with_local))
+        out_map.update(_synthesize_once(batch, provider, paper, with_local,
+                                        short=short, no_thinking=no_thinking))
     if depth < 3:
         missing = [(i, it) for i, it in work if i not in out_map]
         # 注意：**全部未解析时也要重试**（此前条件写成 len(missing) < len(work) ⇒ 整批失败
@@ -409,7 +481,7 @@ def synthesize(items: list[dict], *, provider: OpenAICompatProvider | None = Non
             half = max(2, max(1, size // 2))
             sub = synthesize([it for _i, it in missing], provider=provider,
                              batch_size=half, paper=paper, with_local=with_local,
-                             depth=depth + 1)
+                             depth=depth + 1, short=short, no_thinking=no_thinking)
             for (i, _it), a in zip(missing, sub):
                 if a is not None and getattr(a, "action", ""):
                     out_map[i] = {"id": i, "action": a.action,
@@ -439,19 +511,37 @@ def synthesize(items: list[dict], *, provider: OpenAICompatProvider | None = Non
     return out
 
 
+_SHORT_ACTION = {"k": "keep", "r": "replace", "i": "insert", "d": "delete",
+                 "keep": "keep", "replace": "replace", "insert": "insert",
+                 "delete": "delete", "": "keep"}
+
+
 def _parse_suggestions(text: str) -> list[dict]:
     """[局部] 综合建议输出解析：扫所有 `{...}` 小块（思考型模型会夹带散文）。
 
-    比 `_parse_verdicts` 更宽松：只要块里有 `id` + `action` 即认。
+    比 `_parse_verdicts` 更宽松：只要块里有 `id` + (`action` 或短写 `a`) 即认。
+    ★2026-09-17（T9 短 schema）：接受 `{"id":1,"a":"k|r|i|d","t":"…"}` 并归一成
+    `{"id","action","suggested_text","confidence","reason"}`——短写能把输出从
+    1,842 token/项压到 ~20 token/项（实测）。
     """
     out: list[dict] = []
+
+    def _norm(d: dict) -> dict:
+        if "action" in d:
+            return d
+        act = _SHORT_ACTION.get(str(d.get("a", "")).strip().lower(), "keep")
+        return {"id": d.get("id"), "action": act,
+                "suggested_text": d.get("t", d.get("suggested_text", "")),
+                "confidence": d.get("c", d.get("confidence", 0.8)),
+                "reason": d.get("r", "")}
+
     for m in re.finditer(r"\{[^{}]*\}", text or ""):
         try:
             d = json.loads(m.group(0))
         except ValueError:
             continue
-        if isinstance(d, dict) and "id" in d and "action" in d:
-            out.append(d)
+        if isinstance(d, dict) and "id" in d and ("action" in d or "a" in d):
+            out.append(_norm(d))
     if out:
         return out
     # 兜底：剥围栏后整体 json.loads
@@ -459,7 +549,9 @@ def _parse_suggestions(text: str) -> list[dict]:
     try:
         data = json.loads(t)
         if isinstance(data, list):
-            return [d for d in data if isinstance(d, dict) and "id" in d]
+            return [_norm(d) for d in data
+                    if isinstance(d, dict) and "id" in d
+                    and ("action" in d or "a" in d)]
     except ValueError:
         pass
     return []

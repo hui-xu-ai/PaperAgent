@@ -559,6 +559,19 @@ def _is_formula_conflict(conflict: dict) -> bool:
     return bool(re.search(r"[$\\_^]", m + p))
 
 
+def _form_only_change(m_text: str, suggested: str) -> bool:
+    """[局部] AI 建议是否**只是形式改写**（去 LaTeX/数学标记后内容完全相同）。
+
+    ★2026-09-17（T9 保形护栏，A/B 实测换来的）：公式类冲突上，AI 倾向把 MinerU 的
+    LaTeX 改写成明文/HTML（如 `$\\mathrm{BF_{4}}^{-}$` → `$\\mathrm{BF₄⁻}$`、
+    `$\\mathrm{Co}$` → `Co`）——**内容没有变化，只损失渲染**，与规则层
+    `_formula_equivalent`（内容等价 → 保 MinerU LaTeX）的既定选择相悖。
+    实测 A/B 的两处实质分歧都是这一类，故：判为"仅形式改写"时**拒绝落地**（保持 MinerU）。
+    """
+    a, b = _strip_math(m_text), _strip_math(suggested)
+    return bool(a) and a == b
+
+
 def _formula_equivalent(conflict: dict) -> bool:
     """[局部] mineru(LaTeX) 与 paddle(明文) 公式**内容等价**（如
     $\\mathrm{Co(O_x/P_x)@P\\cdot LIG\\cdot P.P}$ vs Co(O_x/P_x)@P-LIG-P.P）→
@@ -1102,6 +1115,22 @@ def apply_third_decide(arb_by_idx: dict, conflicts_all: list,
             src_by_idx[i] = "third"
             decided += 1
     return decided
+
+
+def ai_retry_ids(arb_by_idx: dict, conflicts_all: list) -> list:
+    """[全局] 第 2 次 AI 调用的**触发集**：仅"第 1 次仍没判定"的残留项。
+
+    ★2026-09-17（T9 收口，实测证据）：旧实现在此**额外**收"公式类且第 1 次答 keep"的项
+    去二次追问。T4 把第三信号前移后，凡文本层能定性的项都已在上游定案 ⇒ 这类"分歧项"
+    **结构上不可能再进 AI 批次**；实测（adma 在线）第 2 次调用与原调用**输入完全相同**
+    （657 in token 两次一致）、输出同为 20 token 的 `keep` ⇒ 零信息、纯浪费。
+    ⇒ 只保留 unresolved/neither（真正的残留）。
+    """
+    out: list = []
+    for i, a in arb_by_idx.items():
+        if a.verdict in ("unresolved", "neither"):
+            out.append(i)
+    return out
 
 
 def block_references_ai(arb_by_idx: dict, conflicts_all: list, src_by_idx: dict,
@@ -2117,6 +2146,37 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                             _ev["local_snippet"] = _win
                             _c["evidence"] = _ev
 
+                def _accept_ai(ids: list, res: list, src: str, counter: str) -> int:
+                    """收纳 AI 结果 + **公式保形护栏**（★2026-09-17 T9，A/B 实测换来）。
+
+                    公式类冲突上若 AI 只是把 MinerU 的 LaTeX 改写成明文/HTML
+                    （`_form_only_change`：去数学标记后内容完全相同）→ **拒绝落地**，
+                    强制 keep（保留 MinerU LaTeX，与规则层 `_formula_equivalent` 同口径）。
+                    """
+                    got = 0
+                    for gi, a in zip(ids, res):
+                        if a is None or not getattr(a, "action", ""):
+                            continue
+                        _c = conflicts_all[gi]
+                        if (getattr(a, "action", "") != "keep"
+                                and _is_formula_conflict(_c)
+                                and _form_only_change(
+                                    (_c.get("mineru") or {}).get("text", ""),
+                                    getattr(a, "suggested_text", ""))):
+                            a.action = "keep"
+                            a.suggested_text = ""
+                            a.verdict = "mineru"
+                            a.reason = (str(a.reason) +
+                                        "；公式保形(内容等价,保留MinerU LaTeX)")[:80]
+                            arb_stats["ai_form_keep"] = \
+                                arb_stats.get("ai_form_keep", 0) + 1
+                        a.id = gi
+                        arb_by_idx[gi] = a
+                        src_by_idx[gi] = src
+                        got += 1
+                    arb_stats[counter] = got
+                    return got
+
                 ai_ids = [i for i, a in arb_by_idx.items() if a.verdict == "unresolved"]
                 if ai_ids and ai_review:
                     try:
@@ -2125,14 +2185,7 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                             _attach_local_snippet(ai_ids)
                             res = synthesize([conflicts_all[i] for i in ai_ids],
                                              provider=provider, paper=stem)
-                            got = 0
-                            for gi, a in zip(ai_ids, res):
-                                if a is not None and getattr(a, "action", ""):
-                                    a.id = gi
-                                    arb_by_idx[gi] = a
-                                    src_by_idx[gi] = "ai_synth"
-                                    got += 1
-                            arb_stats["ai_synth"] = got
+                            _accept_ai(ai_ids, res, "ai_synth", "ai_synth")
                             arb_stats["ai_reviewed"] = len(ai_ids)
                         else:
                             from paperparse.core.dual_ai_review import arbitrate
@@ -2151,29 +2204,16 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                     except Exception as e:  # noqa: BLE001 - AI 失败不阻塞
                         stats["ai_review_error"] = str(e)[:120]
                 # ---- 第 2 次 AI 调用（预算内，用户批准"每篇最多 2 次"）----
-                # 目标：① 第 1 次仍没判定的残留；② 公式/上下标类但第 1 次给 keep 的难项。
-                # 两组合并成**一次**请求（仍属 2 次预算内）。
-                retry_ids: list = []
-                for i, a in arb_by_idx.items():
-                    if a.verdict in ("unresolved", "neither"):
-                        retry_ids.append(i)
-                    elif (ai_synthesis and getattr(a, "action", "") == "keep"
-                          and _is_formula_conflict(conflicts_all[i])):
-                        retry_ids.append(i)
+                # 目标：**只服务第 1 次仍没判定的残留**（见 `ai_retry_ids` 的 2026-09-17 说明：
+                # 旧的"公式类 keep 再追问"在第三信号前移后结构上已无意义，实测重复提问零信息）。
+                retry_ids = ai_retry_ids(arb_by_idx, conflicts_all)
                 if retry_ids and ai_review and ai_synthesis:
                     from paperparse.core.dual_ai_review import synthesize
                     try:
                         _attach_local_snippet(retry_ids)
                         res2 = synthesize([conflicts_all[_i] for _i in retry_ids],
                                           provider=provider, paper=stem)
-                        got2 = 0
-                        for gi, a2 in zip(retry_ids, res2):
-                            if a2 is not None and getattr(a2, "action", ""):
-                                a2.id = gi
-                                arb_by_idx[gi] = a2
-                                src_by_idx[gi] = "ai_synth2"
-                                got2 += 1
-                        arb_stats["ai_synth2"] = got2
+                        _accept_ai(retry_ids, res2, "ai_synth2", "ai_synth2")
                     except Exception as e:  # noqa: BLE001 - 第二次失败不阻塞
                         stats["ai_synth2_error"] = str(e)[:120]
                 # ★2026-09-16：**挖掘用快照**——下面 _apply_arbitrations 前会把 a.id 重映射成
