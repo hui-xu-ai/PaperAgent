@@ -559,6 +559,128 @@ def _is_formula_conflict(conflict: dict) -> bool:
     return bool(re.search(r"[$\\_^]", m + p))
 
 
+# ---------------------------------------------------------------------------
+# ★2026-09-17（用户 NC 实测反馈）：**PDF 文本乱码（控制字符）与"小型大写/首字母夸大写"**修复
+# 实测（NC 篇 10.1038_ncomms8258）：该 PDF 的自定义字体把 `×` 映射成 U+0003、把上标负号映射成
+# U+0002 ⇒ 文本层出现 "20 \x03 2.5"（真值 `20 × 2.5`）；MinerU 多数场合渲染成 LaTeX（正常），
+# 但纯文本尺寸表达式会漏过来，最终 en.md 里留下**不可见的 U+0003**（用户报"乱码"）。
+# 另一类：Nature 系**首字母夸大写（drop cap）** + 首行小型大写被 MinerU 渲染成 `<sup>词</sup>` 序列
+# （`E<sup>lectrochemical</sup> <sup>actuators</sup>…` ⇒ 真值 `Electrochemical actuators…`）。
+# ---------------------------------------------------------------------------
+_TEXT_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b\u00ad\ufeff]")
+# `数字 ⟂ 数字`：⟂ 为 U+0003（实测 = 乘号）→ 补 `×`
+_TIMES_CTRL_RE = re.compile(r"(?<=\d)[ \t]*\x03[ \t]*(?=\d)")
+# `(数字|字母) ⟂ 数字`：⟂ 为 U+0002（实测 = 上标负号）→ 补 `⁻`（保持可见、不擅自重排公式包裹）
+_EXP_MINUS_CTRL_RE = re.compile(r"(?<=[\dA-Za-z])[ \t]*\x02[ \t]*(?=\d)")
+_DROPCAP_RE = re.compile(r"(?<![A-Za-z])([A-Z])<sup>([a-z]{2,})</sup>")
+_SUP_WORD_RE = re.compile(r"<sup>([A-Za-z]{2,})</sup>")
+
+
+def normalize_text_artifacts(text: str) -> tuple:
+    """[全局] 文本乱码修复：控制字符 + drop cap/小型大写。返回 `(新文本, info)`。
+
+    ① **乘号/上标负号**：`数字 [\\x03] 数字` → `×`（用户实测原文是乘号：`20 × 2.5 mm`、
+       `7.5 × 2.5 cm2`）；`(数字|字母) [\\x02] 数字` → `⁻`（`2.5 × 10⁻⁴ S cm⁻¹` 形态）。
+    ② **其余控制字符**（C0/C1、ZWSP、软连字符、BOM）→ 删除（**绝不允许进产物**）。
+    ③ **drop cap + 小型大写**：`E<sup>lectrochemical</sup>` → `Electrochemical`；同段出现
+       ≥2 个 `<sup>纯字母词(≥2)</sup>`（小型大写首行）→ 整段去 `<sup>` 包裹。
+       **只碰纯字母**，不碰 `<sup>[12]</sup>` / `<sup>a</sup>` / `<sup>2</sup>` 这类真上标。
+
+    `info` 记录修了什么（进 stats/qa_report 便于用户复核）。
+    纯函数、无副作用；不改写任何非乱码内容。
+    """
+    info = {"times": 0, "exp_minus": 0, "ctrl_removed": 0, "dropcap": 0, "smallcaps": 0}
+    t = text or ""
+    if not t:
+        return t, info
+    t, n1 = _TIMES_CTRL_RE.subn(" \u00d7 ", t)
+    info["times"] = n1
+    t, n2 = _EXP_MINUS_CTRL_RE.subn("\u207b", t)
+    info["exp_minus"] = n2
+    t, n3 = _TEXT_CTRL_RE.subn("", t)
+    info["ctrl_removed"] = n3
+    t, n4 = _DROPCAP_RE.subn(lambda m: m.group(1) + m.group(2), t)
+    info["dropcap"] = n4
+    if len(_SUP_WORD_RE.findall(t)) >= 2:
+        t, n5 = _SUP_WORD_RE.subn(lambda m: m.group(1), t)
+        info["smallcaps"] = n5
+    if any(info.values()):
+        t = re.sub(r"[ \t]{2,}", " ", t)
+    return t, info
+
+
+def _all_occurrences(hay: str, needle: str, *, limit: int = 50) -> list:
+    """[局部] needle 在 hay 中的所有出现位置（上限 limit，防病态长文）。"""
+    out: list = []
+    if not needle:
+        return out
+    i = hay.find(needle)
+    while i >= 0 and len(out) < limit:
+        out.append(i)
+        i = hay.find(needle, i + 1)
+    return out
+
+
+def _locate_conflict(final: str, m_text: str, c: dict, *, span: int = 60) -> int:
+    """[全局] 定位冲突核心片段在段内的**唯一位置**（★2026-09-17 P2，NC `<2 nm` 实测换来）。
+
+    旧逻辑要求 `final.count(m_text) == 1`，否则判"片段多次出现"放弃替换 —— 对**单字符**片段
+    （如 `o` → `<`）必然失败（NC 该段有 58/74 个 `o`）⇒ AI/规则**判对了却落不了地**，
+    还留下 6 条阻断复核项。
+
+    新逻辑：片段唯一 → 直接用；否则用冲突的上下文窗口（`evidence.m_ctx`/`p_ctx`）
+    **给每个候选位置打分**（该位置 ±span 的窗口与上下文窗口的相似度），取最高分；
+    **分数不足或并列** → 返回 -1（调用方沿用旧的 skip 行为，安全网不撤）。
+    """
+    if not m_text:
+        return -1
+    hits = _all_occurrences(final, m_text)
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        return -1
+    ev = c.get("evidence") or {}
+    ctx_m = (ev.get("m_ctx") or "").strip()
+    pos_m = final.find(ctx_m) if len(ctx_m) >= 8 else -1
+    # ① 首选：冲突记录里的**精确段内偏移** `i1`（`char_conflicts` 计算时即为段内绝对偏移；
+    #    实测 NC RP004/RP017 = 844/807，与打分最优候选完全一致）。
+    #    要求：该处确实是核心片段；且若上下文窗口能在段内定位，偏移必须落在窗口范围内
+    #    （段落若已被前面的替换改动过，偏移会失配 ⇒ 自然落到 ② 打分）。
+    for key in ("i1", "j1"):
+        off = ev.get(key)
+        if not isinstance(off, int) or off < 0 or off + len(m_text) > len(final):
+            continue
+        if final[off:off + len(m_text)] != m_text:
+            continue
+        if pos_m >= 0 and not (pos_m - 5 <= off <= pos_m + len(ctx_m) + 5):
+            continue
+        return off
+    for key in ("m_ctx", "p_ctx"):
+        ctx = (ev.get(key) or "").strip()
+        if len(ctx) < 8:
+            continue
+        # 前提：上下文窗口必须能在段内**逐字命中**（同一 MinerU 文本 ⇒ 正常都能命中）；
+        # 命中不了（例如已被前面的替换改写）→ 该窗口不可用，绝不退化成"全段乱比"。
+        pos0 = final.find(ctx)
+        if pos0 < 0 or final.find(ctx, pos0 + 1) >= 0:
+            continue
+        cand = []
+        for p in hits:
+            if not (pos0 - 5 <= p <= pos0 + len(ctx) + 5):
+                continue
+            # 取**与上下文窗口等长**的窗口（以候选位置居中对齐），相似度才有可比性
+            k = min(len(ctx) // 2, p)
+            w = final[p - k: p - k + len(ctx)]
+            cand.append((difflib.SequenceMatcher(None, ctx, w).ratio(), p))
+        if not cand:
+            continue
+        cand.sort(reverse=True)
+        if cand[0][0] < 0.9:
+            continue                 # 上下文对齐度不足 → 不赌（宁可不改：安全网不撤）
+        return cand[0][1]
+    return -1
+
+
 def _form_only_change(m_text: str, suggested: str) -> bool:
     """[局部] AI 建议是否**只是形式改写**（去 LaTeX/数学标记后内容完全相同）。
 
@@ -811,13 +933,14 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
                               "after": _sug[:40], "reason": _why})
                 continue
             if _act == "replace" and _sug and _sug != m_text:
-                if final.count(m_text) != 1:
+                # ★2026-09-17 P2：片段多次出现时用**上下文消歧**（NC `o`→`<` 实测）
+                _at = _locate_conflict(final, m_text, c)
+                if _at < 0:
                     audit.append({"action": "skip_p_ambiguous", "chunk": m_text[:40],
                                   "count": final.count(m_text),
                                   "reason": "片段在段落中多次出现，不自动替换"})
                     continue
-                _p0 = final.find(m_text)
-                if _crosses_protected(final, _p0, _p0 + len(m_text), protected):
+                if _crosses_protected(final, _at, _at + len(m_text), protected):
                     audit.append({"action": "skip_protected_span", "chunk": m_text[:40],
                                   "reason": "替换跨越 HTML 标签/公式边界，不自动落地"})
                     continue
@@ -826,9 +949,10 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
                                   "after": _sug[:40],
                                   "reason": "综合建议会明显缩短/截断内容，保留 MinerU"})
                     continue
-                final = final.replace(m_text, _sug)
+                final = final[:_at] + _sug + final[_at + len(m_text):]
                 audit.append({"action": "ai_synth_replace", "verdict": "AI",
                               "before": m_text[:60], "after": _sug[:60],
+                              "at": _at,
                               "reason": (a.reason or "")[:60]})
             elif _act == "insert" and _sug and not m_text:
                 _i1 = (c.get("evidence") or {}).get("i1")
@@ -839,12 +963,12 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
                                   "at": _i1, "insert": _sug[:40],
                                   "reason": (a.reason or "")[:60]})
             elif _act == "delete" and m_text:
-                if final.count(m_text) == 1:
-                    _p0 = final.find(m_text)
-                    if not _crosses_protected(final, _p0, _p0 + len(m_text), protected):
-                        final = final.replace(m_text, "", 1)
+                _at = _locate_conflict(final, m_text, c)
+                if _at >= 0:
+                    if not _crosses_protected(final, _at, _at + len(m_text), protected):
+                        final = final[:_at] + final[_at + len(m_text):]
                         audit.append({"action": "ai_synth_delete", "verdict": "AI",
-                                      "before": m_text[:40],
+                                      "before": m_text[:40], "at": _at,
                                       "reason": (a.reason or "")[:60]})
             continue
         if a.verdict != "paddleocr":
@@ -891,16 +1015,16 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
             continue
         if not m_text or m_text not in final:
             continue
-        n = final.count(m_text)
-        if n == 1:
-            _p0 = final.find(m_text)
-            if _crosses_protected(final, _p0, _p0 + len(m_text), protected):
-                audit.append({"action": "skip_protected_span", "chunk": m_text[:40],
-                              "reason": "替换片段跨越 HTML 标签/公式边界，不自动落地"})
-                continue
-        if n != 1:
+        # ★2026-09-17 P2：片段多次出现 → 先用上下文消歧定位唯一位置（NC `o`→`<` 实测）
+        _at = _locate_conflict(final, m_text, c)
+        if _at < 0:
             audit.append({"action": "skip_p_ambiguous", "chunk": m_text[:40],
-                          "count": n, "reason": "片段在段落中多次出现，不自动替换"})
+                          "count": final.count(m_text),
+                          "reason": "片段在段落中多次出现，不自动替换"})
+            continue
+        if _crosses_protected(final, _at, _at + len(m_text), protected):
+            audit.append({"action": "skip_protected_span", "chunk": m_text[:40],
+                          "reason": "替换片段跨越 HTML 标签/公式边界，不自动落地"})
             continue
         # ★2026-09-16 形状守卫：会删实质内容/截断片段的替换不落地（保留 MinerU）
         if not _replacement_shape_ok(m_text, p_text):
@@ -911,9 +1035,9 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
         # P16 公式采纳：百度明文 → 包回 $...$ 保渲染（根治"公式段缺 $"）
         if _is_formula_conflict(c):
             p_text = _wrap_paddle_formulas(p_text)
-        final = final.replace(m_text, p_text)
+        final = final[:_at] + p_text + final[_at + len(m_text):]
         audit.append({"action": "arbitrate_replace", "verdict": "P",
-                      "before": m_text[:60], "after": p_text[:60],
+                      "before": m_text[:60], "after": p_text[:60], "at": _at,
                       "reason": (a.reason or "")[:60]})
     return final, audit
 
@@ -1862,6 +1986,17 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
     # ---- M6 拼接修复 ----
     repair = repair_md_paragraphs(md_text, skeleton)
     stats["repair"] = repair.stats
+    # ---- ★2026-09-17（用户 NC 反馈）：文本乱码修复（控制字符 → ×/⁻，drop cap/小型大写去 <sup>）----
+    # 放在 M6 之后、build_markdown/document 之前 ⇒ en.md 与 document.json **同时**受益。
+    _art = {"times": 0, "exp_minus": 0, "ctrl_removed": 0, "dropcap": 0, "smallcaps": 0}
+    for _r in repair.paragraphs:
+        _new, _info = normalize_text_artifacts(getattr(_r, "text", "") or "")
+        if _new != (_r.text or ""):
+            _r.text = _new
+            for _k in _art:
+                _art[_k] += _info.get(_k, 0)
+    if any(_art.values()):
+        stats["text_artifacts"] = _art
     # ---- ★2026-09-17 T5b（用户批准）：参考文献区 **section 归属修正** ----
     # 实测 adma：源 md 没有 `References` 标题（参考文献以 `[N] 条目` 形态紧跟
     # `## Keywords`）⇒ 60 条参考文献条目**继承了 "Keywords" 段标签**（全篇 63 段 Keywords
