@@ -300,6 +300,17 @@ class EngineService:
         wrapped = _wrap("process_pdf_v2", result)
         if not wrapped.get("parse_source"):
                 wrapped["parse_source"] = "p14"
+        # ★2026-09-17：把本次 MinerU 生效参数（含 is_ocr 与判定原因）随结果返回，
+        # 便于任务/排障看到"这篇为什么走了 OCR 模式"。
+        _mp = getattr(self, "_mineru_last_params", None)
+        if _mp:
+            wrapped["mineru_params"] = {k: _mp.get(k) for k in
+                                        ("language", "is_ocr", "is_ocr_reason",
+                                         "model_version")}
+            try:
+                wrapped.setdefault("stats", {})["mineru_params"] = wrapped["mineru_params"]
+            except Exception:  # noqa: BLE001 - stats 非 dict 时忽略
+                pass
         try:
             self._post_parse_clean(wrapped["document_json"])
         except Exception as e:  # noqa: BLE001 - 清洗失败不阻塞主流程
@@ -382,10 +393,34 @@ class EngineService:
                 meta = json.loads((work / "meta.json").read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001 - meta 损坏按未缓存处理
                 meta = {}
-        if meta.get("pdf_md5") == cur and (work / "mineru_full.md").exists():
-            logger.info("mineru full.md 缓存命中: %s", work / "mineru_full.md")
-            return work / "mineru_full.md"
+        # ★2026-09-17：缓存必须**参数感知**——否则"cmap 错映射 → 改走 OCR 模式"这类
+        # 参数变化会被旧 md 缓存挡住（NC 实测：文本层模式产物把 `<2 nm` 读成 `o2 nm`）。
         from paperparse.config import load_config
+        from paperparse.core.parse_params import resolve_mineru_params
+        params = resolve_mineru_params(load_config(), pdf_path)
+        _cached_params = meta.get("params") or {}
+        if _cached_params:
+            _params_match = (bool(_cached_params.get("is_ocr")) == bool(params.get("is_ocr"))
+                             and _cached_params.get("language") == params.get("language")
+                             and _cached_params.get("model_version") == params.get("model_version"))
+        else:
+            # **旧格式缓存（升级前解析的篇）没有 params 字段**：
+            #   · 本次判定 **is_ocr=False**（普通 born-digital）→ 视为命中：不为升级把所有旧文献重拉一遍；
+            #   · 本次判定 **is_ocr=True**（cmap 错映射 / 扫描件）→ 视为**未命中**：旧缓存必然是
+            #     文本层模式产物（正是会读错 `<2 nm` 的那一版），必须重解析一次让规则生效。
+            _params_match = not bool(params.get("is_ocr"))
+            if not _params_match:
+                logger.warning("mineru 旧缓存无 params 且本次判定需 OCR 模式（%s）→ 重新解析",
+                               params.get("is_ocr_reason"))
+        if meta.get("pdf_md5") == cur and _params_match and (work / "mineru_full.md").exists():
+            logger.info("mineru full.md 缓存命中: %s（params=%s）", work / "mineru_full.md",
+                        {k: params.get(k) for k in ("language", "is_ocr")})
+            return work / "mineru_full.md"
+        if meta.get("pdf_md5") == cur and not _params_match:
+            logger.warning("mineru 缓存参数已变（旧=%s 新=%s：%s）→ 重新解析",
+                           {k: _cached_params.get(k) for k in ("language", "is_ocr")},
+                           {k: params.get(k) for k in ("language", "is_ocr")},
+                           params.get("is_ocr_reason"))
         from paperparse.core.mineru_client import MineruClient
         mblocks = MineruClient(load_config()).extract_v4_batch(
             pdf_path, workdir="work/mineru_cache")
@@ -394,8 +429,12 @@ class EngineService:
             raise EngineError("mineru v4 产物缺 full.md（raw_path 为空）")
         work.mkdir(parents=True, exist_ok=True)
         shutil.copy2(mblocks.raw_path, work / "mineru_full.md")
+        self._mineru_last_params = params        # 供 stats/排障（含 is_ocr_reason）
         (work / "meta.json").write_text(json.dumps(
             {"pdf_md5": cur, "pipeline": "p14",
+             "params": {k: params.get(k) for k in
+                        ("model_version", "language", "is_ocr", "enable_table",
+                         "enable_formula", "is_ocr_reason")},
              "created": time.strftime("%Y-%m-%d %H:%M:%S")},
             ensure_ascii=False, indent=2), encoding="utf-8")
         return work / "mineru_full.md"

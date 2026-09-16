@@ -27,8 +27,10 @@ class _Cfg:
         self.paddleocr_options = kw.get("paddleocr_options", "")
 
 
-def _probe(chars: int, cjk_ratio: float = 0.0, ok: bool = True) -> dict:
-    return {"pages": 1, "chars": chars, "cjk_ratio": cjk_ratio, "ok": ok, "error": ""}
+def _probe(chars: int, cjk_ratio: float = 0.0, ok: bool = True,
+           ctrl_chars: int = 0) -> dict:
+    return {"pages": 1, "chars": chars, "cjk_ratio": cjk_ratio, "ok": ok,
+            "ctrl_chars": ctrl_chars, "error": ""}
 
 
 # ---------------------------------------------------------------- 语种判定
@@ -50,20 +52,54 @@ def test_language_auto_probe_failure_falls_back_en():
 
 # ---------------------------------------------------------------- 扫描件判定
 def test_is_ocr_auto_detects_scan():
-    assert resolve_is_ocr("auto", _probe(12)) is True            # 首页几乎无文本层 → 扫描件
-    assert resolve_is_ocr("auto", _probe(4200)) is False         # 正常文本层
+    assert resolve_is_ocr("auto", _probe(12))[0] is True         # 首页几乎无文本层 → 扫描件
+    assert resolve_is_ocr("auto", _probe(4200))[0] is False      # 正常文本层
 
 
 def test_is_ocr_explicit_overrides_auto():
-    assert resolve_is_ocr("on", _probe(4200)) is True            # 强制开（图片型公式页等）
-    assert resolve_is_ocr("off", _probe(3)) is False             # 强制关
-    assert resolve_is_ocr("true", _probe(3)) is True             # 兼容 1/true/yes/on
+    assert resolve_is_ocr("on", _probe(4200))[0] is True         # 强制开（图片型公式页等）
+    assert resolve_is_ocr("off", _probe(3))[0] is False          # 强制关
+
+
+# ------------------------------------------------- ★cmap 错映射 → OCR 模式（2026-09-17 NC 实测）
+def test_is_ocr_auto_detects_cmap_breakage():
+    """文本层含 C0 控制字符 = 字体 cmap 错映射 ⇒ 两条通道+文本层三边同错 ⇒ 必须走 OCR 模式。
+
+    NC 实测（10.1038_ncomms8258）：ctrl_chars=99 ⇒ OCR 模式把 `o2 nm`(错) 读成 `<2 nm`(对)、
+    `\\Nu_{2}` 读成 `N_{2}`、并顺带消除 drop cap 与控制字符；adma/snb ctrl_chars=0 ⇒ 不触发。
+    """
+    ok, why = resolve_is_ocr("auto", _probe(1711, ctrl_chars=99))
+    assert ok is True and "cmap" in why
+    ok2, why2 = resolve_is_ocr("auto", _probe(4197, ctrl_chars=0))
+    assert ok2 is False and "cmap" in why2          # 明示"无 cmap 异常"
+    # 显式开关仍然优先（用户可强制关掉这个自动行为）
+    assert resolve_is_ocr("off", _probe(1711, ctrl_chars=99))[0] is False
+    assert resolve_is_ocr("on", _probe(4197, ctrl_chars=0))[0] is True
+    # 探测失败不猜
+    assert resolve_is_ocr("auto", {"ok": False})[0] is False
+
+
+def test_probe_pdf_counts_ctrl_chars(tmp_path):
+    """`probe_pdf` 必须给出 `ctrl_chars`（cmap 判据的唯一来源）。"""
+    import pymupdf
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "normal text")
+    page.insert_text((72, 90), "size \x03 2.5 nm")     # 模拟坏 cmap 的控制字符
+    p = tmp_path / "t.pdf"
+    doc.save(str(p))
+    doc.close()
+    pr = probe_pdf(str(p))
+    assert pr["ok"] is True and pr["ctrl_chars"] >= 1
+    assert resolve_mineru_params(_Cfg(), str(p))["is_ocr"] is True
+    assert resolve_mineru_params(_Cfg(), str(p))["is_ocr_reason"]      # 判定原因必须可解释
+    assert resolve_is_ocr("true", _probe(3))[0] is True          # 兼容 1/true/yes/on
 
 
 def test_is_ocr_probe_failure_keeps_official_default():
     """探测失败 → False（官方默认），避免把正常 PDF 误判为扫描件多花钱。"""
-    assert resolve_is_ocr("auto", {"ok": False}) is False
-    assert resolve_is_ocr("auto", None) is False
+    assert resolve_is_ocr("auto", {"ok": False})[0] is False
+    assert resolve_is_ocr("auto", None)[0] is False
 
 
 # ---------------------------------------------------------------- payload 组装

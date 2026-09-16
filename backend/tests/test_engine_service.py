@@ -512,6 +512,78 @@ def test_ensure_mineru_md_cache_and_refetch(tmp_path, settings, monkeypatch):
     meta = json.loads((work / "meta.json").read_text(encoding="utf-8"))
     assert meta["pdf_md5"] == hashlib.md5(b"%PDF-1.7 changed").hexdigest()
     assert meta["pipeline"] == "p14"
+    assert meta["params"]["is_ocr"] is False          # ★参数随缓存落盘（cmap 判定可追溯）
+
+
+def test_mineru_cache_is_param_aware(tmp_path, settings, monkeypatch):
+    """★2026-09-17：MinerU md 缓存必须**参数感知**——否则"cmap 错映射 → 改走 OCR 模式"
+    会被旧缓存挡住（NC 实测：文本层模式把 `<2 nm` 读成 `o2 nm`）。
+
+    · 旧格式缓存（无 params）→ 视为命中（不为升级把所有旧文献重拉一遍）；
+    · 有 params 且 is_ocr 与本次判定不符 → 重新解析。
+    """
+    import hashlib
+    import json
+
+    import pymupdf
+
+    from app.services.engine_service import EngineService
+
+    calls = {"n": 0}
+
+    class _FakeMineruClient:
+        def __init__(self, cfg):
+            pass
+
+        def extract_v4_batch(self, pdf, workdir="work/mineru_cache"):
+            calls["n"] += 1
+            from paperparse.middleware.schema import ParserBlocks
+            raw = tmp_path / "raw_full.md"
+            raw.write_text("ocr-fresh", encoding="utf-8")
+            return ParserBlocks(source="mineru", pages=1, blocks=[], raw_path=str(raw))
+
+    monkeypatch.setattr("paperparse.core.mineru_client.MineruClient", _FakeMineruClient)
+    eng = EngineService(settings)
+
+    # 造一个"cmap 错映射"的 PDF：文本层含控制字符 → resolve is_ocr=True
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "size \x03 2.5 nm")
+    pdf = tmp_path / "t.pdf"
+    doc.save(str(pdf))
+    doc.close()
+    work = tmp_path / "dual" / "t"
+    work.mkdir(parents=True)
+    (work / "mineru_full.md").write_text("old-textlayer-md", encoding="utf-8")
+
+    # ① 旧格式缓存（无 params）+ **cmap 异常 PDF**（本次判定 is_ocr=True）→ 必须失效重解析：
+    #    旧缓存必然是文本层模式产物，正是会读错 `<2 nm` 的那一版。
+    (work / "meta.json").write_text(json.dumps(
+        {"pdf_md5": hashlib.md5(pdf.read_bytes()).hexdigest(), "pipeline": "p14"}),
+        encoding="utf-8")
+    p1 = eng._ensure_mineru_md(str(pdf), work)
+    assert calls["n"] == 1 and p1.read_text(encoding="utf-8") == "ocr-fresh"
+    assert json.loads((work / "meta.json").read_text(encoding="utf-8"))["params"]["is_ocr"] is True
+
+    # ② 参数已一致 → 命中缓存，不重拉
+    eng._ensure_mineru_md(str(pdf), work)
+    assert calls["n"] == 1
+
+    # ③ 普通 PDF（无 cmap 异常）+ 旧格式缓存 → 命中（不为升级把所有旧文献重拉一遍）
+    plain = tmp_path / "plain.pdf"
+    d2 = pymupdf.open()
+    _pg = d2.new_page()
+    _pg.insert_text((72, 72), "normal born-digital text " * 12)   # >100 字符，避免被判为扫描件
+    d2.save(str(plain))
+    d2.close()
+    work2 = tmp_path / "dual" / "plain"
+    work2.mkdir(parents=True)
+    (work2 / "mineru_full.md").write_text("legacy-md", encoding="utf-8")
+    (work2 / "meta.json").write_text(json.dumps(
+        {"pdf_md5": hashlib.md5(plain.read_bytes()).hexdigest(), "pipeline": "p14"}),
+        encoding="utf-8")
+    assert eng._ensure_mineru_md(str(plain), work2).read_text(encoding="utf-8") == "legacy-md"
+    assert calls["n"] == 1
 
 
 # ---------------------------------------------------------------- AI 仲裁用量台账
