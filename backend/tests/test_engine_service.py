@@ -569,20 +569,22 @@ def test_mineru_cache_is_param_aware(tmp_path, settings, monkeypatch):
     eng._ensure_mineru_md(str(pdf), work)
     assert calls["n"] == 1
 
-    # ③ 普通 PDF（无 cmap 异常）+ 旧格式缓存 → 命中（不为升级把所有旧文献重拉一遍）
-    plain = tmp_path / "plain.pdf"
+    # ③ **大文档**（> OCR_MAX_PAGES 页，本次判定 is_ocr=False）+ 旧格式缓存 → 命中
+    #    （不为升级把所有旧文献重拉一遍）
+    from paperparse.core.parse_params import OCR_MAX_PAGES
+    big = tmp_path / "big.pdf"
     d2 = pymupdf.open()
-    _pg = d2.new_page()
-    _pg.insert_text((72, 72), "normal born-digital text " * 12)   # >100 字符，避免被判为扫描件
-    d2.save(str(plain))
+    for _ in range(OCR_MAX_PAGES + 1):
+        d2.new_page().insert_text((72, 72), "normal born-digital text " * 12)
+    d2.save(str(big))
     d2.close()
-    work2 = tmp_path / "dual" / "plain"
+    work2 = tmp_path / "dual" / "big"
     work2.mkdir(parents=True)
     (work2 / "mineru_full.md").write_text("legacy-md", encoding="utf-8")
     (work2 / "meta.json").write_text(json.dumps(
-        {"pdf_md5": hashlib.md5(plain.read_bytes()).hexdigest(), "pipeline": "p14"}),
+        {"pdf_md5": hashlib.md5(big.read_bytes()).hexdigest(), "pipeline": "p14"}),
         encoding="utf-8")
-    assert eng._ensure_mineru_md(str(plain), work2).read_text(encoding="utf-8") == "legacy-md"
+    assert eng._ensure_mineru_md(str(big), work2).read_text(encoding="utf-8") == "legacy-md"
     assert calls["n"] == 1
 
 
