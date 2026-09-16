@@ -25,7 +25,7 @@ from pathlib import Path
 __all__ = ["MIN_PAGE_CHARS", "normalize", "normalize_spaced", "page_texts",
            "usable_pages", "dice", "similar", "vote", "vote_conflict",
            "consensus_suspect", "lost_content", "salient_tokens",
-           "unverified_tokens"]
+           "unverified_tokens", "locate_window"]
 
 # 页门控：归一化字符数低于此值的页视为"无可用文本层"（扫描件/纯图页）
 MIN_PAGE_CHARS = 200
@@ -386,3 +386,51 @@ def unverified_tokens(mineru_text: str, page_text: str) -> list[dict]:
             continue
         bad.append({"token": tok, "source": "third_signal"})
     return bad
+
+
+_TOKEN_RE = re.compile(r"\S+")
+_WORD_KEY_RE = re.compile(r"[^0-9a-z]+")
+
+
+def _tok_key(s: str) -> str:
+    """[局部] 词级比对键：小写 + 只留 `[0-9a-z]`（与 `normalize` 同口径）。"""
+    return _WORD_KEY_RE.sub("", (s or "").lower())
+
+
+def locate_window(raw_text: str, probes, *, pad: int = 120) -> str:
+    """[全局] 在**文本层原文**里按词级滑窗定位 `probes` 的最佳邻域，返回该处
+    ±`pad` 字符的原文窗口；定位不到则退回原文头部 `2*pad` 字符。
+
+    为什么需要（★2026-09-17 实测）：喂给 AI 的"PDF 文本层旁证"此前取的是
+    **页首 400 字符**（`p14_pipeline._page_raw_for(md_idx)[:400]`）——页首是题名/
+    作者区，与冲突点无关 ⇒ 每项白花 ~300–400 字符输入、且第三个证据实际无效
+    （这也解释了"AI 大量回 keep"）。本函数纯本地、0 token，只做定位不做判断：
+    容忍断行/连字/标点差异（词级比对），给 AI 真正的冲突邻域上下文。
+    """
+    raw = raw_text or ""
+    if not raw:
+        return ""
+    toks = [(m.start(), m.end(), _tok_key(m.group()))
+            for m in _TOKEN_RE.finditer(raw)]
+    toks = [t for t in toks if t[2]]
+    best = None                                   # (score, i, j, n)
+    for probe in (probes or []):
+        needle = [k for k in (_tok_key(w) for w in (probe or "").split()) if k]
+        if len(needle) < 2 or not toks:
+            continue
+        n = min(len(needle), 40)
+        needle = needle[:n]
+        if len(toks) < n:
+            continue
+        for i in range(len(toks) - n + 1):
+            score = 0
+            for j in range(n):
+                if toks[i + j][2] == needle[j]:
+                    score += 1
+            if best is None or score > best[0]:
+                best = (score, i, i + n - 1, n)
+    if best is None or best[0] < max(2, best[3] // 3):
+        return raw[: 2 * pad].strip()
+    _, i, j, _n = best
+    start, end = toks[i][0], toks[j][1]
+    return raw[max(0, start - pad): min(len(raw), end + pad)].strip()

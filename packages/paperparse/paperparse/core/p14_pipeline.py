@@ -938,17 +938,16 @@ def build_markdown(repair_items: list, figures: list | None = None,
             continue
         # References 区：heading 进入；"[N]" 引用段收集为表格行
         # （P16：adma 源无 "References" 标题 → 直接靠 "[N] 条目" 连续识别兜底）
-        if r.kind == "heading" and re.search(r"^##?\s*references$",
-                                             text, re.I):
+        if r.kind == "heading" and _REF_HEADING_RE.search(text):
             in_refs = True
             if include_references:
                 out.append(text)
             continue
-        if in_refs or re.match(r"^(?:<sup>)?\[\d+\](?:</sup>)?\s+\S", text):
+        if in_refs or _REF_PARA_RE.match(text):
             # 2026-08-26：参考文献条目可能带上标（<sup>[41]</sup> Y. ...）——
             # 原 ^\[\d+\] 匹配失败 → 参考文献泄漏进 en.md（用户反馈"没删除"）；
             # 闭合标签 </sup> 也要兼容（<sup>[1]</sup> 形态）
-            m_ref = re.match(r"^(?:<sup>)?\[(\d+)\](?:</sup>)?\s+\S", text)
+            m_ref = _REF_PARA_RE.match(text)
             if m_ref:
                 in_refs = True
                 ref_rows.append((int(m_ref.group(1)), text))
@@ -1016,6 +1015,117 @@ _REF_LINE_RES = (
     re.compile(r"^\|?\s*\[\d+\]\s*\|?\s+\S"),        # 表格行 | [1] | Y. ...
     re.compile(r"^(?:<sup>)?\[\d+\](?:</sup>)?\s+[A-Z]"),  # 上标/裸 [N] 条目
 )
+
+# ★2026-09-17（用户约束："参考文献部分不需要经过 AI 仲裁处理"）：
+# 参考文献**段落**的单一判据 —— 与 `build_markdown()` 的 `in_refs` 分流同口径
+# （先 grep 再定义：不自造第二套启发式）。`_REF_HEADING_RE` = References 标题，
+# `_REF_PARA_RE` = `[N] 条目`（**无标题兜底**：adma 源 md 无 References 标题，
+# 60 条参考文献条目全靠它识别）。
+_REF_HEADING_RE = re.compile(r"^##?\s*references$", re.I)
+_REF_PARA_RE = re.compile(r"^(?:<sup>)?\[(\d+)\](?:</sup>)?\s+\S")
+
+
+def references_para_ids(repair_items: list) -> set:
+    """[全局] 参考文献区**段 id 集合**（供"不经 AI 仲裁"闸门与统计使用）。
+
+    口径严格对齐 `build_markdown()` 的 `in_refs` 状态机：
+    · `References` 标题段 → 进入区（其后段计入）；
+    · `[N] 条目`段 → 计入（含**无标题**场景：靠连续 `[N]` 条目识别）；
+    · 区内出现非条目段 → 离开该区（与 build_markdown 一致）。
+    空文本段跳过；无 `para_id` 的段不入集。
+    """
+    ids: set = set()
+    in_refs = False
+    for r in repair_items or []:
+        text = (getattr(r, "text", "") or "").strip()
+        if not text:
+            continue
+        pid = getattr(r, "para_id", "")
+        if getattr(r, "kind", "") == "heading" and _REF_HEADING_RE.search(text):
+            in_refs = True
+            if pid:
+                ids.add(pid)
+            continue
+        if in_refs:
+            if _REF_PARA_RE.match(text):
+                if pid:
+                    ids.add(pid)
+            else:
+                in_refs = False
+        elif _REF_PARA_RE.match(text):
+            in_refs = True
+            if pid:
+                ids.add(pid)
+    return ids
+
+
+def apply_third_decide(arb_by_idx: dict, conflicts_all: list,
+                       src_by_idx: dict, *, enabled: bool = True) -> int:
+    """[全局] M8 第三信号（PDF 自带文本层）裁决层 —— **免费信号，先于 AI 执行**。
+
+    返回裁决条数。语义（★2026-09-17，含实测换来的护栏）：
+    ① `decisive` 判 paddleocr 且该项**规则未定**（unresolved/neither）→ 采纳 P
+       （conf 0.9，走既有落地函数替换；等于免费替 AI 做掉这批）；
+    ② `decisive` 判 mineru 且该项**已落地 P** → 否决（保留 MinerU，自动撤销错改）；
+    ③ `decisive` 判 mineru 且该项 unresolved/neither → 保留 M 且不再进复核。
+    **不允许**把规则层已判定的 `both`（`_is_formula_equivalent`：内容等价 →
+    保 MinerU LaTeX 以便渲染）翻成 paddleocr：内容等价时翻转只是**形式降级**
+    （实测 adma 12 条裁决里 9 条是 `$\\mathrm{BF_{4}}^{-}$`→`$\\mathrm{BF₄⁻}$` 这类
+    "LaTeX→明文"；且判据是"哪个窗口在文本层里逐字命中"，**明文侧天然更贴文本层**
+    ⇒ 存在系统性偏向，必须挡住）。`enabled=False` 时完全不动作（`PARSE_THIRD_DECIDE=0`）。
+    """
+    if not enabled:
+        return 0
+    decided = 0
+    for i, c in enumerate(conflicts_all):
+        a = arb_by_idx.get(i)
+        if a is None:
+            continue
+        tv = c.get("third_vote") or {}
+        if not tv.get("decisive"):
+            continue
+        side = tv.get("verdict")
+        if side == "paddleocr" and a.verdict in ("unresolved", "neither"):
+            a.verdict = "paddleocr"
+            a.confidence = 0.9
+            a.reason = "文本层裁决：PaddleOCR(自动)"
+            src_by_idx[i] = "third"
+            decided += 1
+        elif side == "mineru" and a.verdict == "paddleocr":
+            a.verdict = "mineru"
+            a.reason = "文本层反对，保留 MinerU(自动撤销替换)"
+            src_by_idx[i] = "third"
+            decided += 1
+        elif side == "mineru" and a.verdict in ("unresolved", "neither"):
+            a.verdict = "mineru"        # 保留 M（不改文）但不再进复核
+            a.reason = "文本层裁决：保留 MinerU(自动)"
+            src_by_idx[i] = "third"
+            decided += 1
+    return decided
+
+
+def block_references_ai(arb_by_idx: dict, conflicts_all: list, src_by_idx: dict,
+                        ref_ids) -> int:
+    """[全局] 参考文献区 **AI 闸门**（用户 2026-09-17 约束，逐字："需要注意参考文献部分
+    不需要经过 AI 仲裁处理。"）——把仍在 `unresolved` 的参考文献区冲突判为 `mineru`
+    （保留原样）+ `src=ref_skip`，使其**不进任何 AI 调用**（M8 综合建议、第 2 次专项、
+    C 层共识扫描），也不进人工复核队列。返回拦截条数。
+
+    **只排除 AI**（用户同日选定档位②）：本地规则与第三信号的结论保留——`en.md` 本就
+    不含参考文献表（`build_markdown(include_references=False)`），故参考文献区的改动
+    只落在 `mineru_full.md`（审核参照件）。
+    """
+    blocked = 0
+    for i, c in enumerate(conflicts_all):
+        a = arb_by_idx.get(i)
+        if a is None or a.verdict != "unresolved":
+            continue
+        if c.get("para_id", "") in ref_ids:
+            a.verdict = "mineru"
+            a.reason = "参考文献区：不经 AI 仲裁（保留 MinerU）"
+            src_by_idx[i] = "ref_skip"
+            blocked += 1
+    return blocked
 
 
 def _strip_trailing_references(md: str) -> str:
@@ -1745,7 +1855,8 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
             _local_usable: set[int] = set()
             try:
                 from paperparse.core.local_text import (page_texts, unverified_tokens,
-                                                        usable_pages, vote_conflict)
+                                                        usable_pages, vote_conflict,
+                                                        locate_window)
                 _local_pages = page_texts(str(pdf))
                 _local_pages_raw = page_texts(str(pdf), raw=True)
                 _local_usable = usable_pages(_local_pages)
@@ -1776,14 +1887,24 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
 
             def _page_text_for(md_idx) -> str:
                 """该段所在**页**的文本层内容（token 级核对与冲突第三票都用页级：
-                段落级映射（md 段 ↔ 本地行组）并非一一对应，实测误报严重，已弃用）。"""
+                段落级映射（md 段 ↔ 本地行组）并非一一对应，实测误报严重，已弃用）。
+
+                ★2026-09-17 修（静默失效）：**必须用 `raw` 原文**——`page_texts()` 默认
+                返回 `normalize()`（只留 `[0-9a-z]`，**空格全被抹掉**，实测页 1：
+                原文 4,815 字符/510 空格 → 归一化 3,967 字符/0 空格）。而
+                `vote_conflict` 在"差异只在空白/断词"（占真实冲突 63%+）时用
+                `normalize_spaced(page_text)` 比对，需要**单词边界** ⇒ 喂归一化文本
+                时该分支永远命中不了、永远判不出（子代理 A/B 实测 decisive
+                42.4% → 50.8%）。两个消费方（`vote_conflict`、`unverified_tokens`）
+                内部都会自行归一化 ⇒ 传 raw 安全且更准。
+                """
                 key = (md_idx or [0])[0]
                 if key in _page_cache:
                     return _page_cache[key]
                 txt = ""
                 if _local_usable:
                     pgs = [p for p in _pages_for(md_idx) if p in _local_usable]
-                    txt = " ".join(_local_pages.get(p, "") for p in pgs).strip()
+                    txt = "\n".join(_local_pages_raw.get(p, "") for p in pgs).strip()
                 _page_cache[key] = txt
                 return txt
 
@@ -1938,6 +2059,32 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                             reason="类外歧义,待AI复核", confidence=0.0,
                             mineru=c.get("mineru", {}),
                             paddleocr=c.get("paddleocr", {}))
+                # ---- M8-第三信号裁决层（★2026-09-17 **前移**：免费信号先于付费 AI）----
+                # 逻辑见 `apply_third_decide()`（模块级，便于单测锚定护栏语义）。
+                # ★顺序修正：本块此前位于 AI 调用**之后**（HANDOFF 文档写的顺序
+                # "规则→第三信号→AI→兜底"与代码不一致）⇒ 文本层本已能定的项照样花
+                # AI token、并占用"每篇 ≤2 次"的预算。现在先跑免费信号，AI 只收残留。
+                arb_stats["third_decided"] = apply_third_decide(
+                    arb_by_idx, conflicts_all, src_by_idx, enabled=third_decide)
+                # ---- 参考文献区闸门（★2026-09-17 用户约束逐字："需要注意参考文献部分
+                #      不需要经过 AI 仲裁处理。"）----
+                # 逻辑见 `block_references_ai()`；**只排除 AI**（用户选定档位②），
+                # 本地规则与第三信号的结果保留（en.md 本就不含参考文献表，
+                # build_markdown include_references=False ⇒ 改动只落在 mineru_full.md）。
+                _ref_ids = references_para_ids(repair.paragraphs)
+                arb_stats["ref_paras"] = len(_ref_ids)
+                arb_stats["ref_skipped"] = block_references_ai(
+                    arb_by_idx, conflicts_all, src_by_idx, _ref_ids)
+
+                # ---- 参考文献区闸门（★2026-09-17 用户约束逐字："需要注意参考文献部分
+                #      不需要经过 AI 仲裁处理。"）----
+                # 逻辑见 `block_references_ai()`；**只排除 AI**（用户选定档位②），
+                # 本地规则与第三信号的结果保留（en.md 本就不含参考文献表，
+                # build_markdown include_references=False ⇒ 改动只落在 mineru_full.md）。
+                _ref_ids = references_para_ids(repair.paragraphs)
+                arb_stats["ref_paras"] = len(_ref_ids)
+                arb_stats["ref_skipped"] = block_references_ai(
+                    arb_by_idx, conflicts_all, src_by_idx, _ref_ids)
                 # ---- 用户规则3：剩余歧义 → 局部 AI 复核（不整段发送：用冲突片段+
                 #      前后上下文 m_ctx/p_ctx；批量一篇一请求 + 自动分块重试，防限流）----
                 # ---- AI 判定（用户规则3 的升级版）----
@@ -1947,14 +2094,28 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                 # （可与两侧都不同），而不是只回答"哪侧对"。`ai_synthesis=False` 时退回
                 # 旧的 `arbitrate()`（只选边），作为逃生门。
                 def _attach_local_snippet(ids: list) -> None:
-                    """把该段所在页的**文本层原文**塞进冲突证据（AI 综合判断的可读依据）。"""
+                    """把**冲突邻域**的文本层原文塞进冲突证据（AI 综合判断的可读依据）。
+
+                    ★2026-09-17 修：此前是 `_page_raw_for(md_idx)[:400]`＝**页首 400 字符**
+                    （题名/作者区），与冲突点无关 ⇒ 白花 token 且证据无效。
+                    现在用 `local_text.locate_window()` 按 m_ctx/p_ctx 在原文里做
+                    **词级滑窗定位**，只取冲突邻域 ±120 字符（纯本地、0 token）。
+                    """
                     for _i in ids:
                         _c = conflicts_all[_i]
                         _r = next((x for x in repair.paragraphs
                                    if x.para_id == _c.get("para_id", "")), None)
-                        if _r is not None:
-                            _c.setdefault("evidence", {})["local_snippet"] = \
-                                _page_raw_for(_r.md_idx)[:400]
+                        if _r is None:
+                            continue
+                        _raw = _page_raw_for(_r.md_idx)
+                        if not _raw:
+                            continue
+                        _ev = _c.get("evidence") or {}
+                        _win = locate_window(_raw, [_ev.get("m_ctx"),
+                                                    _ev.get("p_ctx")])
+                        if _win:
+                            _ev["local_snippet"] = _win
+                            _c["evidence"] = _ev
 
                 ai_ids = [i for i, a in arb_by_idx.items() if a.verdict == "unresolved"]
                 if ai_ids and ai_review:
@@ -2024,40 +2185,9 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                     1 for a in arb_by_idx.values() if a.verdict != "unresolved")
                 arb_stats["unresolved"] = sum(
                     1 for a in arb_by_idx.values() if a.verdict == "unresolved")
-                # ---- M8-第三信号裁决层（★2026-09-16，用户要求"尽量让人不参与"）----
-                # 决定性第三票（PDF 自带文本层逐字命中某一侧）**直接定 verdict**：
-                #   · 判 P → 走既有落地函数替换（conf 0.9 ≥ 门控 0.8）；
-                #   · 判 M → verdict=mineru ⇒ 保留 MinerU 原文（等于**自动撤销**规则的错改，
-                #     如实测 snb `$\mathrm{EMIM-BF}_4$` 被规则换成 `EMM-BF₄`）。
-                # 于是这些项**不再进人工复核清单**（人不参与）；只有"第三信号也判不了 +
-                # AI 也判不了"的残留才留给人（见 pending 判据）。
-                third_decided = 0
-                if third_decide:
-                    for _i, _c in enumerate(conflicts_all):
-                        _a = arb_by_idx.get(_i)
-                        if _a is None:
-                            continue
-                        _tv = _c.get("third_vote") or {}
-                        if not _tv.get("decisive"):
-                            continue
-                        _side = _tv.get("verdict")
-                        if _side == "paddleocr" and _a.verdict != "paddleocr":
-                            _a.verdict = "paddleocr"
-                            _a.confidence = 0.9
-                            _a.reason = "文本层裁决：PaddleOCR(自动)"
-                            src_by_idx[_i] = "third"
-                            third_decided += 1
-                        elif _side == "mineru" and _a.verdict == "paddleocr":
-                            _a.verdict = "mineru"
-                            _a.reason = "文本层反对，保留 MinerU(自动撤销替换)"
-                            src_by_idx[_i] = "third"
-                            third_decided += 1
-                        elif _side == "mineru" and _a.verdict in ("unresolved", "neither"):
-                            _a.verdict = "mineru"        # 保留 M（不改文）但不再进复核
-                            _a.reason = "文本层裁决：保留 MinerU(自动)"
-                            src_by_idx[_i] = "third"
-                            third_decided += 1
-                arb_stats["third_decided"] = third_decided
+                # ---- M8-第三信号裁决层：★2026-09-17 **已前移到 AI 之前**（见上方
+                #      `_apply_third_decide()` 调用）——免费信号必须先于付费 AI 生效，
+                #      否则"文本层本已能定的项"照样花 AI token。此处不再重复执行。
                 # ★2026-09-16（用户："尽量降低人的参与或人不参与"）：**机器兜底**——
                 # AI/第三信号都没能判定的冲突，一律"保留 MinerU 原文"并作为**裁决记录**进清单
                 # （非阻断、不需人点）。依据：保留 M = 不改动 ⇒ 相对现状零回归；而把这类项推给
@@ -2074,6 +2204,21 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                         _fb += 1
                     arb_stats["machine_fallback"] = _fb
                     arb_stats["unresolved"] = 0
+                # ---- 成本/来源埋点（★2026-09-17 T1）----
+                # 此前只记"落地了几个动作"，看不出**决策来源**与 **AI 回了什么**
+                # ⇒ 无法回答"AI 有没有生效、花的值不值"。两处都落 stats["arbitration"]
+                # （→ qa_report.json）与 review.json 的 `ai` 块。
+                _by_src: dict = {}
+                for _v in src_by_idx.values():
+                    _by_src[_v] = _by_src.get(_v, 0) + 1
+                arb_stats["by_source"] = _by_src
+                _ai_actions: dict = {}
+                for _i, _a in arb_by_idx.items():
+                    if not str(src_by_idx.get(_i, "")).startswith("ai"):
+                        continue
+                    _k = getattr(_a, "action", "") or (_a.verdict or "?")
+                    _ai_actions[_k] = _ai_actions.get(_k, 0) + 1
+                arb_stats["ai_actions"] = _ai_actions
                 applied = 0
                 review_cands: list[dict] = []   # 仍需人工（AI 不可用/未返回）→ GUI 复核
                 decided_log: list[dict] = []    # ★AI/第三信号替人做的决定（复核页只展示记录）
@@ -2335,7 +2480,13 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
     if dom_boundary and ai_review:
         try:
             from paperparse.core.consensus_scan import ai_scan, build_scan_review_items
-            flat = [dict(c, para_id=pid) for pid, cs in dom_boundary.items() for c in cs]
+            # ★2026-09-17 用户约束（"参考文献部分不需要经过 AI 仲裁处理"）：
+            # 参考文献区段不进 C 层 AI 扫描（本地词典层结果不受影响）。
+            _ref_ids_c = references_para_ids(repair.paragraphs)
+            _flat_all = [dict(c, para_id=pid) for pid, cs in dom_boundary.items()
+                         for c in cs]
+            flat = [c for c in _flat_all if c["para_id"] not in _ref_ids_c]
+            stats["domain_scan_ref_skipped"] = len(_flat_all) - len(flat)
             scans = ai_scan(flat, provider=provider, paper=stem)
             scan_items = build_scan_review_items(repair.paragraphs, scans,
                                                  dom_boundary, page_map=dom_page)

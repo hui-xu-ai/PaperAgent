@@ -302,8 +302,12 @@ class EngineService:
                     api_key=active["api_key"],
                     base=active.get("base_url", ""),
                     model=active.get("model", ""),
+                    # ★2026-09-17 修（静默失效第 2 次同型）：回调必须调 `record_usage`
+                    # ——`TokenGuard` 只有 `record_usage`（`llm_service.py:200`），旧写法
+                    # `guard.record(...)` 抛 AttributeError 被 `dual_ai_review.py:178`
+                    # 的 `except: pass` 吞掉 ⇒ 仲裁 token 从未进 `llm_usage` 台账。
                     on_usage=None if guard is None else
-                    (lambda pt, ct, _a=active, _s=stem: guard.record(
+                    (lambda pt, ct, _a=active, _s=stem: guard.record_usage(
                         "arbitration:" + _s, pt, ct,
                         provider=_a.get("id", ""), model=_a.get("model", ""))))
             else:

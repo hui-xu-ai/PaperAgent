@@ -498,3 +498,60 @@ def test_ensure_mineru_md_cache_and_refetch(tmp_path, settings, monkeypatch):
     meta = json.loads((work / "meta.json").read_text(encoding="utf-8"))
     assert meta["pdf_md5"] == hashlib.md5(b"%PDF-1.7 changed").hexdigest()
     assert meta["pipeline"] == "p14"
+
+
+# ---------------------------------------------------------------- AI 仲裁用量台账
+class _FakeParseSettings:
+    """最小 settings_service 替身：只给 `get_parse()/get_active_provider()`。"""
+
+    def get_parse(self):
+        return {"ai_review": True, "mode": "dual"}
+
+    def get_active_provider(self, masked: bool = False):
+        return {"id": "testprov", "name": "Test", "base_url": "http://127.0.0.1:1",
+                "model": "test-model", "api_key": "sk-test"}
+
+
+class _FakeUsageService:
+    def __init__(self):
+        self.rows: list[tuple] = []
+
+    def record(self, context, provider, model, prompt_tokens, completion_tokens,
+               cache_hit_tokens=0):
+        self.rows.append((context, provider, model, prompt_tokens,
+                          completion_tokens, cache_hit_tokens))
+
+
+def test_arbitration_usage_lands_in_ledger(tmp_path, settings, monkeypatch):
+    """★2026-09-17 回归锚定（静默失效第 2 次同型）：仲裁 provider 的 `on_usage`
+    必须真正落到 `llm_usage` 台账。
+
+    旧写法 `guard.record(...)` —— `TokenGuard` 只有 `record_usage` ⇒ AttributeError
+    被 `dual_ai_review` 的 `except: pass` 吞掉，台账恒 0 行（成本完全不可观测）。
+    本用例直接驱动 `_assemble_provider` 产出的回调，断言用量被记录为
+    `arbitration:<stem>`（按篇隔离）。
+    """
+    from app.services import container as C
+    from app.services.engine_service import EngineService
+    from app.services.llm_service import TokenGuard
+
+    us = _FakeUsageService()
+    guard = TokenGuard(usage_service=us)
+    monkeypatch.setattr(C, "get_settings_service", lambda: _FakeParseSettings())
+    monkeypatch.setattr(C, "get_guard", lambda: guard)
+
+    eng = EngineService(settings)
+    pdf = tmp_path / "10.1002_adma.202407106.pdf"
+    pdf.write_bytes(b"%PDF-1.7 test")
+    ai_review, provider = eng._assemble_provider(str(pdf))
+
+    assert ai_review is True
+    assert provider is not None and provider.available()
+    provider.on_usage(1234, 567)          # 模拟一次真实 AI 调用的 usage 回传
+
+    assert us.rows, "仲裁用量未进台账（回调接错方法名？）"
+    ctx, prov, model, pt, ct, _cache = us.rows[-1]
+    assert ctx == "arbitration:10.1002_adma.202407106"
+    assert (prov, model) == ("testprov", "test-model")
+    assert (pt, ct) == (1234, 567)
+
