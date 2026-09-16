@@ -607,6 +607,29 @@ def _trim_by_text(box: tuple, obstacles: list[tuple], min_size: float):
     return (x0, y0, x1, y1)
 
 
+_PANEL_PREFIX_RE = re.compile(r"^(?:\(\s*[a-hA-H]\s*\)|\[\s*[a-hA-H]\s*\])\s*")
+
+
+def _match_caption_label(text: str):
+    """[局部] 图注行取编号：`_FIG_NUM_RE` ＋ **括号面板标签容错**。
+
+    行首可能残留子图面板标签（"(c) Fig. 12. …" / "[b] Figure 7 | …"）——只剥
+    **带括号**的（与 p14 `_LEAD_PANEL_RE` 同口径：裸字母不可安全剥离，会吃掉
+    图注正文首字）；剥后只认 figure/fig 编号，table/scheme 一概返回 None。
+    """
+    s = (text or "").lstrip()
+    n = 0
+    while n < 3:
+        p = _PANEL_PREFIX_RE.match(s)
+        if not p or not _FIG_NUM_RE.match(s[p.end():]):
+            break
+        s, n = s[p.end():], n + 1
+    m = _FIG_NUM_RE.match(s)
+    if m and not m.group(1).lower().startswith("fig"):
+        m = None
+    return m
+
+
 def extract_figures_caption_driven(pdf_path: str | Path, local_skeleton, out_dir: str | Path,
                                    dpi: int = 300,
                                    min_size: float = MIN_FIGURE_SIZE_PT,
@@ -624,6 +647,13 @@ def extract_figures_caption_driven(pdf_path: str | Path, local_skeleton, out_dir
       3. **文本避让**：生长遇到宽文本行（宽度 ≥ 栏宽 45% 的正文/标题/图注行）
          即停；成簇后再按落入框内的宽文本行收缩边界，收缩不掉则弃图；
       4. 图元/裁剪框去重（sha256 + 重叠 ≥60%）；纯本地、无 API 调用。
+    v3（2026-09-17，修"并排图丢一张"）：
+      骨架会把**同一 y 带的左右栏图注并成一个 caption 段**（NC p5：段 1 行 =
+      "Figure 5 | …"、段 2 行 = "Figure 4 | …"，段 bbox 43.6→548.8 横跨分栏缝；
+      判据 = 图注不跨栏且中间留白 ⇒ 并排两张小图）。旧版只认段首行 → Figure 4
+      无锚点 → 5 张图里缺一张。改为**段内按行识别图注起始行**、每张图注独立成
+      锚点（盒 = 该组行并集），故并排图各按自己栏宽生长、互不越缝。
+
     返回 Figure 列表（fig_id/file/caption/page/bbox/sha256）；diag 可选传入
     dict，回填 {"anchors":[...], "counts":{...}} 供取证脚本核算。
     """
@@ -636,22 +666,33 @@ def extract_figures_caption_driven(pdf_path: str | Path, local_skeleton, out_dir
                          detail={"reason": f"pymupdf 打开失败: {exc}"}) from exc
 
     # 1) 图注锚点（本地骨架 caption 段）：(page, box, text, 编号, 是否表注)
+    #    v3：**段内可含多张并排图注**——骨架把同一 y 带的左右栏图注并成一个段
+    #    （ncomms p5：段 1 行 = "Figure 5 | …"，段 2 行 = "b Figure 4 | …"；
+    #    段 bbox 43.6→548.8 横跨分栏缝）。旧版只认段首行 → Figure 4 无锚点 →
+    #    永远不出图。改为按行识别"图注起始行"，每张图注独立成锚点。
     anchors: list[dict] = []
     for p in getattr(local_skeleton, "paragraphs", []) or []:
         if getattr(p, "kind", "") != "caption" or not getattr(p, "start_line", None):
             continue
-        t = (p.text or "").strip()
-        m = _FIG_NUM_RE.match(t)
-        if not m:
-            continue
         plines = [ln for ln in (getattr(p, "lines", None) or []) if getattr(ln, "bbox", None)]
         if not plines:
             continue
-        box = (min(ln.bbox[0] for ln in plines), min(ln.bbox[1] for ln in plines),
-               max(ln.bbox[2] for ln in plines), max(ln.bbox[3] for ln in plines))
-        anchors.append({"page": plines[0].page, "box": box,
-                        "text": t[:CAPTION_MAX_CHARS], "num": int(m.group(2)),
-                        "table": m.group(1).lower().startswith("table")})
+        groups: list[list] = []
+        cur: list | None = None
+        for ln in plines:
+            m = _match_caption_label(getattr(ln, "text", "") or "")
+            if m:
+                cur = [(ln, int(m.group(2)), m.group(1).lower().startswith("table"))]
+                groups.append(cur)
+            elif cur is not None:
+                cur.append((ln, cur[0][1], cur[0][2]))   # 续行随其起始行同组
+        for g in groups:
+            box = (min(ln.bbox[0] for ln, _, _ in g), min(ln.bbox[1] for ln, _, _ in g),
+                   max(ln.bbox[2] for ln, _, _ in g), max(ln.bbox[3] for ln, _, _ in g))
+            text = "\n".join((getattr(ln, "text", "") or "").strip() for ln, _, _ in g).strip()
+            anchors.append({"page": plines[0].page, "box": box,
+                            "text": text[:CAPTION_MAX_CHARS], "num": g[0][1],
+                            "table": g[0][2]})
     anchors.sort(key=lambda a: (a["page"], a["box"][1]))
 
     # 2) 页面几何 + 文本障碍行（骨架行中的"宽行"= 正文/标题/图注，用于避让）
