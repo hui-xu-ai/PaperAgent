@@ -98,6 +98,11 @@ class Settings:
     # 这些项不再进人工复核清单；置 0 退回"只当证据提示"。0 成本（本地文本层，不联网不花 token）。
     third_signal_decide: bool = os.getenv("PARSE_THIRD_DECIDE", "1").strip() in (
         "1", "true", "yes", "on")
+    # 2026-09-16（用户："让 AI 综合这些解析结果进行综合判断，给出自己的修改建议"）：
+    # **AI 综合建议**——把 M/P 片段 + 句内上下文 + PDF 文本层原文旁证交给 AI，让它给出
+    # 自己的最终片段（可与两侧都不同），落地后仍过五道护栏。置 0 退回旧的"只选边"。
+    ai_synthesis: bool = os.getenv("PARSE_AI_SYNTHESIS", "1").strip() in (
+        "1", "true", "yes", "on")
     # P15 Step5：解析管线开关（PAPERPARSE_PIPELINE）——p14（默认，P14 文本管线：
     # 本地骨架权威边界 + mineru full.md 文本基底 + 拼接修复 + 双通道验证 + 字符仲裁，
     # 替换 P12 成为生产基底）/ p12（回退 P12 双通道块级管线）

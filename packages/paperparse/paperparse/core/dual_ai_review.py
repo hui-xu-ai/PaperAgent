@@ -24,7 +24,7 @@ from pathlib import Path
 
 import requests
 
-__all__ = ["OpenAICompatProvider", "SiliconFlowProvider", "arbitrate"]
+__all__ = ["OpenAICompatProvider", "SiliconFlowProvider", "arbitrate", "synthesize"]
 
 DEFAULT_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip() or \
     "deepseek-chat"
@@ -58,6 +58,23 @@ _SYSTEM_FORCE = (
 )
 
 
+_SYSTEM_SYNTH = (
+    "你是学术论文 OCR 修复专家。下面每处给出同一位置的**多个解析结果**（M=MinerU、P=PaddleOCR）、"
+    "各自句内上下文，以及**PDF 自带文本层**的旁证（若有）。这些结果可能都不完美。\n"
+    "你的任务：**综合所有证据做出你自己的判断**，给出该处**正确的文本**（可以与 M、P 都不同）。\n"
+    "硬性约束：\n"
+    "1) **只改冲突处那几个字**：单词/公式/标点/空格/上下标/单位/大小写；禁止重写整句、禁止增删实词；\n"
+    "2) 公式请输出可渲染的 LaTeX（保持 `$...$` 包裹与下标 `_`/上标 `^` 写法）；\n"
+    "3) 若两侧其一正确 → 直接照抄它，action=keep（保持 MinerU）或 replace（换成你选定的文本）；\n"
+    "4) 若两侧都不对但可从证据推断正确写法 → action=replace，suggested_text 填**你综合后的片段**；\n"
+    "5) 新增的字母/数字必须能在给出的证据里找到依据，**不要凭空造词或造数字**；\n"
+    "6) 无法判断时 action=keep、suggested_text 留空、confidence 给低值。\n"
+    "**第一行就输出 JSON 数组**，不要任何思考/解释/前言；每项形如："
+    '{"id":<int>,"action":"keep|replace|insert|delete","suggested_text":"<片段>",'
+    '"confidence":<0~1>,"reason":"<≤20字>","evidence":["M","P","local"]}'
+)
+
+
 @dataclass
 class Arbitration:
     """[全局] 一条仲裁结果"""
@@ -69,12 +86,22 @@ class Arbitration:
     confidence: float = 0.0
     mineru: dict = field(default_factory=dict)
     paddleocr: dict = field(default_factory=dict)
+    # ★2026-09-16（用户："让 AI 综合这些解析结果进行综合判断，给出自己的修改建议"）：
+    # 综合建议三件套 —— 只有 `synthesize()` 会填；旧 `arbitrate()` 保持 None/空（向后兼容）。
+    suggested_text: str = ""            # AI 综合出的**最终片段**（可与 M、P 都不同）
+    action: str = ""                   # keep|replace|insert|delete
+    evidence: list = field(default_factory=list)   # AI 自述用到的证据（M/P/local/dict）
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "type": self.diff_type, "page": self.page,
-                "verdict": self.verdict, "reason": self.reason,
-                "confidence": round(self.confidence, 2),
-                "mineru": self.mineru, "paddleocr": self.paddleocr}
+        out = {"id": self.id, "type": self.diff_type, "page": self.page,
+               "verdict": self.verdict, "reason": self.reason,
+               "confidence": round(self.confidence, 2),
+               "mineru": self.mineru, "paddleocr": self.paddleocr}
+        if self.suggested_text or self.action:
+            out["suggested_text"] = self.suggested_text
+            out["action"] = self.action
+            out["evidence"] = list(self.evidence or [])
+        return out
 
 
 class OpenAICompatProvider:
@@ -299,6 +326,143 @@ def arbitrate(items: list[dict], *, provider: OpenAICompatProvider | None = None
             else:
                 out.append(_unresolved(it, i, err or "裁决解析失败"))
     return out
+
+
+def _synthesize_once(batch: list, provider, paper: str, with_local: bool) -> dict:
+    """[局部] 单批请求 → {id: 建议 dict}（解析不到就返回已拿到的部分）。"""
+    lines = ["论文：%s" % (paper or "-")]
+    for i, it in batch:
+        ev = it.get("evidence") or {}
+        tv = it.get("third_vote") or {}
+        m = (it.get("mineru") or {}).get("text", "")
+        p = (it.get("paddleocr") or {}).get("text", "")
+        lines.append("<item id=%d> page=%s type=%s" % (i, it.get("page", 0),
+                                                       it.get("type", "")))
+        lines.append("  差异：M=%r  P=%r" % (m[:80], p[:80]))
+        if ev.get("m_ctx"):
+            lines.append("  M句：%s" % str(ev["m_ctx"])[:300].replace("\n", " "))
+        if ev.get("p_ctx"):
+            lines.append("  P句：%s" % str(ev["p_ctx"])[:300].replace("\n", " "))
+        if with_local and ev.get("local_snippet"):
+            lines.append("  PDF文本层：%s" % str(ev["local_snippet"])[:300].replace("\n", " "))
+        if tv.get("verdict") and tv.get("verdict") != "unknown":
+            lines.append("  文本层判据：%s%s" % (tv["verdict"],
+                                                "(决定性)" if tv.get("decisive") else "(未区分)"))
+    got: dict = {}
+    for attempt in range(2):
+        try:
+            resp = provider.complete([
+                {"role": "system", "content": _SYSTEM_SYNTH},
+                {"role": "user", "content": "\n".join(lines)},
+            ], max_tokens=4096)
+            try:
+                _RAW_LOG.parent.mkdir(parents=True, exist_ok=True)
+                with _RAW_LOG.open("a", encoding="utf-8") as f:
+                    f.write("=== synth batch=%d attempt=%d ===\n%s\n"
+                            % (len(batch), attempt, resp))
+            except Exception:  # noqa: BLE001
+                pass
+            for d in _parse_suggestions(resp):
+                try:
+                    got[int(d["id"])] = d
+                except (TypeError, ValueError):
+                    continue
+            if len(got) >= len(batch):
+                break
+        except Exception:  # noqa: BLE001 - 保留 attempt=0 已拿到的部分
+            continue
+    return got
+
+
+def synthesize(items: list[dict], *, provider: OpenAICompatProvider | None = None,
+               batch_size: int = 10, paper: str = "",
+               with_local: bool = True, depth: int = 0) -> list[Arbitration]:
+    """[全局] **AI 综合建议**（用户 2026-09-16："让 AI 综合这些解析结果进行综合判断，
+    给出自己的修改建议"）——与 `arbitrate()` 的本质区别：
+
+      · `arbitrate`：只回答"M 和 P 哪个对"（选边）；
+      · `synthesize`：**综合 M/P/句内上下文/PDF 文本层旁证**，给出 `suggested_text`
+        —— 可以与两侧都不同（如 M 漏下标、P 漏字母 ⇒ 给出两者合并后的正确写法）。
+
+    输入 items：`char_conflicts` 的冲突 dict（`mineru.text` / `paddleocr.text` /
+    `evidence.m_ctx|p_ctx` / 可选 `evidence.local_snippet` 与 `third_vote`）。
+    输出：`Arbitration`（含 `action`/`suggested_text`/`confidence`/`reason`/`evidence`）。
+
+    **可靠性**（实测：思考型模型在大批时会输出长篇推理而丢 JSON）：批内 2 次尝试仍拿不全时，
+    把**未解析的项**降半批重试（最多 3 层）——小批时模型倾向直接给 JSON。
+    """
+    provider = provider or OpenAICompatProvider()
+    if not provider.available():
+        return [_unresolved(_as_dict(it), i, "AI 综合建议不可用（未配置 Key）")
+                for i, it in enumerate(items)]
+    out_map: dict = {}
+    work = [(k, it) for k, it in enumerate(items)]
+    size = max(1, batch_size)
+    for start in range(0, len(work), size):
+        batch = work[start:start + size]
+        out_map.update(_synthesize_once(batch, provider, paper, with_local))
+    if depth < 3:
+        missing = [(i, it) for i, it in work if i not in out_map]
+        # 注意：**全部未解析时也要重试**（此前条件写成 len(missing) < len(work) ⇒ 整批失败
+        # 反而不重试，实测第 1 次调用全丢、只能靠第 2 次预算救回）。
+        if missing and len(work) > 2:
+            half = max(2, max(1, size // 2))
+            sub = synthesize([it for _i, it in missing], provider=provider,
+                             batch_size=half, paper=paper, with_local=with_local,
+                             depth=depth + 1)
+            for (i, _it), a in zip(missing, sub):
+                if a is not None and getattr(a, "action", ""):
+                    out_map[i] = {"id": i, "action": a.action,
+                                  "suggested_text": a.suggested_text,
+                                  "confidence": a.confidence, "reason": a.reason,
+                                  "evidence": a.evidence}
+    out: list[Arbitration] = []
+    for i, it in enumerate(items):
+        d = out_map.get(i)
+        if not d:
+            out.append(_unresolved(_as_dict(it), i, "AI 综合建议未返回"))
+            continue
+        act = str(d.get("action", "")).strip().lower()
+        sug = str(d.get("suggested_text", "") or "").strip()
+        if act not in ("keep", "replace", "insert", "delete"):
+            act = "keep"
+        out.append(Arbitration(
+            id=i, diff_type=it.get("type", ""), page=it.get("page", 0),
+            # verdict 仍是"选边"语义（兼容旧统计/落地路径）：replace 类默认记 paddleocr；
+            # 真正的文本以 suggested_text/action 为准（见 p14 的 AI 综合建议分支）。
+            verdict=("paddleocr" if act in ("replace", "insert", "delete") else "mineru"),
+            reason=str(d.get("reason", ""))[:60],
+            confidence=float(d.get("confidence", 0) or 0),
+            mineru=it.get("mineru", {}), paddleocr=it.get("paddleocr", {}),
+            suggested_text=sug, action=act,
+            evidence=[str(x) for x in (d.get("evidence") or [])][:6]))
+    return out
+
+
+def _parse_suggestions(text: str) -> list[dict]:
+    """[局部] 综合建议输出解析：扫所有 `{...}` 小块（思考型模型会夹带散文）。
+
+    比 `_parse_verdicts` 更宽松：只要块里有 `id` + `action` 即认。
+    """
+    out: list[dict] = []
+    for m in re.finditer(r"\{[^{}]*\}", text or ""):
+        try:
+            d = json.loads(m.group(0))
+        except ValueError:
+            continue
+        if isinstance(d, dict) and "id" in d and "action" in d:
+            out.append(d)
+    if out:
+        return out
+    # 兜底：剥围栏后整体 json.loads
+    t = re.sub(r"```(?:json)?", "", text or "").strip()
+    try:
+        data = json.loads(t)
+        if isinstance(data, list):
+            return [d for d in data if isinstance(d, dict) and "id" in d]
+    except ValueError:
+        pass
+    return []
 
 
 def _as_dict(it) -> dict:

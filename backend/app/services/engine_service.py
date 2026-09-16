@@ -214,6 +214,15 @@ class EngineService:
         ai_review, provider = self._assemble_provider(pdf_path)
         # 2026-09-16：第三信号裁决开关（settings_service 优先 → env/AppConfig 默认开）。
         third_decide = bool(getattr(self.settings, "third_signal_decide", True))
+        # AI 综合建议开关（settings_service 优先 → env/AppConfig 默认开）
+        ai_synthesis = bool(getattr(self.settings, "ai_synthesis", True))
+        try:
+            from .container import get_settings_service as _svc4
+            _parse4 = _svc4().get_parse()
+            if "ai_synthesis" in _parse4:
+                ai_synthesis = bool(_parse4["ai_synthesis"])
+        except Exception:  # noqa: BLE001 - 容器未初始化用 AppConfig
+            pass
         try:
             from .container import get_settings_service as _svc3
             _parse = _svc3().get_parse()
@@ -235,6 +244,7 @@ class EngineService:
             paddle=True,
             ai_review=provider is not None and ai_review,
             third_decide=third_decide,
+            ai_synthesis=ai_synthesis,
             provider=provider,
             run_id=run_id,
             cancel_check=cancel_check,

@@ -712,6 +712,54 @@ def _structure_ok(before: str, after: str) -> bool:
     return not (b2 > b1)
 
 
+def _novel_tokens(text: str, sources: list[str]) -> list[str]:
+    """[局部] `text` 里**证据源都没有**的字母/数字 token（≥2 字符）。
+
+    用于护栏⑤"来源可溯"：AI 综合出的片段可以引入新字符（例如从文本层补回丢失的下标数字），
+    但**新增的 token 必须能在给出的证据（M/P/PDF 文本层原文）里找到**，否则视为幻觉造词造数。
+    """
+    def _toks(s: str) -> set:
+        s = re.sub(r"\$[^$]*\$", lambda m: m.group(0).strip("$"), s or "")
+        s = re.sub(r"\\[a-zA-Z]+\s*", "", s)
+        return set(re.findall(r"[A-Za-z0-9]{2,}", s))
+
+    have: set = set()
+    for s in sources:
+        have |= _toks(s)
+    low = {t.lower() for t in have}
+    return [t for t in _toks(text) if t.lower() not in low]
+
+
+def _synthesis_shape_ok(m_text: str, p_text: str, suggested: str,
+                        local_snippet: str = "") -> tuple[bool, str]:
+    """[局部] AI 综合建议的两道新护栏（用户 2026-09-16 批准的方案 §3.4 ④⑤）。
+
+    ④ 来源可溯：新增 token 必须在 M/P/PDF 文本层原文里有依据（防幻觉造词造数）；
+    ⑤ 最小编辑：综合结果长度不得超出两侧片段的 1.5×+6 字符、也不得短于较小侧的 0.5×
+       （防"顺带改写"与"删内容"；删除类由 action 语义表达）。
+    """
+    if not suggested:
+        return True, ""
+    novel = _novel_tokens(suggested, [m_text, p_text, local_snippet])
+    if novel:
+        return False, "新增内容在证据里找不到依据: %s" % ",".join(novel[:4])
+    def _plain_len(s: str) -> int:
+        """**去掉 LaTeX/标记后**的可见长度——直接比字符数会把"合理的公式包裹"误判成膨胀
+        （实测：`$\\mathrm{CoO}_x@LIG$` 20 字符 vs `CoO_x@LIG` 9 字符，差的全是 LaTeX 包装）。"""
+        s = re.sub(r"\$[^$]*\$", lambda m: m.group(0).strip("$"), s or "")
+        s = re.sub(r"\\[a-zA-Z]+\s*", "", s)
+        return len(re.sub(r"[^0-9A-Za-z]+", "", s))
+
+    lo = _plain_len(suggested)
+    base = max(_plain_len(m_text), _plain_len(p_text))
+    small = min(_plain_len(m_text), _plain_len(p_text)) or 1
+    if base >= 4 and lo > base * 1.5 + 6:
+        return False, "建议文本过长（%d > 1.5×片段 %d）" % (lo, base)
+    if small >= 2 and lo < small * 0.5:
+        return False, "建议文本过短（%d < 0.5×较小侧 %d）" % (lo, small)
+    return True, ""
+
+
 def _apply_arbitrations(para_text: str, conflicts: list[dict],
                         arbitrations: list,
                         apply_min_conf: float = 0.8) -> tuple[str, list[dict]]:
@@ -732,12 +780,64 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
     # insert 'f'，mineru 侧空片段），reversed 保证前面冲突的索引不漂移
     for i, c in reversed(list(enumerate(conflicts))):
         a = arb_by_id.get(i)
-        if not a or a.verdict != "paddleocr":
+        if not a:
+            continue
+        m_text = (c.get("mineru") or {}).get("text", "")
+        p_text = (c.get("paddleocr") or {}).get("text", "")
+        # ---- ★AI 综合建议分支（用户："让 AI 综合…给出自己的修改建议"）----
+        # 必须放在 `verdict != paddleocr` 判断**之前**：综合建议的 verdict 只是兼容标记，
+        # 真正落地以 `suggested_text`/`action` 为准（否则会退化成"照抄 P 侧"）。
+        _act = getattr(a, "action", "") or ""
+        _sug = getattr(a, "suggested_text", "") or ""
+        if _act and _act != "keep":
+            _ok, _why = _synthesis_shape_ok(
+                m_text, p_text, _sug,
+                (c.get("evidence") or {}).get("local_snippet", ""))
+            if not _ok:
+                audit.append({"action": "skip_synth_guard", "before": m_text[:40],
+                              "after": _sug[:40], "reason": _why})
+                continue
+            if _act == "replace" and _sug and _sug != m_text:
+                if final.count(m_text) != 1:
+                    audit.append({"action": "skip_p_ambiguous", "chunk": m_text[:40],
+                                  "count": final.count(m_text),
+                                  "reason": "片段在段落中多次出现，不自动替换"})
+                    continue
+                _p0 = final.find(m_text)
+                if _crosses_protected(final, _p0, _p0 + len(m_text), protected):
+                    audit.append({"action": "skip_protected_span", "chunk": m_text[:40],
+                                  "reason": "替换跨越 HTML 标签/公式边界，不自动落地"})
+                    continue
+                if not _replacement_shape_ok(m_text, _sug):
+                    audit.append({"action": "skip_content_loss", "before": m_text[:40],
+                                  "after": _sug[:40],
+                                  "reason": "综合建议会明显缩短/截断内容，保留 MinerU"})
+                    continue
+                final = final.replace(m_text, _sug)
+                audit.append({"action": "ai_synth_replace", "verdict": "AI",
+                              "before": m_text[:60], "after": _sug[:60],
+                              "reason": (a.reason or "")[:60]})
+            elif _act == "insert" and _sug and not m_text:
+                _i1 = (c.get("evidence") or {}).get("i1")
+                if _i1 is not None and _i1 <= len(final) \
+                        and not _crosses_protected(final, _i1, _i1, protected):
+                    final = final[:_i1] + _sug + final[_i1:]
+                    audit.append({"action": "ai_synth_insert", "verdict": "AI",
+                                  "at": _i1, "insert": _sug[:40],
+                                  "reason": (a.reason or "")[:60]})
+            elif _act == "delete" and m_text:
+                if final.count(m_text) == 1:
+                    _p0 = final.find(m_text)
+                    if not _crosses_protected(final, _p0, _p0 + len(m_text), protected):
+                        final = final.replace(m_text, "", 1)
+                        audit.append({"action": "ai_synth_delete", "verdict": "AI",
+                                      "before": m_text[:40],
+                                      "reason": (a.reason or "")[:60]})
+            continue
+        if a.verdict != "paddleocr":
             continue                 # mineru/both/neither/unresolved → 保留 mineru
         if a.confidence < apply_min_conf:
             continue                 # P15：低置信不自动落地（进 GUI 复核）
-        m_text = (c.get("mineru") or {}).get("text", "")
-        p_text = (c.get("paddleocr") or {}).get("text", "")
         if not m_text and p_text:
             # insert 形态：mineru 缺字符（断词修复），在 evidence.i1 处插入
             _i1 = (c.get("evidence") or {}).get("i1")
@@ -1269,9 +1369,9 @@ def _build_decided_items(rows: list[dict], r, page: int,
         m_text = (c.get("mineru") or {}).get("text", "")
         p_text = (c.get("paddleocr") or {}).get("text", "")
         tv = c.get("third_vote") or {}
-        who = {"ai": "AI 仲裁", "ai_forced": "AI 强制二选一",
+        who = {"ai": "AI 仲裁", "ai_synth": "AI 综合建议", "ai_synth2": "AI 综合建议(专项)",
                "third": "PDF 文本层（第三信号）"}.get(src, src)
-        who = {"ai": "AI 仲裁", "ai_forced": "AI 强制二选一",
+        who = {"ai": "AI 仲裁", "ai_synth": "AI 综合建议", "ai_synth2": "AI 综合建议(专项)",
                "third": "PDF 文本层（第三信号）",
                "fallback": "机器兜底（无可判定证据）"}.get(src, src)
         chosen = "MinerU" if a.verdict == "mineru" else "PaddleOCR"
@@ -1288,7 +1388,14 @@ def _build_decided_items(rows: list[dict], r, page: int,
             "paddleocr": {"block_id": "paddle-" + r.para_id, "kind": r.kind,
                           "text": _wrap_paddle_formulas(p_text)},
             "ai": {"verdict": a.verdict, "reason": reason[:140],
-                   "confidence": a.confidence, "applied": a.verdict == "paddleocr",
+                   "confidence": a.confidence,
+                   # ★2026-09-16：AI 综合建议的落地形态——keep 表示"维持 MinerU"（不改文）；
+                   # replace/insert/delete 时 suggested_text 才是真正落地的文本（可与 M、P 都不同）。
+                   "action": getattr(a, "action", "") or "",
+                   "suggested_text": getattr(a, "suggested_text", "") or "",
+                   "evidence": list(getattr(a, "evidence", None) or []),
+                   "applied": (a.verdict == "paddleocr"
+                               or getattr(a, "action", "") in ("replace", "insert", "delete")),
                    "decided_by": src},
             "third_vote": tv,
             "user_choice": "",
@@ -1493,7 +1600,7 @@ def to_article_document(repair_items: list, figures: list,
 def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                    md_text: str | None = None, out_dir: str | Path = "output/v2",
                    paddle: bool = True, ai_review: bool = True,
-                   third_decide: bool = True,
+                   third_decide: bool = True, ai_synthesis: bool = True,
                    provider=None, run_id: str | None = None,
                    paddle_blocks_path: str | Path | None = None,
                    sf_ocr: bool = False,
@@ -1507,6 +1614,9 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
         out_dir: 输出根目录（<out_dir>/<pdf_stem>/ 下 document.json + en.md + images/）
         paddle: 是否跑 OCR 辅通道（M7 验证 + M8 仲裁；False 则纯 M1-M6）
         ai_review: 辅通道下是否 AI 仲裁（False 只出验证信号与 diff 清单）
+        ai_synthesis: 是否用 **AI 综合建议**（默认 True）——把 M/P 片段 + 句内上下文 +
+            PDF 文本层原文旁证交给 AI，让它给出**自己的最终片段**（可与两侧都不同），
+            落地后仍过五道护栏。置 False 退回旧的"只选边"`arbitrate()`。
         third_decide: 是否用**第三信号（PDF 自带文本层）直接裁决**（默认 True）。
             用户 2026-09-16 要求"尽量降低人的参与或人不参与"：决定性第三票直接定 verdict
             ——判 P 则落地 P、判 M 则保留 M（自动撤销规则错改），这些项**不进人工复核**；
@@ -1631,11 +1741,13 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
             # ① 给冲突项投第三票（不自动落地，只进复核证据）；② 检测共识错误；③ 检测丢内容。
             # 扫描件文本层接近 0 ⇒ usable 为空集时整块跳过，行为与旧版完全一致。
             _local_pages: dict[int, str] = {}
+            _local_pages_raw: dict[int, str] = {}   # ★AI 综合建议要用**可读原文**（非归一化）
             _local_usable: set[int] = set()
             try:
                 from paperparse.core.local_text import (page_texts, unverified_tokens,
                                                         usable_pages, vote_conflict)
                 _local_pages = page_texts(str(pdf))
+                _local_pages_raw = page_texts(str(pdf), raw=True)
                 _local_usable = usable_pages(_local_pages)
             except Exception as e:  # noqa: BLE001 - 第三信号不可用不影响解析
                 stats["third_signal_error"] = str(e)[:120]
@@ -1656,6 +1768,11 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                             if pg and pg not in out:
                                 out.append(pg)
                 return out
+
+            def _page_raw_for(md_idx) -> str:
+                """该段所在页的**文本层原文**（未归一化）——喂给 AI 综合判断的可读证据。"""
+                pgs = [p for p in _pages_for(md_idx) if p in _local_usable]
+                return "\n".join(_local_pages_raw.get(p, "") for p in pgs).strip()
 
             def _page_text_for(md_idx) -> str:
                 """该段所在**页**的文本层内容（token 级核对与冲突第三票都用页级：
@@ -1784,7 +1901,7 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                 for i, c in enumerate(conflicts_all):
                     by_para.setdefault(c.get("para_id", ""), []).append(c)
                 arb_by_idx: dict[int, object] = {}
-                src_by_idx: dict[int, str] = {}   # ★决策来源：rule/ai/ai_forced/third
+                src_by_idx: dict[int, str] = {}   # ★决策来源：rule/ai/ai_synth/ai_synth2/third/fallback
                 for i, c in enumerate(conflicts_all):
                     _m = (c.get("mineru") or {}).get("text", "")
                     _p = (c.get("paddleocr") or {}).get("text", "")
@@ -1823,45 +1940,81 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                             paddleocr=c.get("paddleocr", {}))
                 # ---- 用户规则3：剩余歧义 → 局部 AI 复核（不整段发送：用冲突片段+
                 #      前后上下文 m_ctx/p_ctx；批量一篇一请求 + 自动分块重试，防限流）----
+                # ---- AI 判定（用户规则3 的升级版）----
+                # ★2026-09-16（用户："让 AI 综合这些解析结果进行综合判断，给出自己的修改建议"）：
+                # 默认走 **`synthesize()`（AI 综合建议）**——把 M/P 片段 + 句内上下文 +
+                # **PDF 文本层原文旁证**一起交给 AI，让它给出**自己的最终片段**
+                # （可与两侧都不同），而不是只回答"哪侧对"。`ai_synthesis=False` 时退回
+                # 旧的 `arbitrate()`（只选边），作为逃生门。
+                def _attach_local_snippet(ids: list) -> None:
+                    """把该段所在页的**文本层原文**塞进冲突证据（AI 综合判断的可读依据）。"""
+                    for _i in ids:
+                        _c = conflicts_all[_i]
+                        _r = next((x for x in repair.paragraphs
+                                   if x.para_id == _c.get("para_id", "")), None)
+                        if _r is not None:
+                            _c.setdefault("evidence", {})["local_snippet"] = \
+                                _page_raw_for(_r.md_idx)[:400]
+
                 ai_ids = [i for i, a in arb_by_idx.items() if a.verdict == "unresolved"]
                 if ai_ids and ai_review:
-                    from paperparse.core.dual_ai_review import arbitrate
                     try:
-                        ai_items = [conflicts_all[i] for i in ai_ids]
-                        # ★2026-09-16 修：**必须传注入的 provider**——此前不传 ⇒ 内部回落
-                        # env 链（DEEPSEEK_*），导致 ①GUI 切换供应商对 M8 仲裁无效；
-                        # ②provider 的 on_usage 永不触发 ⇒ 仲裁 token 不进 llm_usage 台账
-                        # （实测台账 0 行，成本不可观测）。provider=None 时行为与旧版一致。
-                        ai_results = arbitrate(ai_items, provider=provider, paper=stem)
-                        for gi, ai_arb in zip(ai_ids, ai_results):
-                            if ai_arb is not None:
-                                ai_arb.id = gi          # 全局索引
-                                arb_by_idx[gi] = ai_arb
-                                src_by_idx[gi] = "ai"
-                        arb_stats["ai_reviewed"] = len(ai_ids)
+                        if ai_synthesis:
+                            from paperparse.core.dual_ai_review import synthesize
+                            _attach_local_snippet(ai_ids)
+                            res = synthesize([conflicts_all[i] for i in ai_ids],
+                                             provider=provider, paper=stem)
+                            got = 0
+                            for gi, a in zip(ai_ids, res):
+                                if a is not None and getattr(a, "action", ""):
+                                    a.id = gi
+                                    arb_by_idx[gi] = a
+                                    src_by_idx[gi] = "ai_synth"
+                                    got += 1
+                            arb_stats["ai_synth"] = got
+                            arb_stats["ai_reviewed"] = len(ai_ids)
+                        else:
+                            from paperparse.core.dual_ai_review import arbitrate
+                            # ★2026-09-16 修：**必须传注入的 provider**——此前不传 ⇒ 内部回落
+                            # env 链（DEEPSEEK_*），导致 ①GUI 切换供应商对 M8 仲裁无效；
+                            # ②provider 的 on_usage 永不触发 ⇒ 仲裁 token 不进 llm_usage 台账
+                            # （实测台账 0 行，成本不可观测）。provider=None 时行为与旧版一致。
+                            ai_results = arbitrate([conflicts_all[i] for i in ai_ids],
+                                                   provider=provider, paper=stem)
+                            for gi, ai_arb in zip(ai_ids, ai_results):
+                                if ai_arb is not None:
+                                    ai_arb.id = gi          # 全局索引
+                                    arb_by_idx[gi] = ai_arb
+                                    src_by_idx[gi] = "ai"
+                            arb_stats["ai_reviewed"] = len(ai_ids)
                     except Exception as e:  # noqa: BLE001 - AI 失败不阻塞
                         stats["ai_review_error"] = str(e)[:120]
-                # ★2026-09-16（用户要求"所有复核都由 AI 替人选择"）：**强制二选一补判**——
-                # 上一轮 AI 若判 both/neither（或未返回），说明"两通道都不完美"，但那正是
-                # 必须有人拍板的地方；现在让 AI 借两侧识别语义**替人拍板**（只许 M 或 P），
-                # 结果直接落地 ⇒ 复核清单不再是"等人点"，而是"AI 已选好"的记录。
-                rest_ids = [i for i, a in arb_by_idx.items()
-                            if a.verdict in ("unresolved", "neither")]
-                if rest_ids and ai_review:
-                    from paperparse.core.dual_ai_review import arbitrate as _arb2
+                # ---- 第 2 次 AI 调用（预算内，用户批准"每篇最多 2 次"）----
+                # 目标：① 第 1 次仍没判定的残留；② 公式/上下标类但第 1 次给 keep 的难项。
+                # 两组合并成**一次**请求（仍属 2 次预算内）。
+                retry_ids: list = []
+                for i, a in arb_by_idx.items():
+                    if a.verdict in ("unresolved", "neither"):
+                        retry_ids.append(i)
+                    elif (ai_synthesis and getattr(a, "action", "") == "keep"
+                          and _is_formula_conflict(conflicts_all[i])):
+                        retry_ids.append(i)
+                if retry_ids and ai_review and ai_synthesis:
+                    from paperparse.core.dual_ai_review import synthesize
                     try:
-                        res2 = _arb2([conflicts_all[i] for i in rest_ids],
-                                     provider=provider, paper=stem, force=True)
-                        forced = 0
-                        for gi, a2 in zip(rest_ids, res2):
-                            if a2 is not None and a2.verdict in ("mineru", "paddleocr"):
+                        _attach_local_snippet(retry_ids)
+                        res2 = synthesize([conflicts_all[_i] for _i in retry_ids],
+                                          provider=provider, paper=stem)
+                        got2 = 0
+                        for gi, a2 in zip(retry_ids, res2):
+                            if a2 is not None and getattr(a2, "action", ""):
                                 a2.id = gi
                                 arb_by_idx[gi] = a2
-                                src_by_idx[gi] = "ai_forced"
-                                forced += 1
-                        arb_stats["ai_forced"] = forced
-                    except Exception as e:  # noqa: BLE001 - 补判失败不阻塞
-                        stats["ai_force_error"] = str(e)[:120]
+                                src_by_idx[gi] = "ai_synth2"
+                                got2 += 1
+                        arb_stats["ai_synth2"] = got2
+                    except Exception as e:  # noqa: BLE001 - 第二次失败不阻塞
+                        stats["ai_synth2_error"] = str(e)[:120]
                 # ★2026-09-16：**挖掘用快照**——下面 _apply_arbitrations 前会把 a.id 重映射成
                 # 段内局部索引（1696-1698），M8c 却按**全局**索引取（原实现因此拿到了错位的
                 # arbitration，且调用处传了未定义名 `arb` → 被 except 吞成 char_rules_error，
@@ -1988,7 +2141,7 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                         _src = src_by_idx.get(_gi, "rule") if _gi is not None else "rule"
                         if _a.verdict == "unresolved":
                             pending.append(_a)
-                        elif _src in ("ai", "ai_forced", "third", "fallback"):
+                        elif _src in ("ai", "ai_synth", "ai_synth2", "third", "fallback"):
                             decided_rows.append({"a": _a, "c": _c, "src": _src})
                     if pending and not third_decide:
                         # 仅在**关闭自动裁决**（third_decide=False）时保留"等人点"的旧行为；
