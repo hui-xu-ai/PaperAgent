@@ -1117,6 +1117,29 @@ def apply_third_decide(arb_by_idx: dict, conflicts_all: list,
     return decided
 
 
+def fix_reference_sections(repair_items: list, ref_ids) -> int:
+    """[全局] 参考文献区 **section 归属修正**（★2026-09-17 T5b，用户批准）。
+
+    背景（实测 adma）：源 md 没有 `References` 标题（参考文献以 `[N] 条目` 形态紧跟
+    `## Keywords`）⇒ 60 条参考文献条目**继承了 "Keywords" 段标签**（全篇 63 段 Keywords
+    里只有 3 段真属于关键词区）。后果：章节标签错 ⇒ 翻译/问答的章节前缀、模板
+    `EXCLUDE_SECTIONS`、按 section 的统计全部受污染。
+
+    行为：`ref_ids`（= `references_para_ids()`，与 build_markdown 的 in_refs 分流单一来源）
+    命中的段，若当前 section 不是 `References?` 形态 → 改标 `references`；
+    **已是 `References` 的篇（如 snb）保持原样**（不改动既有正确标签）。返回改标段数。
+    """
+    fixed = 0
+    for r in repair_items or []:
+        if getattr(r, "para_id", "") not in (ref_ids or set()):
+            continue
+        if re.match(r"^\s*references?\s*$", (getattr(r, "section", "") or ""), re.I):
+            continue
+        r.section = "references"
+        fixed += 1
+    return fixed
+
+
 def ai_retry_ids(arb_by_idx: dict, conflicts_all: list) -> list:
     """[全局] 第 2 次 AI 调用的**触发集**：仅"第 1 次仍没判定"的残留项。
 
@@ -1626,6 +1649,24 @@ def _extract_md_meta(md_text: str, pdf_name: str = "") -> tuple[str, str, list[s
             # 相连 5 个短语）→ 无法可靠切分 → 宁缺毋滥返回空
             break
 
+    if not keywords:
+        # ★2026-09-17 T5b：**标题式** Keywords（Wiley/adma 形态：`## Keywords` 单独成行，
+        # 关键词在其后一段，无 `Keywords:` 前缀）——此前只认同一行的 `Keywords:` ⇒
+        # adma 的 metadata.keywords 恒为空（连带变体 frontmatter 的第 11 项"关键词"为空）。
+        # 切分规则与上面**同一口径**：有 ,/;/，/；才切，宁缺毋滥。
+        for _i, _ln in enumerate(lines):
+            if not re.match(r"^#{0,3}\s*[Kk]eywords?\s*$", _ln.strip()):
+                continue
+            for _nxt in lines[_i + 1: _i + 4]:
+                _t = _nxt.strip()
+                if not _t:
+                    continue
+                if re.search(r"[;；,，]", _t):
+                    keywords = [k.strip() for k in re.split(r"[;；,，]", _t)
+                                if k.strip()]
+                break                      # 只看标题后的第一段非空行
+            break
+
     doi = ""
     for ln in lines:
         m = re.search(r"DOI\s*[:：]\s*(10\.\d{4,9}/[^\s,;]+)", ln, re.I)
@@ -1810,6 +1851,18 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
     # ---- M6 拼接修复 ----
     repair = repair_md_paragraphs(md_text, skeleton)
     stats["repair"] = repair.stats
+    # ---- ★2026-09-17 T5b（用户批准）：参考文献区 **section 归属修正** ----
+    # 实测 adma：源 md 没有 `References` 标题（参考文献以 `[N] 条目` 形态紧跟
+    # `## Keywords`）⇒ 60 条参考文献条目**继承了 "Keywords" 段标签**（全篇 63 段 Keywords
+    # 里只有 3 段真属于关键词区）。后果：章节标签错 → 翻译/问答的章节前缀、模板
+    # `EXCLUDE_SECTIONS`、按 section 的统计全部受影响。
+    # 修法：用**同一判据**（`references_para_ids`，与 build_markdown 的 in_refs 分流单一来源）
+    # 标成 `references`；已有 `References` 标签的篇（如 snb）**保持原样不动**。
+    _ref_ids = references_para_ids(repair.paragraphs)
+    _ref_relabeled = fix_reference_sections(repair.paragraphs, _ref_ids)
+    if _ref_relabeled:
+        stats["section_fix"] = {"references_relabeled": _ref_relabeled,
+                                "ref_paras": len(_ref_ids)}
 
     # ---- M7 双通道验证 + M8 字符仲裁（paddleocr 通道）----
     verify_items: list[dict] = []
@@ -2100,17 +2153,7 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                 # 逻辑见 `block_references_ai()`；**只排除 AI**（用户选定档位②），
                 # 本地规则与第三信号的结果保留（en.md 本就不含参考文献表，
                 # build_markdown include_references=False ⇒ 改动只落在 mineru_full.md）。
-                _ref_ids = references_para_ids(repair.paragraphs)
-                arb_stats["ref_paras"] = len(_ref_ids)
-                arb_stats["ref_skipped"] = block_references_ai(
-                    arb_by_idx, conflicts_all, src_by_idx, _ref_ids)
-
-                # ---- 参考文献区闸门（★2026-09-17 用户约束逐字："需要注意参考文献部分
-                #      不需要经过 AI 仲裁处理。"）----
-                # 逻辑见 `block_references_ai()`；**只排除 AI**（用户选定档位②），
-                # 本地规则与第三信号的结果保留（en.md 本就不含参考文献表，
-                # build_markdown include_references=False ⇒ 改动只落在 mineru_full.md）。
-                _ref_ids = references_para_ids(repair.paragraphs)
+                # `_ref_ids` 在 M6 之后已算好（T5b 的 section 归属修正用同一判据，避免重复计算）。
                 arb_stats["ref_paras"] = len(_ref_ids)
                 arb_stats["ref_skipped"] = block_references_ai(
                     arb_by_idx, conflicts_all, src_by_idx, _ref_ids)

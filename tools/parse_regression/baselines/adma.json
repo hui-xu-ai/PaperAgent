@@ -1,0 +1,74 @@
+{
+ "arbitration": {
+  "applied_p": 29,
+  "arbitrated": 116,
+  "by_source": {
+   "fallback": 2,
+   "rule": 113,
+   "third": 3
+  },
+  "machine_fallback": 2,
+  "ref_paras": 60,
+  "ref_skipped": 0,
+  "third_decided": 3
+ },
+ "conflicts": 118,
+ "document": {
+  "doi": null,
+  "keywords": [
+   "artificial muscle",
+   "automated culture platform",
+   "ionic actuators",
+   "laserinduced graphene",
+   "multi-responsiveness"
+  ],
+  "paragraphs": 113,
+  "sections": {
+   "1. Introduction": 5,
+   "2. Results and Discussion": 1,
+   "2.1. Electron/Ion Transport Mechanism and Structure Design of Soft Actuator": 18,
+   "2.2. Actuation Performances of Co(Ox/Px)@P-LIG-P.P Electro-Ionic Muscles": 12,
+   "3. Conclusion": 2,
+   "Acknowledgements": 2,
+   "Conflict ofInterest": 2,
+   "Data Availability Statement": 2,
+   "Keywords": 3,
+   "Supporting Information": 2,
+   "references": 60
+  },
+  "title": "Reinforced Magnetic-Responsive Electro-Ionic Artificial Muscles by 3D Laser-Induced Graphene Nano-Heterostructures"
+ },
+ "en_md": {
+  "lines": 119,
+  "sha256": "b3e5aa8b3eec5e95"
+ },
+ "figures": 4,
+ "formula_issues": 0,
+ "mineru_full_md": {
+  "sha256": "fce50bed3524c47e"
+ },
+ "review": {
+  "count": 0,
+  "kinds": {
+   "ai_decision": 5,
+   "quality": 1
+  },
+  "total": 6
+ },
+ "third_signal": {
+  "no_paddle_pair": 63,
+  "pages_usable": 15,
+  "votes": {
+   "both": 35,
+   "mineru": 2,
+   "neither": 7,
+   "paddleocr": 45
+  }
+ },
+ "verify": {
+  "items": 39,
+  "ok": 16,
+  "review": 15,
+  "suspicious": 7
+ }
+}

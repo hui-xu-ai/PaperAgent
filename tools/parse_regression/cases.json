@@ -1,0 +1,15 @@
+{
+ "_note": "P14 解析回归用例：均为**离线缓存件**（MinerU full.md + PaddleOCR blocks.json + 源 PDF），全程 0 API。路径相对工作区根；缺文件时工具自动 SKIP（干净检出/别的机器不失败）。换机器时把缓存件放到同结构目录或改本文件的路径。",
+ "adma": {
+  "mineru_md": "release/PaperAgent-v1.0.0-win64/work/dual/10.1002_adma.202407106/mineru_full.md",
+  "paddle_blocks": "release/PaperAgent-v1.0.0-win64/work/paddleocr_backup/20260916-094912/blocks.json",
+  "pdf": "release/PaperAgent-v1.0.0-win64/library/10.1002_adma.202407106/source.pdf",
+  "features": ["段落配对/冲突仲裁", "参考文献区 label(S0)", "第三信号票型", "公式/上下标修复"]
+ },
+ "snb": {
+  "mineru_md": "work/glm-e2e/work/dual/10.1016_j.snb.2022.132616/mineru_full.md",
+  "paddle_blocks": "work/glm-e2e/work/paddleocr_backup/20260913-121447/blocks.json",
+  "pdf": "work/glm-e2e/library/10.1016_j.snb.2022.132616/source.pdf",
+  "features": ["References 标题识别", "规则错改回滚(文本层)", "断词/空格类冲突"]
+ }
+}

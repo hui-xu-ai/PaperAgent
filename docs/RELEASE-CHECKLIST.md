@@ -19,6 +19,11 @@
       + 在**上一版本真实库副本**上 dry-run；`docs/COMPAT-REGISTER.md` 同步（新增 shim 必登记 + 移除条件）。
 - [ ] `python tools/release_check.py --full` → 全绿（版本一致性 / 数据兼容闸门 / 登记表 /
       打包自检 / 文档齐备 / dist 自检 / pytest）。
+- [ ] **解析产物回归闸门**（2026-09-17 新增）：`python tools/parse_regression.py --check` → 通过
+      （0 API，缓存件复算 + 产物指纹比对：`en.md` sha256/行数、段落 section 直方图、
+      metadata、仲裁来源分布、第三信号票型、review 计数）。
+      · **指纹变化 = 拦截**：确认是有意变更后人工 review diff 再 `--update` 重写基线并提交；
+      · 缺缓存件（干净检出/别的机器）自动 SKIP，不拦构建；用例与基线在 `tools/parse_regression/`。
 - [ ] **公开仓库专用的泄漏闸门**：`python tools/publish_prescan.py --history` → PASS
       （工作树 + git 历史都不得有真实 API Key / 本机绝对路径 / 违禁目录）。
       - 命中工作树：跑 `python tools/sanitize_fixtures.py`（夹具脱敏，幂等）后再扫；

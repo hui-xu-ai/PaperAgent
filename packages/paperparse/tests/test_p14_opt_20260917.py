@@ -311,3 +311,48 @@ class TestT9RetryTrigger:
         assert ai_retry_ids(by, confs) == [0, 1]
 
 
+class TestT5bSectionAndKeywords:
+    """T5b：参考文献区 section 归属修正 + 标题式 Keywords 提取兜底"""
+
+    def test_relabels_only_reference_paragraphs(self):
+        from paperparse.core.p14_pipeline import fix_reference_sections
+        items = [
+            _item("heading", "## Keywords", "RP001"),
+            _item("body", "artificial muscle, ionic actuators", "RP002"),
+            _item("body", "[1] Y. Zhang, J. Mater. Sci. 2020, 5, 1.", "RP003"),
+            _item("body", "[2] L. Li, Adv. Funct. Mater. 2021, 31, 2.", "RP004"),
+        ]
+        for it in items:
+            it.section = "Keywords"          # adma 真实形态：全部继承 Keywords
+        ref_ids = references_para_ids(items)
+        fixed = fix_reference_sections(items, ref_ids)
+        assert fixed == 2
+        assert items[0].section == "Keywords" and items[1].section == "Keywords"
+        assert items[2].section == "references" and items[3].section == "references"
+
+    def test_keeps_existing_references_label(self):
+        """snb 形态：源 md 已识别 `## References`（标签 References）→ 不得改写"""
+        from paperparse.core.p14_pipeline import fix_reference_sections
+        items = [_item("body", "[1] A. B, Nature 2020.", "RP001")]
+        items[0].section = "References"
+        assert fix_reference_sections(items, {"RP001"}) == 0
+        assert items[0].section == "References"
+
+    def test_keywords_heading_form_extraction(self):
+        """Wiley/adma 形态：`## Keywords` 单独成行 + 关键词在下一段（此前恒为空）"""
+        from paperparse.core.p14_pipeline import _extract_md_meta
+        md = ("# Title of the paper\n\n## Abstract\n\nSome abstract text here.\n\n"
+              "## Keywords\n\n"
+              "artificial muscle, automated culture platform, ionic actuators\n\n"
+              "## 1. Introduction\n\nBody.\n")
+        _t, _a, kw, _doi, _au = _extract_md_meta(md, "10.1002_x.pdf")
+        assert kw == ["artificial muscle", "automated culture platform", "ionic actuators"]
+
+    def test_keywords_inline_form_still_works(self):
+        from paperparse.core.p14_pipeline import _extract_md_meta
+        md = "# T\n\nKeywords: alpha; beta; gamma\n\nBody.\n"
+        _t, _a, kw, _doi, _au = _extract_md_meta(md, "")
+        assert kw == ["alpha", "beta", "gamma"]
+
+
+

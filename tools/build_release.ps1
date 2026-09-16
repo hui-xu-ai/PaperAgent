@@ -87,7 +87,11 @@ if (Test-Path (Join-Path $root '.env.example')) {
     "日志：logs\paperagent.log"
 ) | Set-Content -Path (Join-Path $dist 'VERSION.txt') -Encoding utf8
 
-Write-Host "[5/5] 产物自检..." -ForegroundColor Cyan
+Write-Host "[5/5] 解析回归闸门 + 产物自检..." -ForegroundColor Cyan
+# 2026-09-17 T13：解析产物指纹闸门（0 API，缓存件复算）——缺缓存件自动 SKIP。
+# 指纹变化（静默改文/丢内容/决策阶梯失衡）⇒ 拦发布；确认有意变更后 --update 重写基线。
+& $py tools\parse_regression.py --check
+if ($LASTEXITCODE -ne 0) { throw "解析回归闸门未通过（见 tools/parse_regression/baselines/）" }
 & $py tools\release_check.py
 if ($LASTEXITCODE -ne 0) { throw "产物自检未通过" }
 

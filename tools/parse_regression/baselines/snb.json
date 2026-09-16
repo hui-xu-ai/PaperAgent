@@ -1,0 +1,79 @@
+{
+ "arbitration": {
+  "applied_p": 5,
+  "arbitrated": 37,
+  "by_source": {
+   "rule": 28,
+   "third": 9
+  },
+  "machine_fallback": 0,
+  "ref_paras": 37,
+  "ref_skipped": 0,
+  "third_decided": 9
+ },
+ "conflicts": 37,
+ "document": {
+  "doi": null,
+  "keywords": [],
+  "paragraphs": 111,
+  "sections": {
+   "(a) Conventional method": 3,
+   "1. Introduction": 5,
+   "2. Experimental section": 1,
+   "2.1. Materials": 2,
+   "2.2. Preparation of ion exchange membrane": 2,
+   "2.3. Preparation of Nafion/Pt bilayer": 2,
+   "2.4. Preparation of stacked IL-IPMC": 2,
+   "2.5. Characterization": 2,
+   "3. Results and discussion": 1,
+   "3.1. Preparation of IL-IPMCs": 2,
+   "3.2. Characterization of IL-soaked Nafion film": 9,
+   "3.3. Morphology and surface resistance of Nafion/Pt bilayer": 3,
+   "3.4. Capacitive characteristics of IL-IPMCs": 3,
+   "3.5. Actuation performance and long-term stability of IPMCs": 8,
+   "3.6. Energy efficiency of IPMCs": 4,
+   "4. Conclusions": 2,
+   "A B S T R A C T": 2,
+   "A R T I C L E I N F O": 2,
+   "Acknowledgements": 2,
+   "CRediT authorship contribution statement": 2,
+   "Data availability": 2,
+   "Declaration of Competing Interest": 2,
+   "References": 44
+  },
+  "title": "Multiday operable ionic polymer-metal composites prepared using a stacking method for practical actuator applications"
+ },
+ "en_md": {
+  "lines": 171,
+  "sha256": "a09d210def209faa"
+ },
+ "figures": 4,
+ "formula_issues": 0,
+ "mineru_full_md": {
+  "sha256": "8f76ec05c112e4f3"
+ },
+ "review": {
+  "count": 0,
+  "kinds": {
+   "ai_decision": 9,
+   "domain": 1
+  },
+  "total": 10
+ },
+ "third_signal": {
+  "no_paddle_pair": 41,
+  "pages_usable": 9,
+  "votes": {
+   "both": 15,
+   "mineru": 8,
+   "neither": 3,
+   "paddleocr": 9
+  }
+ },
+ "verify": {
+  "items": 46,
+  "ok": 37,
+  "review": 0,
+  "suspicious": 9
+ }
+}

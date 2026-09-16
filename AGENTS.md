@@ -32,7 +32,7 @@
   - **已退役归档**（archive/paperparse-core-20260826/）：dual_pipeline/dual_fuse/dual_align/self_learn/sf_ocr_client（P12 双通道与规则学习）；backend 解析仅走 process_pdf_v2（P14），PAPERPARSE_PIPELINE=p12 已冻结回落 p14
 - `backend/` FastAPI 应用：`app/services/`（container 依赖注入：engine/task/kb/chat/llm/settings/usage/event_bus/plugin_registry）、`app/api/`（10 路由统一 /api/*）、`app/plugins/`、`app/engine_assets/`（打包快照）、`tests/`
 - `frontend/` 静态界面（index.html + app.js + style.css；单页无模块化，前后端经 fetch /api/* 分离）
-- `tools/` 运维/脚本（scorecard/parse_offline/rules_cli 等，import paperparse）
+- `tools/` 运维/脚本（scorecard/parse_offline/rules_cli/**parse_regression**（P14 产物指纹回归闸门：`python tools/parse_regression.py --check`，0 API 缓存件复算，已接入 `build_release.ps1` [5/5] 与 `docs/RELEASE-CHECKLIST.md`；用例+基线在 `tools/parse_regression/`）等，import paperparse）
 - `archive/` 剥离归档（html-20260826/ learning_workspace-20260826/ paperparse-core-20260826/——用户可单独拷贝备份）
 - `rules/` 外部规则根（learned/user 可写；builtin 在包内；挖掘规则已归档 archive，规则引擎不应用）
 - `library/`（**PDF 解析库**，每篇文件夹 `library/<RID>/` 只留解析产物：mineru_full.md / en.md（干净版，供 AI 翻译/总结/提问源）/ document.json / images / work / qa_report.json；**不含 source.pdf（已移 kb）**、不含带 DOI 前缀的变体文件与 variants/；**依附资料挂父目录** `library/<RID>/attachments/{si,review,data}/`，无父资源的零散资料放项目根 `attachments/<RID>/`）、`knowledge_base/`（知识库：每篇 `kb/<DOI>/` = en.md / document.json / images / **source.pdf** / **zh.md / en_zh.md / summary.md**（翻译/总结变体）+ 知识库笔记 _note/_details/_wiki + _index.md 索引）、`input/`（导入暂存，备份 PDF 已迁 kb）、`data/`、`用户提供的文献/`
