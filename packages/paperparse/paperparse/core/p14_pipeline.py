@@ -1039,28 +1039,39 @@ _REF_PARA_RE = re.compile(r"^(?:<sup>)?\[(\d+)\](?:</sup>)?\s+\S")
 
 
 def references_para_ids(repair_items: list) -> set:
-    """[全局] 参考文献区**段 id 集合**（供"不经 AI 仲裁"闸门与统计使用）。
+    """[全局] 参考文献区**段 id 集合**（供"不经 AI 仲裁"闸门、section 归属与统计使用）。
 
-    口径严格对齐 `build_markdown()` 的 `in_refs` 状态机：
-    · `References` 标题段 → 进入区（其后段计入）；
-    · `[N] 条目`段 → 计入（含**无标题**场景：靠连续 `[N]` 条目识别）；
-    · 区内出现非条目段 → 离开该区（与 build_markdown 一致）。
-    空文本段跳过；无 `para_id` 的段不入集。
+    口径与 `build_markdown()` 的 `in_refs` 分流同源（共用 `_REF_HEADING_RE`/`_REF_PARA_RE`），
+    但对**标题式**参考文献区做了强化（★2026-09-17 NC 真机实测暴露）：
+
+    · **标题式**（`## References` 起）：标题段之后的段**一律算参考文献**，直到遇到
+      **另一个标题段**或文末。为什么强化：Nature 系（NC）的条目是 `1. Author, Journal…`
+      **不带 `[N]`** ⇒ 旧口径（非 `[N]` 段即离开该区）只识别到 1 段（标题自己），
+      ⇒ 用户约束"参考文献不经 AI"在这类排版上失效（实测 NC ref_paras=1，实际 57 段）。
+    · **条目式**（无标题，直接 `[N] 条目` 连续段，如 adma）：沿用旧口径——遇到非条目段
+      即离开该区（没有标题可作边界，只能靠条目形态）。
+    · 空文本段跳过；无 `para_id` 的段不入集。
     """
     ids: set = set()
     in_refs = False
+    heading_opened = False
     for r in repair_items or []:
         text = (getattr(r, "text", "") or "").strip()
         if not text:
             continue
         pid = getattr(r, "para_id", "")
-        if getattr(r, "kind", "") == "heading" and _REF_HEADING_RE.search(text):
-            in_refs = True
-            if pid:
-                ids.add(pid)
-            continue
+        kind = getattr(r, "kind", "")
+        if kind == "heading":
+            if _REF_HEADING_RE.search(text):
+                in_refs, heading_opened = True, True
+                if pid:
+                    ids.add(pid)
+                continue
+            if in_refs and heading_opened:
+                in_refs, heading_opened = False, False    # 新章节标题 → 离开参考文献区
+                continue
         if in_refs:
-            if _REF_PARA_RE.match(text):
+            if heading_opened or _REF_PARA_RE.match(text):
                 if pid:
                     ids.add(pid)
             else:

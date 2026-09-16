@@ -363,6 +363,7 @@ def list_tools(scope: str = "core") -> list[dict]:
 def process_pdf_v2(pdf_path: str, *, md_path: str | None = None,
                    md_text: str | None = None, out_dir: str = "output/v2",
                    paddle: bool = True, ai_review: bool = True,
+                   third_decide: bool = True, ai_synthesis: bool = True,
                    provider=None, run_id: str | None = None,
                    paddle_blocks_path: str | None = None,
                    sf_ocr: bool = False,
@@ -373,13 +374,22 @@ def process_pdf_v2(pdf_path: str, *, md_path: str | None = None,
     md_path/md_text 二选一（mineru v4 full.md）；paddle=False 时纯 M1-M6
     （本地骨架 + 修复，不调 paddleocr/AI）；paddle_blocks_path 复用既有
     paddleocr blocks.json（云 API 队列满/离线时）。
+    **third_decide**（PARSE_THIRD_DECIDE：第三信号 PDF 文本层直接裁决，默认开）/
+    **ai_synthesis**（PARSE_AI_SYNTHESIS：AI 综合建议，默认开）必须在此显式透传——
+    ★2026-09-17 修：门面此前**没有这两个形参**，而 `engine_service._parse_pdf_dual`
+    一直在传 ⇒ `TypeError: unexpected keyword argument 'third_decide'` 被上层
+    `except` 吞成"双通道解析异常，降级单通道" ⇒ **真机解析自 9/16 起一直走降级链**
+    （第三信号/AI 综合建议/参考文献闸门在生产里从未生效）。守卫见
+    `backend/tests/test_engine_service.py::test_engine_kwargs_accepted_by_api_facade`。
     sf_ocr/cancel_check/on_wait：P15 透传底层管线（sf_ocr 已弃用仅 debug；
     cancel_check/on_wait 官方云队列等待机制）。实现见
     paperparse.core.p14_pipeline.process_pdf_v2。
     """
     from paperparse.core.p14_pipeline import process_pdf_v2 as _run
     return _run(pdf_path, md_path=md_path, md_text=md_text, out_dir=out_dir,
-                paddle=paddle, ai_review=ai_review, provider=provider,
+                paddle=paddle, ai_review=ai_review,
+                third_decide=third_decide, ai_synthesis=ai_synthesis,
+                provider=provider,
                 run_id=run_id, paddle_blocks_path=paddle_blocks_path,
                 sf_ocr=sf_ocr, cancel_check=cancel_check, on_wait=on_wait)
 

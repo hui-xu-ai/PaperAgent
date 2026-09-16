@@ -75,6 +75,35 @@ class TestReferencesParaIds:
         items = [_item("body", "<sup>[41]</sup> Y. Zhang, Chem. Rev. 2018.", "RP009")]
         assert references_para_ids(items) == {"RP009"}
 
+    def test_heading_style_region_kept_open(self):
+        """★NC 真机暴露：标题式参考文献区的条目不带 `[N]`（Nature 系 `1. Author…`）
+        ⇒ 必须"标题之后一律算，直到下一个标题"，否则闸门形同失效（实测 ref_paras=1）。"""
+        items = [
+            _item("body", "Body text about actuators.", "RP001"),
+            _item("heading", "## References", "RP002"),
+            _item("body", "1. Wu, G. et al. Nature Commun. 6, 7258 (2015).", "RP003"),
+            _item("body", "2. Hu, Y. et al. Adv. Mater. 28, 1024 (2016).", "RP004"),
+            _item("body", "Some trailing boilerplate without number.", "RP005"),
+            _item("heading", "## Acknowledgements", "RP006"),
+            _item("body", "This work was supported by NSFC.", "RP007"),
+        ]
+        ids = references_para_ids(items)
+        assert ids == {"RP002", "RP003", "RP004", "RP005"}   # 到下一个标题为止
+        assert "RP006" not in ids and "RP007" not in ids
+
+    def test_entry_style_region_still_closes(self):
+        """无标题（adma 形态）仍按条目形态收口：非条目段即离开（不能无限吞）"""
+        items = [
+            _item("body", "[1] Y. Zhang, J. Mater. Sci. 2020.", "RP001"),
+            _item("body", "[2] L. Li, Adv. Mater. 2021.", "RP002"),
+            _item("body", "Supported by NSFC under Grant 12345.", "RP003"),
+            _item("body", "[3] X. Wang, Nature 2022.", "RP004"),
+        ]
+        ids = references_para_ids(items)
+        assert "RP001" in ids and "RP002" in ids
+        assert "RP003" not in ids            # 非条目段 → 离开
+        assert "RP004" in ids                # 之后的连续条目重新开区
+
     def test_build_markdown_same_predicate(self):
         """单一来源回归：build_markdown 仍按同一判据分流（含无标题兜底）"""
         items = [

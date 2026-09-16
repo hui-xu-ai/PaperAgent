@@ -630,3 +630,38 @@ def test_paddle_blocks_cache_skipped_without_token(tmp_path, settings, monkeypat
     assert _FakePaddleClient.calls == 0
 
 
+# ------------------------------------------------ 门面形参契约（防"未知 kwarg → 静默降级"）
+def test_engine_kwargs_accepted_by_api_facade():
+    """★2026-09-17 回归锚定（真机实测暴露的静默失效）：
+
+    `engine_service._parse_pdf_dual` 走门面 `paperparse.api.process_pdf_v2`。门面此前
+    **没有** `third_decide`/`ai_synthesis` 形参，而 engine 一直在传
+    ⇒ `TypeError: unexpected keyword argument 'third_decide'` 被上层 `except` 吞成
+    "双通道解析异常，降级单通道" ⇒ **真机解析自 9/16 起从未跑过第三信号/AI 综合建议/
+    参考文献闸门**（全部静默走降级链），直到 2026-09-17 用 NC 篇真机测试才发现。
+
+    本用例用 `inspect.signature` 做**形参契约**：engine 传给门面的每个 kwarg 都必须是
+    门面接受的形参（含 `**kwargs`）。任何一侧新增/改名都会被拦住。
+    """
+    import inspect
+    import re
+    from pathlib import Path
+
+    from paperparse.api import process_pdf_v2 as facade
+
+    src = Path(__file__).resolve().parents[1] / "app/services/engine_service.py"
+    text = src.read_text(encoding="utf-8")
+    m = re.search(r"self\._api\.process_pdf_v2\((.*?)\n\s*\)", text, re.S)
+    assert m, "未找到 engine_service 调用门面的位置（重构后请同步本用例）"
+    call = m.group(1)
+    passed = set(re.findall(r"(\w+)\s*=", call))          # 关键字实参名
+    assert {"third_decide", "ai_synthesis", "paddle_blocks_path"} <= passed
+
+    params = inspect.signature(facade).parameters
+    accepts_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD
+                         for p in params.values())
+    unknown = passed - set(params)
+    assert accepts_var_kw or not unknown, \
+        "engine 传了门面不接受的形参 → 真机会 TypeError 并被吞成静默降级: %s" % unknown
+
+
