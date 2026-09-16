@@ -74,8 +74,12 @@ def normalize_spaced(text: str) -> str:
     return re.sub(r"(?<=\d)\s+(?=\d)", "", t)
 
 
-def page_texts(pdf_path: str | Path) -> dict[int, str]:
-    """页号（1-based）→ 归一化文本层内容（失败返回空 dict，调用方按"不可用"处理）。"""
+def page_texts(pdf_path: str | Path, *, raw: bool = False) -> dict[int, str]:
+    """页号（1-based）→ 文本层内容（失败返回空 dict，调用方按"不可用"处理）。
+
+    `raw=False`（默认）返回**归一化**文本（比对用）；`raw=True` 返回 PDF 原文
+    —— AI 综合建议需要"给人/给模型看的可读原文"，归一化后的文本会丢空格与标点。
+    """
     out: dict[int, str] = {}
     try:
         import pymupdf
@@ -83,7 +87,8 @@ def page_texts(pdf_path: str | Path) -> dict[int, str]:
         doc = pymupdf.open(str(pdf_path))
         try:
             for i in range(doc.page_count):
-                out[i + 1] = normalize(doc[i].get_text("text"))
+                t = doc[i].get_text("text")
+                out[i + 1] = t if raw else normalize(t)
         finally:
             doc.close()
     except Exception:  # noqa: BLE001 - 文本层取不到 = 该信号不可用，不影响解析
