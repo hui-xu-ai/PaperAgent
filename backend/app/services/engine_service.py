@@ -236,12 +236,20 @@ class EngineService:
         stem = Path(pdf_path).stem
         work = Path(self.settings.dual_work_root) / stem
         md_path = self._ensure_mineru_md(pdf_path, work)
+        # ★2026-09-17 T10：辅通道（PaddleOCR）也走 md5 键控缓存——命中则**不重烧配额**；
+        # 失败/未配置 token → None，管线自行走 API 或降级（不阻塞，行为与旧版一致）。
+        paddle_blocks_path = None
+        try:
+            paddle_blocks_path = self._ensure_paddle_blocks(pdf_path, work)
+        except Exception as e:  # noqa: BLE001 - 缓存准备失败不阻塞解析
+            logger.warning("PaddleOCR 缓存准备失败（回落直连 API）: %s", e)
         result = self._api.process_pdf_v2(
             pdf_path, md_path=str(md_path),
             # ★ 统一规范库（T01）：所有解析/翻译/导出产物就地存放
             #   library/<stem>/（engine_work_root）——P12 同布局，不得外置
             out_dir=self.settings.engine_work_root,
             paddle=True,
+            paddle_blocks_path=paddle_blocks_path,
             ai_review=provider is not None and ai_review,
             third_decide=third_decide,
             ai_synthesis=ai_synthesis,
@@ -352,6 +360,59 @@ class EngineService:
              "created": time.strftime("%Y-%m-%d %H:%M:%S")},
             ensure_ascii=False, indent=2), encoding="utf-8")
         return work / "mineru_full.md"
+
+    def _ensure_paddle_blocks(self, pdf_path: str, work: Path) -> str | None:
+        """PaddleOCR blocks 的 **md5 键控缓存**（★2026-09-17 T10，对齐 MinerU 缓存）。
+
+        为什么：`PaddleOCRClient.parse_pdf()` 每次都重新上传（原来的 backup 只是**留档**，
+        不参与复用）⇒ 同一 PDF 重解析会**重烧百度云配额 + 数分钟排队等待**（实测 snb 篇
+        重解析 3.6s 是缓存件，真机首次要数分钟）。本方法按 **PDF md5** 缓存转换后的
+        blocks JSON——p14 的 `paddle_blocks_path` 入参可直接读它（`stats.paddle_source=缓存`）。
+
+        缓存：`<work>/paddle_blocks.json` + `<work>/paddle_meta.json`（pdf_md5/pages/created）。
+        返回缓存文件路径；**未配置 token / 失败** → 返回 None（管线自行走 API 或降级，
+        行为与旧版一致，不阻塞解析）。
+        """
+        import hashlib
+        import json
+        import time
+
+        cfg = None
+        try:
+            from paperparse.config import load_config
+            cfg = load_config()
+        except Exception as e:  # noqa: BLE001 - 配置不可用则不缓存
+            logger.warning("PaddleOCR 缓存：配置不可用（%s）", e)
+            return None
+        if not getattr(cfg, "paddleocr_access_token", ""):
+            return None                     # 未配置辅通道 → 不介入（旧行为）
+        cur = hashlib.md5(Path(pdf_path).read_bytes()).hexdigest()
+        meta: dict = {}
+        if (work / "paddle_meta.json").exists():
+            try:
+                meta = json.loads((work / "paddle_meta.json").read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 - 损坏按未缓存处理
+                meta = {}
+        if meta.get("pdf_md5") == cur and (work / "paddle_blocks.json").exists():
+            logger.info("paddleocr blocks 缓存命中: %s", work / "paddle_blocks.json")
+            return str(work / "paddle_blocks.json")
+        from paperparse.core.paddleocr_client import PaddleOCRClient
+        from paperparse.core.parse_params import paddleocr_options_from_cfg
+        pblocks = PaddleOCRClient(cfg).parse_pdf(
+            str(pdf_path), backup=True, options=paddleocr_options_from_cfg(cfg))
+        blocks = getattr(pblocks, "blocks", None) or []
+        if not blocks:
+            return None
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "paddle_blocks.json").write_text(json.dumps(
+            [b.model_dump() for b in blocks], ensure_ascii=False, indent=2),
+            encoding="utf-8")
+        (work / "paddle_meta.json").write_text(json.dumps(
+            {"pdf_md5": cur, "pages": getattr(pblocks, "pages", 0),
+             "blocks": len(blocks), "pipeline": "p14",
+             "created": time.strftime("%Y-%m-%d %H:%M:%S")},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(work / "paddle_blocks.json")
 
     def parse_pdf_local(self, pdf_path: str | Path, run_id: str | None = None) -> dict:
         """本地解析降级（parser=pymupdf，MinerU 不可用时）。"""

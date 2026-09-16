@@ -555,3 +555,78 @@ def test_arbitration_usage_lands_in_ledger(tmp_path, settings, monkeypatch):
     assert (prov, model) == ("testprov", "test-model")
     assert (pt, ct) == (1234, 567)
 
+
+# ---------------------------------------------------------------- T10 PaddleOCR md5 缓存
+class _FakePaddleClient:
+    """假 PaddleOCR 客户端：只被调用一次就应命中缓存（配额=钱）。"""
+
+    calls = 0
+
+    def __init__(self, cfg=None):
+        pass
+
+    def parse_pdf(self, pdf_path, backup=True, options=None):
+        from paperparse.middleware.schema import ParserBlocks, TextBlock
+        type(self).calls += 1
+        blk = TextBlock(block_id="P0001", page=1, bbox=[0.0, 0.0, 1.0, 1.0],
+                        text="hello world", kind="body")
+        return ParserBlocks(source="paddleocr", pages=1, blocks=[blk])
+
+
+def _patch_paddle(monkeypatch, token="t"):
+    class _Cfg:
+        paddleocr_access_token = token
+        paddleocr_options = ""
+
+    import paperparse.config as pcfg
+    import paperparse.core.paddleocr_client as poc
+    monkeypatch.setattr(pcfg, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(poc, "PaddleOCRClient", _FakePaddleClient)
+    _FakePaddleClient.calls = 0
+
+
+def test_paddle_blocks_md5_cache(tmp_path, settings, monkeypatch):
+    """★2026-09-17 T10：PaddleOCR blocks 按 PDF md5 缓存——重解析不再重烧配额。
+
+    旧行为：`PaddleOCRClient.parse_pdf` 每次都重新上传（backup 仅留档）⇒ 同一 PDF
+    重解析重烧配额 + 数分钟。
+    """
+    import json
+    from pathlib import Path
+
+    from app.services.engine_service import EngineService
+
+    _patch_paddle(monkeypatch)
+    eng = EngineService(settings)
+    pdf = tmp_path / "10.1002_x.pdf"
+    pdf.write_bytes(b"%PDF-1.7 v1")
+    work = tmp_path / "dual" / "10.1002_x"
+
+    p1 = eng._ensure_paddle_blocks(str(pdf), work)
+    assert p1 and Path(p1).exists() and _FakePaddleClient.calls == 1
+    blocks = json.loads(Path(p1).read_text(encoding="utf-8"))
+    assert blocks[0]["text"] == "hello world"
+    assert json.loads((work / "paddle_meta.json").read_text(encoding="utf-8"))["pages"] == 1
+
+    # 同 PDF 再解析 → 命中缓存，不再调用 API
+    assert eng._ensure_paddle_blocks(str(pdf), work) == p1
+    assert _FakePaddleClient.calls == 1
+
+    # PDF 变化 → 重新识别
+    pdf.write_bytes(b"%PDF-1.7 v2 changed")
+    eng._ensure_paddle_blocks(str(pdf), work)
+    assert _FakePaddleClient.calls == 2
+
+
+def test_paddle_blocks_cache_skipped_without_token(tmp_path, settings, monkeypatch):
+    """未配置 PaddleOCR token → 不介入（返回 None，管线走旧路径/降级），且不发请求。"""
+    from app.services.engine_service import EngineService
+
+    _patch_paddle(monkeypatch, token="")
+    eng = EngineService(settings)
+    pdf = tmp_path / "p.pdf"
+    pdf.write_bytes(b"%PDF-1.7")
+    assert eng._ensure_paddle_blocks(str(pdf), tmp_path / "w") is None
+    assert _FakePaddleClient.calls == 0
+
+
