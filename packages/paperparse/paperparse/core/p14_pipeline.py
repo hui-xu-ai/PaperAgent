@@ -1118,6 +1118,41 @@ def _build_skip_items(skips: list[dict], page_by_para: dict[str, int]) -> list[d
     return items
 
 
+def _build_rule_audit_items(rows: list[dict], page_by_para: dict[str, int]) -> list[dict]:
+    """[局部] **规则落地审计项**（2026-09-16 新增）：规则已把 PaddleOCR 片段落到实处，但
+    PDF 自带文本层（第三信号）**支持原 MinerU 片段** ⇒ 疑似"百度为准"改错了。
+
+    为什么要有：S2 实测（adma/snb 两篇）发现 7 条这类项——例如 snb 的
+    `$\\mathrm{EMIM-BF}_4$`（MinerU 正确）被规则换成 PaddleOCR 的 `EMM-BF₄`（漏了 I）。
+    此前这类"已落地的错误"只留在正文里，界面完全看不到；现在作为**待确认项**进复核清单
+    （`blocking=True`），并附上文本层原文片段供人判断。选 MinerU 即恢复原文本。
+    """
+    items: list[dict] = []
+    for row in rows:
+        r, c, a = row["r"], row["c"], row["a"]
+        m_text = (c.get("mineru") or {}).get("text", "")
+        p_text = (c.get("paddleocr") or {}).get("text", "")
+        mid = ("md%d" % (r.md_idx or [1])[0]) if r.md_idx else ("para-" + r.para_id)
+        tv = c.get("third_vote") or {}
+        items.append({
+            "report_idx": 0,                  # 合并后统一重编号
+            "page": page_by_para.get(r.para_id, row.get("page", 0)),
+            "blocking": True,                 # 已落到正文里的疑似错误 → 待确认
+            "item_kind": "rule_audit",
+            "mineru": {"block_id": mid, "kind": r.kind, "text": m_text},
+            "paddleocr": {"block_id": "paddle-" + r.para_id, "kind": r.kind,
+                          "text": _wrap_paddle_formulas(p_text)},
+            "ai": {"verdict": a.verdict, "confidence": a.confidence, "applied": True,
+                   "reason": ("规则已采纳 PaddleOCR，但 PDF 文本层支持 MinerU（%s）"
+                              "——选 MinerU 可恢复原文本") % (tv.get("reason") or "")[:50]},
+            "third_vote": tv,
+            "user_choice": "", "auto_resolved": "",
+            "evidence": {"para_id": r.para_id, "md_idx": r.md_idx or [], "conflict_idx": -1,
+                         "source": "rule_audit", "third_vote": tv.get("verdict", ""),
+                         "local_text": (row.get("local_text") or "")[:400]}})
+    return items
+
+
 def _build_quality_items(flags: list[dict]) -> list[dict]:
     """[局部] 质量提示项（misaligned / 低重叠段）→ **非阻断**（不门控翻译，只求可见）。
 
@@ -1664,6 +1699,7 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                     1 for a in arb_by_idx.values() if a.verdict == "unresolved")
                 applied = 0
                 review_cands: list[dict] = []   # P15：conf<0.8/unresolved → GUI 复核
+                rule_audit_rows: list[dict] = []   # ★2026-09-16：规则落地 vs 文本层冲突
                 for para_id, cfl in by_para.items():
                     r = next((x for x in repair.paragraphs
                               if x.para_id == para_id), None)
@@ -1711,6 +1747,18 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                     if pending:
                         review_cands.append({"para_id": para_id, "r": r,
                                              "pending": pending})
+                    # ★2026-09-16 规则落地审计：**规则已把 P 落地，但 PDF 文本层支持 M**
+                    # ⇒ 疑似"百度为准"改错（实测 7 条/2 篇）→ 进复核（blocking）。
+                    for _k, _c in enumerate(cfl):
+                        _a = sub_arb[_k] if _k < len(sub_arb) else None
+                        _tv = _c.get("third_vote") or {}
+                        if (_a is not None and _a.verdict == "paddleocr"
+                                and _a.confidence >= 0.8 and _tv.get("decisive")
+                                and _tv.get("verdict") == "mineru"):
+                            rule_audit_rows.append({"r": r, "c": _c, "a": _a,
+                                                    "page": page_by_para.get(para_id, 0),
+                                                    "local_text": _page_text_for(r.md_idx)})
+                            arb_stats["rule_audit"] = arb_stats.get("rule_audit", 0) + 1
                 arb_stats["applied_p"] = applied
                 arb_stats["neither"] = sum(
                     1 for a in arb_snapshot.values() if a.verdict == "neither")
@@ -1727,11 +1775,12 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                 #   · 两类同放 items（GUI 一份清单），各自带 item_kind/blocking 供前端区分。
                 review_items = _build_review_items(review_cands, by_para, page_by_para)
                 skip_items = _build_skip_items(skipped_ambiguous, page_by_para)
+                audit_items = _build_rule_audit_items(rule_audit_rows, page_by_para)
                 quality_items = _build_quality_items(quality_flags)
-                all_items = review_items + skip_items + quality_items
+                all_items = review_items + skip_items + audit_items + quality_items
                 for _i, _it in enumerate(all_items):
                     _it["report_idx"] = _i
-                blocking_count = len(review_items) + len(skip_items)
+                blocking_count = len(review_items) + len(skip_items) + len(audit_items)
                 rev_dir = out / "work"
                 rev_dir.mkdir(parents=True, exist_ok=True)
                 rev_payload: dict = {

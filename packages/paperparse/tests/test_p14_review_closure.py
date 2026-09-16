@@ -83,6 +83,38 @@ def test_domain_item_tagged():
     assert it["item_kind"] == "domain"
 
 
+def test_rule_audit_items_are_blocking():
+    """规则已落地 P，但 PDF 文本层支持 M（S2 实测发现 7 条/2 篇）→ 必须进复核（blocking）。"""
+    from paperparse.core.p14_pipeline import _build_rule_audit_items
+
+    class _A:
+        verdict = "paddleocr"
+        confidence = 1.0
+
+    rows = [{"r": _R("RP007"), "a": _A(),
+             "c": {"mineru": {"text": r"$\mathrm{EMIM-BF}_4$"},
+                   "paddleocr": {"text": "EMM-BF₄"},
+                   "third_vote": {"verdict": "mineru", "decisive": True,
+                                  "reason": "文本层逐字命中：M✓ P✗"}},
+             "page": 3, "local_text": "EMIM-BF4 was used"}]
+    items = _build_rule_audit_items(rows, {"RP007": 3})
+    it = items[0]
+    assert it["blocking"] is True and it["item_kind"] == "rule_audit"
+    assert it["ai"]["applied"] is True
+    assert "文本层支持 MinerU" in it["ai"]["reason"]
+    assert "恢复原文本" in it["ai"]["reason"]
+    assert it["evidence"]["local_text"].startswith("EMIM-BF4")
+    assert it["third_vote"]["verdict"] == "mineru"
+
+
+def test_rule_audit_condition_in_source():
+    """源码级守卫：只有"规则已采纳 P（conf≥0.8）且第三信号决定性支持 M"才建审计项。"""
+    src = P14.read_text(encoding="utf-8")
+    assert 'rule_audit_rows.append' in src
+    assert '_tv.get("verdict") == "mineru"' in src
+    assert 'blocking_count = len(review_items) + len(skip_items) + len(audit_items)' in src
+
+
 def test_neither_verdict_enters_pending():
     """源码级守卫：`neither` 必须与 unresolved 一起进待确认（曾静默吞掉）。"""
     src = P14.read_text(encoding="utf-8")
