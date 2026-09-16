@@ -52,6 +52,36 @@ _CAPTION_START_RE = re.compile(
 # 编号后直接小写字母（"Figure 4g"、"Fig. 2 h."）是正文子图引用，不误判
 _CAP_NEXT_RE = re.compile(r"^(fig(?:ure)?|table|scheme)\.?\s*\d+\s*(.)", re.IGNORECASE)
 _NUM_HEAD_RE = re.compile(r"^\d+(\.\d+)*\.?\s+[A-Z]")
+# ★2026-09-17（NC 真机实测暴露）：`_NUM_HEAD_RE` 太宽——`^\d+\s+[A-Z]` 在 Nature 系双栏
+# 排版里满地都是（参考文献条目 `53. Liu, J. H., …`、数值行 `3 V (up to 0.93 ± 0.03%…`、
+# `140.8 F g−1 .`、`0.1 Hz. (b) Time-dependent…`）⇒ NC 篇 160 个本地段里 **68 个被判成
+# heading**（adma 只有 9 个），骨架区域/段落边界随之崩坏，md↔骨架对齐只有 13%（adma/snb 70%），
+# 第三信号几乎失效（票数 7/21）、AI 负担与 token 上升。下面两个判据把"数字开头"与"真章节标题"
+# 分开（`_looks_like_num_heading`）：
+#   ① 参考文献条目：`数字. 姓, 首字母.`（`53. Liu, J. H., Wang, Z. C., …`）；
+#   ② 数值/单位行：数字后紧跟计量单位（`3 V` / `140.8 F` / `0.1 Hz` / `2.0 Hz`）。
+_NUM_REF_ENTRY_RE = re.compile(r"^\d{1,3}\.\s+[A-Z][A-Za-z'’\-]+,\s*[A-Z]\.")
+# 单位后必须是空白/行尾/句读——否则 `3. V-shaped actuator`（合法标题）会被 `[Vv]\b` 误杀
+_UNIT_TOKEN_RE = re.compile(
+    r"^\d+(?:\.\d+)*\.?\s*(?:[Vv]|[Hh]z|[Ff]|[Gg]|[Mm]m|[Nn]m|µm|μm|[Mm][AaVvFfWwJj]|"
+    r"[Kk][Vv]|[Mm][Hh]z|[Gg][Hh]z|[Kk][Hh]z|°C|[Ss]|[Mm]in|[Hh]|[Ww]t%|[Rr]pm|"
+    r"[MmGgKk]Pa|[Pp]a|[Nn]|[Jj]|[Ww]|[Kk]|[Mm]ol|[Mm]L|[Ll]|[Cc]m|[Ss]cm|Ω|"
+    r"[Mm]F)(?=\s|$|[.,;:)\]])")
+
+
+def _looks_like_num_heading(t: str) -> bool:
+    """[全局] "数字开头"是否**真章节标题**（`1. Introduction` / `2.1. Results`）。
+
+    排除两类误判（NC 真机实测）：参考文献条目、数值+单位行。
+    另收紧长度：真标题短（< 100 字符）且不以句读结尾。
+    """
+    if not _NUM_HEAD_RE.match(t):
+        return False
+    if len(t) >= 100 or t.rstrip().endswith((",", ";", "，", "；")):
+        return False
+    if _NUM_REF_ENTRY_RE.match(t) or _UNIT_TOKEN_RE.match(t):
+        return False
+    return True
 _DECOR_HEAD_RE = re.compile(r"^(?:[A-Z]\s*){3,}$")   # "A B S T R A C T"
 # 标准章节标题（无编号；正文区独立成段）
 _STANDARD_HEADS = (
@@ -239,7 +269,7 @@ def _classify_line(ln: LocalLine, median_font: float, page_h: float = 800.0) -> 
     if re.match(r"^\(\d+\)\s+[A-Z]", t):
         return "list"
     # 编号标题 / 装饰节标题（A B S T R A C T）/ 标准章节标题
-    if _NUM_HEAD_RE.match(t) and len(t) < 200:
+    if _looks_like_num_heading(t):
         return "heading"
     if _DECOR_HEAD_RE.match(t) and len(t) < 60:
         compact = re.sub(r"\s+", "", low)
@@ -356,7 +386,7 @@ def _detect_regions(lines: list[LocalLine]) -> dict:
     for i, ln in enumerate(page1):
         t = ln.text.strip()
         low = re.sub(r"\s+", "", t.lower())
-        if _NUM_HEAD_RE.match(t):
+        if _looks_like_num_heading(t):        # ★2026-09-17：与 _classify_line 同判据
             first_num_idx = i
             break
         if abs_idx is None and low == "abstract":
