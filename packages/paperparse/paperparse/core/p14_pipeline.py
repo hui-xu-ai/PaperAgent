@@ -633,6 +633,85 @@ def _is_paddle_authoritative(conflict: dict) -> bool:
     return False
 
 
+def _protected_spans(text: str) -> list[tuple[int, int]]:
+    """[局部] 受保护区间：HTML 标签 `<sup>…</sup>` 与公式 `$…$` / `$$…$$`。
+
+    2026-09-16 实测事故（A/B 对比抓到）：自动裁决把一个替换落在 `</sup>` 的 `>` 上，产出
+    `…BF<sub>4</sub><sup>−</supregnated with IL at low tem…` —— 标签被吃掉、正文插入垃圾。
+    ⇒ 任何"按片段替换/插入"都必须**拒绝跨越这些区间**的编辑（P12 教训：字符级 diff 不得切公式/标签）。
+    """
+    spans: list[tuple[int, int]] = []
+    for m in re.finditer(r"</?[A-Za-z][^<>]*>", text or ""):
+        spans.append((m.start(), m.end()))
+    for m in re.finditer(r"\$\$[\s\S]+?\$\$|\$[^$\n]*?\$", text or ""):
+        spans.append((m.start(), m.end()))
+    return spans
+
+
+def _crosses_protected(text: str, start: int, end: int,
+                       spans: list[tuple[int, int]] | None = None) -> bool:
+    """[局部] 区间 [start,end) 是否**切坏**受保护区间（HTML 标签 / 公式）。
+
+    只有**完整包含**受保护区间才是合法编辑（如 P16 的"公式采纳"——把整段 `$…$` 换成
+    百度明文并重新包裹）；**部分相交**属于"切标签/切公式"，一律拒绝。
+    （2026-09-16 事故：`</sup>` 的 `>` 被当成片段起点 ⇒ 标签被吃掉、正文插进标签里。）
+    """
+    if start is None or end is None or end < start:
+        return True
+    for s, e in (spans if spans is not None else _protected_spans(text)):
+        if start < e and end > s:                 # 相交
+            if start <= s and end >= e:           # 完整包含 → 合法
+                continue
+            return True                           # 部分相交 → 切坏，拒绝
+    return False
+
+
+def _replacement_shape_ok(m_text: str, p_text: str) -> bool:
+    """[局部] 替换的**内容形状**守卫：拒绝"会删掉实质内容/截断片段"的替换。
+
+    2026-09-16 实测事故（A/B 对比抓到）：AI 判 P 后把
+    `$E _ { \\mathsf { F } }$ stands for ` 换成 `E_` ⇒ 正文变成 "E_Fermi level"，
+    **"stands for " 被删、公式也断了**（该 P 片段本身是截断片段，配对质量差）。
+    判据（仅用于 replace 形态；insert/删空格是微小编辑不受影响）：
+      · P 侧归一化后字数不足 M 侧的 60%，且绝对差 ≥3 字 → 会删内容 ⇒ 拒绝；
+      · P 侧以 `_`/`^` 结尾而 M 侧不是（截断的 LaTeX 片段）⇒ 拒绝。
+    """
+    def _n(s: str) -> str:
+        s = re.sub(r"\$[^$]*\$", lambda m: m.group(0).strip("$"), s or "")
+        s = re.sub(r"\\[a-zA-Z]+\s*", "", s)
+        s = re.sub(r"[^0-9A-Za-z]+", "", s)
+        return s.lower()
+
+    nm, np_ = _n(m_text), _n(p_text)
+    if len(nm) >= 4:
+        if len(np_) < max(1, int(0.6 * len(nm))) or (len(nm) - len(np_)) >= 3:
+            return False
+    if p_text.strip().endswith(("_", "^")) and not m_text.strip().endswith(("_", "^")):
+        return False
+    return True
+
+
+def _structure_ok(before: str, after: str) -> bool:
+    """[局部] 段落级**后置**校验：替换后 HTML 标签配平与公式配平不得被破坏。
+
+    判据（任一不满足 → 调用方回滚该段）：标签开闭差不变、`$` 闭合性不变、括号配平不劣化。
+    为什么需要（2026-09-16 实测事故）：片段替换曾吃掉 `</sup>` 的 `>` 并把正文插进标签里；
+    仅靠"不跨受保护区间"的**前置**守卫仍可能被位置漂移绕过 ⇒ 再加一道后置兜底。
+    """
+    def _counts(t: str) -> tuple:
+        opens = len(re.findall(r"<(sup|sub|i|em|b|strong|u|span|font)\b", t or ""))
+        closes = len(re.findall(r"</(sup|sub|i|em|b|strong|u|span|font)>", t or ""))
+        return opens, closes, (t or "").count("$"), _brace_imbalance(t or "")
+
+    o1, c1, d1, b1 = _counts(before)
+    o2, c2, d2, b2 = _counts(after)
+    if (o1 - c1) != (o2 - c2):
+        return False
+    if (d1 % 2) != (d2 % 2):
+        return False
+    return not (b2 > b1)
+
+
 def _apply_arbitrations(para_text: str, conflicts: list[dict],
                         arbitrations: list,
                         apply_min_conf: float = 0.8) -> tuple[str, list[dict]]:
@@ -647,6 +726,8 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
         return para_text, audit
     arb_by_id = {a.id: a for a in (arbitrations or [])}
     final = para_text
+    # ★2026-09-16：受保护区间（HTML 标签 / 公式）——跨越它们的替换一律拒绝（防标签被吃掉）
+    protected = _protected_spans(final)
     # **从后往前应用**：insert 会改变后续字符索引（Eficient→Efficient 是
     # insert 'f'，mineru 侧空片段），reversed 保证前面冲突的索引不漂移
     for i, c in reversed(list(enumerate(conflicts))):
@@ -661,6 +742,10 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
             # insert 形态：mineru 缺字符（断词修复），在 evidence.i1 处插入
             _i1 = (c.get("evidence") or {}).get("i1")
             if _i1 is None or _i1 > len(final):
+                continue
+            if _crosses_protected(final, _i1, _i1, protected):
+                audit.append({"action": "skip_protected_span", "at": _i1,
+                              "reason": "插入点落在 HTML 标签/公式区间内，不自动落地"})
                 continue
             # P16 公式采纳：百度明文 → 包回 $...$ 保渲染（根治"公式段缺 $"）
             if _is_formula_conflict(c):
@@ -678,7 +763,8 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
             _i1, _i2 = ((c.get("evidence") or {}).get("i1"),
                         (c.get("evidence") or {}).get("i2"))
             if _i1 is not None and _i2 is not None \
-                    and _i2 <= len(final) and final[_i1:_i2] == m_text:
+                    and _i2 <= len(final) and final[_i1:_i2] == m_text \
+                    and not _crosses_protected(final, _i1, _i2, protected):
                 final = final[:_i1] + final[_i2:]
                 audit.append({"action": "arbitrate_delete_ws", "verdict": "P",
                               "at": _i1, "reason": (a.reason or "")[:60]})
@@ -693,9 +779,21 @@ def _apply_arbitrations(para_text: str, conflicts: list[dict],
         if not m_text or m_text not in final:
             continue
         n = final.count(m_text)
+        if n == 1:
+            _p0 = final.find(m_text)
+            if _crosses_protected(final, _p0, _p0 + len(m_text), protected):
+                audit.append({"action": "skip_protected_span", "chunk": m_text[:40],
+                              "reason": "替换片段跨越 HTML 标签/公式边界，不自动落地"})
+                continue
         if n != 1:
             audit.append({"action": "skip_p_ambiguous", "chunk": m_text[:40],
                           "count": n, "reason": "片段在段落中多次出现，不自动替换"})
+            continue
+        # ★2026-09-16 形状守卫：会删实质内容/截断片段的替换不落地（保留 MinerU）
+        if not _replacement_shape_ok(m_text, p_text):
+            audit.append({"action": "skip_content_loss", "before": m_text[:40],
+                          "after": p_text[:40],
+                          "reason": "替换会明显缩短/截断内容，保留 MinerU（机器兜底）"})
             continue
         # P16 公式采纳：百度明文 → 包回 $...$ 保渲染（根治"公式段缺 $"）
         if _is_formula_conflict(c):
@@ -1024,7 +1122,9 @@ def _build_domain_review_item(r, orig_text: str, sugg_text: str,
     return {
         "report_idx": 0,                       # 合并时重排
         "page": page,                          # md 段→本地行反查；无则 1（页图可加载）
-        "blocking": True,                      # ★2026-09-16：与仲裁项统一 schema
+        "blocking": bool(applied),              # ★2026-09-16：**不阻塞人**——词典电荷不匹配的
+        #   化学式候选只是"提示假设"（机器无法定论、也无正文改动），不门控翻译、不需人点；
+        #   真正已落地的自动修复按 applied=True 记录（其 auto_resolved 已由调用方设置）。
         "item_kind": "domain",                 # 词典层（共识错误）修复项
         "mineru": {"block_id": mid, "kind": r.kind, "text": orig_text},
         "paddleocr": {"block_id": "paddle-" + r.para_id, "kind": r.kind,
@@ -1150,6 +1250,51 @@ def _build_rule_audit_items(rows: list[dict], page_by_para: dict[str, int]) -> l
             "evidence": {"para_id": r.para_id, "md_idx": r.md_idx or [], "conflict_idx": -1,
                          "source": "rule_audit", "third_vote": tv.get("verdict", ""),
                          "local_text": (row.get("local_text") or "")[:400]}})
+    return items
+
+
+def _build_decided_items(rows: list[dict], r, page: int,
+                         local_text: str = "") -> list[dict]:
+    """[局部] **AI/第三信号替人做好的裁决记录**（2026-09-16，用户："复核清单只留 AI 替人类
+    做决定的"）。
+
+    与"待人工复核项"的区别：这些项**已落地或已明确保留 MinerU**，`auto_resolved` 非空
+    ⇒ `ReviewService.pending_review_count` 不计入（**不门控翻译、不需要人点**）；
+    复核页只作为"AI 已替人选好"的记录展示（选了哪侧、为什么、文本层旁证）。
+    """
+    items: list[dict] = []
+    mid = ("md%d" % (r.md_idx or [1])[0]) if r.md_idx else ("para-" + r.para_id)
+    for row in rows:
+        a, c, src = row["a"], row["c"], row["src"]
+        m_text = (c.get("mineru") or {}).get("text", "")
+        p_text = (c.get("paddleocr") or {}).get("text", "")
+        tv = c.get("third_vote") or {}
+        who = {"ai": "AI 仲裁", "ai_forced": "AI 强制二选一",
+               "third": "PDF 文本层（第三信号）"}.get(src, src)
+        who = {"ai": "AI 仲裁", "ai_forced": "AI 强制二选一",
+               "third": "PDF 文本层（第三信号）",
+               "fallback": "机器兜底（无可判定证据）"}.get(src, src)
+        chosen = "MinerU" if a.verdict == "mineru" else "PaddleOCR"
+        reason = "%s 替人选：%s（%s）" % (who, chosen, (a.reason or "")[:40])
+        if tv.get("verdict"):
+            reason += "｜文本层：%s" % tv["verdict"]
+        items.append({
+            "report_idx": 0,
+            "page": page,
+            "blocking": False,                # 机器已决定 ⇒ 不门控、不需人点
+            "item_kind": "ai_decision",
+            "auto_resolved": src,             # 非空 ⇒ pending_review_count 忽略
+            "mineru": {"block_id": mid, "kind": r.kind, "text": m_text},
+            "paddleocr": {"block_id": "paddle-" + r.para_id, "kind": r.kind,
+                          "text": _wrap_paddle_formulas(p_text)},
+            "ai": {"verdict": a.verdict, "reason": reason[:140],
+                   "confidence": a.confidence, "applied": a.verdict == "paddleocr",
+                   "decided_by": src},
+            "third_vote": tv,
+            "user_choice": "",
+            "evidence": {"para_id": r.para_id, "md_idx": r.md_idx or [], "conflict_idx": -1,
+                         "source": src, "third_vote": tv.get("verdict", ""),
+                         "local_text": (local_text or "")[:400]}})
     return items
 
 
@@ -1348,6 +1493,7 @@ def to_article_document(repair_items: list, figures: list,
 def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                    md_text: str | None = None, out_dir: str | Path = "output/v2",
                    paddle: bool = True, ai_review: bool = True,
+                   third_decide: bool = True,
                    provider=None, run_id: str | None = None,
                    paddle_blocks_path: str | Path | None = None,
                    sf_ocr: bool = False,
@@ -1361,6 +1507,10 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
         out_dir: 输出根目录（<out_dir>/<pdf_stem>/ 下 document.json + en.md + images/）
         paddle: 是否跑 OCR 辅通道（M7 验证 + M8 仲裁；False 则纯 M1-M6）
         ai_review: 辅通道下是否 AI 仲裁（False 只出验证信号与 diff 清单）
+        third_decide: 是否用**第三信号（PDF 自带文本层）直接裁决**（默认 True）。
+            用户 2026-09-16 要求"尽量降低人的参与或人不参与"：决定性第三票直接定 verdict
+            ——判 P 则落地 P、判 M 则保留 M（自动撤销规则错改），这些项**不进人工复核**；
+            置 False 则退回"只当证据提示"的旧行为。
         provider: 仲裁模型 provider（默认环境链）
         paddle_blocks_path: 复用已有 paddleocr blocks.json（官方云队列满/离线时）
         sf_ocr: 用硅基流动 PaddleOCR-VL 替代官方云（无排队；无 bbox → 配对走
@@ -1634,9 +1784,11 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                 for i, c in enumerate(conflicts_all):
                     by_para.setdefault(c.get("para_id", ""), []).append(c)
                 arb_by_idx: dict[int, object] = {}
+                src_by_idx: dict[int, str] = {}   # ★决策来源：rule/ai/ai_forced/third
                 for i, c in enumerate(conflicts_all):
                     _m = (c.get("mineru") or {}).get("text", "")
                     _p = (c.get("paddleocr") or {}).get("text", "")
+                    src_by_idx[i] = "rule"
                     if _is_formula_conflict(c) and _formula_equivalent(c):
                         # 公式内容等价（mineru LaTeX = 百度明文同义）→ 保留 mineru
                         # LaTeX（保渲染），不替换成明文，也不进复核
@@ -1685,9 +1837,31 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                             if ai_arb is not None:
                                 ai_arb.id = gi          # 全局索引
                                 arb_by_idx[gi] = ai_arb
+                                src_by_idx[gi] = "ai"
                         arb_stats["ai_reviewed"] = len(ai_ids)
                     except Exception as e:  # noqa: BLE001 - AI 失败不阻塞
                         stats["ai_review_error"] = str(e)[:120]
+                # ★2026-09-16（用户要求"所有复核都由 AI 替人选择"）：**强制二选一补判**——
+                # 上一轮 AI 若判 both/neither（或未返回），说明"两通道都不完美"，但那正是
+                # 必须有人拍板的地方；现在让 AI 借两侧识别语义**替人拍板**（只许 M 或 P），
+                # 结果直接落地 ⇒ 复核清单不再是"等人点"，而是"AI 已选好"的记录。
+                rest_ids = [i for i, a in arb_by_idx.items()
+                            if a.verdict in ("unresolved", "neither")]
+                if rest_ids and ai_review:
+                    from paperparse.core.dual_ai_review import arbitrate as _arb2
+                    try:
+                        res2 = _arb2([conflicts_all[i] for i in rest_ids],
+                                     provider=provider, paper=stem, force=True)
+                        forced = 0
+                        for gi, a2 in zip(rest_ids, res2):
+                            if a2 is not None and a2.verdict in ("mineru", "paddleocr"):
+                                a2.id = gi
+                                arb_by_idx[gi] = a2
+                                src_by_idx[gi] = "ai_forced"
+                                forced += 1
+                        arb_stats["ai_forced"] = forced
+                    except Exception as e:  # noqa: BLE001 - 补判失败不阻塞
+                        stats["ai_force_error"] = str(e)[:120]
                 # ★2026-09-16：**挖掘用快照**——下面 _apply_arbitrations 前会把 a.id 重映射成
                 # 段内局部索引（1696-1698），M8c 却按**全局**索引取（原实现因此拿到了错位的
                 # arbitration，且调用处传了未定义名 `arb` → 被 except 吞成 char_rules_error，
@@ -1697,8 +1871,59 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                     1 for a in arb_by_idx.values() if a.verdict != "unresolved")
                 arb_stats["unresolved"] = sum(
                     1 for a in arb_by_idx.values() if a.verdict == "unresolved")
+                # ---- M8-第三信号裁决层（★2026-09-16，用户要求"尽量让人不参与"）----
+                # 决定性第三票（PDF 自带文本层逐字命中某一侧）**直接定 verdict**：
+                #   · 判 P → 走既有落地函数替换（conf 0.9 ≥ 门控 0.8）；
+                #   · 判 M → verdict=mineru ⇒ 保留 MinerU 原文（等于**自动撤销**规则的错改，
+                #     如实测 snb `$\mathrm{EMIM-BF}_4$` 被规则换成 `EMM-BF₄`）。
+                # 于是这些项**不再进人工复核清单**（人不参与）；只有"第三信号也判不了 +
+                # AI 也判不了"的残留才留给人（见 pending 判据）。
+                third_decided = 0
+                if third_decide:
+                    for _i, _c in enumerate(conflicts_all):
+                        _a = arb_by_idx.get(_i)
+                        if _a is None:
+                            continue
+                        _tv = _c.get("third_vote") or {}
+                        if not _tv.get("decisive"):
+                            continue
+                        _side = _tv.get("verdict")
+                        if _side == "paddleocr" and _a.verdict != "paddleocr":
+                            _a.verdict = "paddleocr"
+                            _a.confidence = 0.9
+                            _a.reason = "文本层裁决：PaddleOCR(自动)"
+                            src_by_idx[_i] = "third"
+                            third_decided += 1
+                        elif _side == "mineru" and _a.verdict == "paddleocr":
+                            _a.verdict = "mineru"
+                            _a.reason = "文本层反对，保留 MinerU(自动撤销替换)"
+                            src_by_idx[_i] = "third"
+                            third_decided += 1
+                        elif _side == "mineru" and _a.verdict in ("unresolved", "neither"):
+                            _a.verdict = "mineru"        # 保留 M（不改文）但不再进复核
+                            _a.reason = "文本层裁决：保留 MinerU(自动)"
+                            src_by_idx[_i] = "third"
+                            third_decided += 1
+                arb_stats["third_decided"] = third_decided
+                # ★2026-09-16（用户："尽量降低人的参与或人不参与"）：**机器兜底**——
+                # AI/第三信号都没能判定的冲突，一律"保留 MinerU 原文"并作为**裁决记录**进清单
+                # （非阻断、不需人点）。依据：保留 M = 不改动 ⇒ 相对现状零回归；而把这类项推给
+                # 人恰恰是用户要消除的负担。关闭自动裁决（third_decide=False）时不启用。
+                if third_decide:
+                    _fb = 0
+                    for _i, _c in enumerate(conflicts_all):
+                        _a = arb_by_idx.get(_i)
+                        if _a is None or _a.verdict != "unresolved":
+                            continue
+                        _a.verdict = "mineru"
+                        _a.reason = "AI/第三信号均未判定，保留 MinerU（机器兜底）"
+                        src_by_idx[_i] = "fallback"
+                        _fb += 1
+                    arb_stats["machine_fallback"] = _fb
+                    arb_stats["unresolved"] = 0
                 applied = 0
-                review_cands: list[dict] = []   # P15：conf<0.8/unresolved → GUI 复核
+                review_cands: list[dict] = []   # 仍需人工（AI 不可用/未返回）→ GUI 复核
+                decided_log: list[dict] = []    # ★AI/第三信号替人做的决定（复核页只展示记录）
                 rule_audit_rows: list[dict] = []   # ★2026-09-16：规则落地 vs 文本层冲突
                 for para_id, cfl in by_para.items():
                     r = next((x for x in repair.paragraphs
@@ -1717,11 +1942,24 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                     for _k, _a in enumerate(sub_arb):
                         if _a is not None:
                             _a.id = _k
+                    # ★AI/第三信号已替人选好的项**一律落地**（用户要求人不参与复核）——
+                    # 因此把置信度门控降到 0：规则项本来就是 conf=1.0，不受影响。
+                    _orig_text = r.text
                     new_text, audit = _apply_arbitrations(
-                        r.text, cfl, [a for a in sub_arb if a is not None])
-                    if new_text != r.text:
-                        r.text = new_text
-                        applied += 1
+                        r.text, cfl, [a for a in sub_arb if a is not None],
+                        apply_min_conf=0.0)
+                    if new_text != _orig_text:
+                        # ★2026-09-16 后置校验：结构（标签/$/括号）被破坏 → 整段回滚，
+                        # 记 machine_fallback（保留 MinerU 原文，不把乱码写进正文）。
+                        if _structure_ok(_orig_text, new_text):
+                            r.text = new_text
+                            applied += 1
+                        else:
+                            new_text = _orig_text
+                            audit.append({"action": "revert_structure",
+                                          "reason": "替换后标签/公式配平被破坏，已回滚保留 MinerU"})
+                            arb_stats["structure_reverted"] = \
+                                arb_stats.get("structure_reverted", 0) + 1
                     if audit:
                         (work / "arbitration_audit.jsonl").open(
                             "a", encoding="utf-8").write(
@@ -1736,17 +1974,32 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                                     "para_id": para_id, "r": r,
                                     "chunk": _au.get("chunk", ""),
                                     "count": _au.get("count", 0)})
-                    # P15：该段任一仲裁 unresolved / (verdict=P & conf<0.8) / **neither（AI 判
-                    # 两侧都错）** → 进复核清单（段落聚合；不自动落地）。
-                    # ★2026-09-16 修：`neither` 此前**被静默吞掉**——不改文本、不进复核、
-                    # audit 也不记（audit 只在文本真变时写）⇒ 用户永远看不到"这段两边都错"。
-                    pending = [a for a in sub_arb if a is not None
-                               and (a.verdict in ("unresolved", "neither")
-                                    or (a.verdict == "paddleocr"
-                                        and a.confidence < 0.8))]
-                    if pending:
+                    # ★2026-09-16（用户："复核清单只留 AI 替人类做决定的"）：
+                    #   · AI/第三信号/强制补判 已给出 M|P 的项 → **AI 已替人选好** ⇒ 落地，
+                    #     并作为"裁决记录"进复核页（auto_resolved 非空 ⇒ 不计待处理、不门控翻译）；
+                    #   · 仍为 unresolved（AI 不可用/未返回）的项 → 才是真正需要人的残留。
+                    decided_rows: list[dict] = []
+                    pending = []
+                    for _k, _c in enumerate(cfl):
+                        _a = sub_arb[_k] if _k < len(sub_arb) else None
+                        if _a is None:
+                            continue
+                        _gi = idx_map.get(id(_c))
+                        _src = src_by_idx.get(_gi, "rule") if _gi is not None else "rule"
+                        if _a.verdict == "unresolved":
+                            pending.append(_a)
+                        elif _src in ("ai", "ai_forced", "third", "fallback"):
+                            decided_rows.append({"a": _a, "c": _c, "src": _src})
+                    if pending and not third_decide:
+                        # 仅在**关闭自动裁决**（third_decide=False）时保留"等人点"的旧行为；
+                        # 默认走下面的机器兜底（AI/第三信号都判不了 → 保留 MinerU 并记录）。
                         review_cands.append({"para_id": para_id, "r": r,
                                              "pending": pending})
+                    if decided_rows:
+                        decided_log.extend(
+                            _build_decided_items(decided_rows, r,
+                                                 page_by_para.get(para_id, 0),
+                                                 _page_text_for(r.md_idx)))
                     # ★2026-09-16 规则落地审计：**规则已把 P 落地，但 PDF 文本层支持 M**
                     # ⇒ 疑似"百度为准"改错（实测 7 条/2 篇）→ 进复核（blocking）。
                     for _k, _c in enumerate(cfl):
@@ -1777,7 +2030,9 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                 skip_items = _build_skip_items(skipped_ambiguous, page_by_para)
                 audit_items = _build_rule_audit_items(rule_audit_rows, page_by_para)
                 quality_items = _build_quality_items(quality_flags)
-                all_items = review_items + skip_items + audit_items + quality_items
+                # ★2026-09-16：AI/第三信号替人做的决定作为**记录**进清单（非阻断、不计待处理）
+                all_items = (review_items + skip_items + audit_items + quality_items
+                             + decided_log)
                 for _i, _it in enumerate(all_items):
                     _it["report_idx"] = _i
                 blocking_count = len(review_items) + len(skip_items) + len(audit_items)
@@ -1906,9 +2161,12 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
                     _build_domain_review_item(r, orig, sugg, review_fs, applied=False,
                                               page=dom_page.get(r.para_id, 1)))
             if auto_fs:
-                dom_stats["auto_items"].append(
-                    _build_domain_review_item(r, orig, new_text, auto_fs, applied=True,
-                                              page=dom_page.get(r.para_id, 1)))
+                _auto_item = _build_domain_review_item(
+                    r, orig, new_text, auto_fs, applied=True,
+                    page=dom_page.get(r.para_id, 1))
+                # ★2026-09-16：已自动落地的词典修复 ⇒ 标记 auto_resolved（不算"待处理"）
+                _auto_item["auto_resolved"] = "domain_auto"
+                dom_stats["auto_items"].append(_auto_item)
         # C 层输入：词典边界外候选（带电荷未命中，AI 发现新共识错误）
         cands = find_boundary_candidates(new_text)
         if cands:
@@ -1952,7 +2210,13 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
         # ★2026-09-16：`count` 的语义 = **阻断项数**（门控翻译），不能等于全部 items——
         # 否则质量提示项（blocking=False）会被算成"待复核"，把每篇论文都卡住。
         review["total"] = len(review["items"])
-        review["count"] = sum(1 for it in review["items"] if it.get("blocking") is not False)
+        # ★2026-09-16：`count` = **真正还需要人处理的项数**（blocking 且未 auto_resolved 且未落地）
+        # —— AI/第三信号已替人决定、机器兜底、已自动修复的项都不该算（用户："人不参与"）。
+        review["count"] = sum(
+            1 for it in review["items"]
+            if it.get("blocking") is not False
+            and not it.get("auto_resolved")
+            and not (it.get("ai") or {}).get("applied"))
         review["quality_count"] = sum(1 for it in review["items"]
                                       if it.get("blocking") is False)
         review["ai"]["domain"] = {"scan": len(dom_stats.get("scan_items") or []),

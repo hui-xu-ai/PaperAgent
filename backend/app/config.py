@@ -93,6 +93,11 @@ class Settings:
     # AI 批量仲裁）/ single（原单通道）；ai_review=是否 AI 仲裁（默认开，按调用扣费）
     parse_mode: str = os.getenv("PARSE_MODE", "dual").strip()
     ai_review: bool = os.getenv("PARSE_AI_REVIEW", "1").strip() in ("1", "true", "yes", "on")
+    # 2026-09-16（用户要求"尽量降低人的参与或人不参与"）：**第三信号（PDF 自带文本层）
+    # 直接裁决**。决定性第三票直接定 verdict（判 P 落地 P / 判 M 保留 M 并自动撤销规则错改），
+    # 这些项不再进人工复核清单；置 0 退回"只当证据提示"。0 成本（本地文本层，不联网不花 token）。
+    third_signal_decide: bool = os.getenv("PARSE_THIRD_DECIDE", "1").strip() in (
+        "1", "true", "yes", "on")
     # P15 Step5：解析管线开关（PAPERPARSE_PIPELINE）——p14（默认，P14 文本管线：
     # 本地骨架权威边界 + mineru full.md 文本基底 + 拼接修复 + 双通道验证 + 字符仲裁，
     # 替换 P12 成为生产基底）/ p12（回退 P12 双通道块级管线）

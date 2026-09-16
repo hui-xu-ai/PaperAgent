@@ -212,6 +212,15 @@ class EngineService:
         - P15：cancel_check/on_wait 透传（官方云队列等待机制），取消**不降级**。
         """
         ai_review, provider = self._assemble_provider(pdf_path)
+        # 2026-09-16：第三信号裁决开关（settings_service 优先 → env/AppConfig 默认开）。
+        third_decide = bool(getattr(self.settings, "third_signal_decide", True))
+        try:
+            from .container import get_settings_service as _svc3
+            _parse = _svc3().get_parse()
+            if "third_decide" in _parse:
+                third_decide = bool(_parse["third_decide"])
+        except Exception:  # noqa: BLE001 - 容器未初始化（测试/CLI）用 AppConfig
+            pass
         if self.settings.pipeline == "p12":
             logger.warning("PAPERPARSE_PIPELINE=p12 已冻结（P14 为生产基底），回落 p14")
         # ---- P14 文本管线（生产基底）----
@@ -225,6 +234,7 @@ class EngineService:
             out_dir=self.settings.engine_work_root,
             paddle=True,
             ai_review=provider is not None and ai_review,
+            third_decide=third_decide,
             provider=provider,
             run_id=run_id,
             cancel_check=cancel_check,

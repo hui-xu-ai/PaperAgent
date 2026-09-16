@@ -45,6 +45,19 @@ _SYSTEM = (
 )
 
 
+_SYSTEM_FORCE = (
+    "你是学术论文 OCR 质检员。同一位置的 M（mineru）与 P（paddleocr）识别结果**都不完美**，"
+    "但你必须**替人做决定**：综合两侧的识别语义（上下文词义、公式/单位/上下标是否成立、"
+    "拼写与断词是否合理、哪一侧更可能是原文）**选出一个更接近正确的版本**。"
+    "规则：**只能选 mineru 或 paddleocr**（二选一，不允许 both/neither/skip）；"
+    "mineru 的公式若碎片化（如 $1 0 0 ~ ^ { \\circ } \\mathrm { C }$ 字符被空格拆散）"
+    "而 paddleocr 给出可读明文 ⇒ 选 paddleocr。"
+    "严禁输出任何分析、推理或解释文字。只输出一个 JSON 数组，逐项对应输入顺序，"
+    "形如 [{\"id\":0,\"verdict\":\"mineru|paddleocr\","
+    "\"reason\":\"中文≤25字\",\"confidence\":0.0-1.0}]。"
+)
+
+
 @dataclass
 class Arbitration:
     """[全局] 一条仲裁结果"""
@@ -190,7 +203,8 @@ def _parse_verdicts(text: str) -> list[dict]:
 
 
 def arbitrate(items: list[dict], *, provider: OpenAICompatProvider | None = None,
-              batch_size: int = 50, paper: str = "") -> list[Arbitration]:
+              batch_size: int = 50, paper: str = "",
+              force: bool = False) -> list[Arbitration]:
     """[全局] 对矛盾项批量仲裁（P12：一篇文献一批——默认单请求整批上传）
 
     items: dual_report 的 DiffItem（dataclass 或 dict）列表
@@ -198,7 +212,12 @@ def arbitrate(items: list[dict], *, provider: OpenAICompatProvider | None = None
     只仲裁：text_conflict（内容矛盾）+ format_diff 中 latex_valid=False（可疑公式）
     说明：batch_size=50 覆盖绝大多数论文的仲裁点总数（一篇一批）；超长时自动分块
     （仍属一次批量上传，非逐条调用——按调用次数扣费）。
+
+    `force`（★2026-09-16 用户要求"所有复核都由 AI 替人选择"）：用**强制二选一**提示词
+    （`_SYSTEM_FORCE`）——只允许 mineru/paddleocr，不许 both/neither ⇒ 让 AI 借两侧识别
+    语义替人做决定，而不是把"判不了"的项推给人工复核。
     """
+    system = _SYSTEM_FORCE if force else _SYSTEM
     provider = provider or OpenAICompatProvider()
     if not provider.available():
         return [_unresolved(_as_dict(it), i, "AI 仲裁不可用（未配置 DEEPSEEK_API_KEY / SILICONFLOW_API_KEY）")
@@ -240,7 +259,7 @@ def arbitrate(items: list[dict], *, provider: OpenAICompatProvider | None = None
         for attempt in range(2):   # 一次重试（模型偶发截断/少回）
             try:
                 resp = provider.complete([
-                    {"role": "system", "content": _SYSTEM},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": "论文：%s\n%s" % (paper or "-", "\n\n".join(lines))},
                 ], max_tokens=8192)
                 try:
