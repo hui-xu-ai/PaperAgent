@@ -89,6 +89,74 @@ class TestClusterGrowth:
         assert added == {1} and reg == (100.0, 100.0, 340.0, 200.0)
 
 
+class TestMultiPanelMerge:
+    """★2026-09-17 多分图截断修复（ncomms Figure 4/5 曾只剩下半张）。
+
+    背景：`gap_max = 页高×0.12`（782pt 页 = 93.9pt），而图内 panel 间隙实测 139.9pt
+    ⇒ 生长在 panel a 前停住。修复 = 间隙超限时再做一次**保守放宽**：同栏 + 不越出图注
+    栏界 + 高度相当 + 并后不过高。取证见 `.dsh-memory/project/FINDING-FIGURE-TRUNCATION-20260917.md`。
+    """
+
+    def test_merges_panel_across_double_gap_same_column(self):
+        """同栏两块 panel：直连 panel 间距 30 < gap_max，但**从图注前沿到上块** 200 > gap_max(96)
+        → 必须靠放宽分支并成一张（修复前会只剩下面那块）"""
+        prims = [(100.0, 100.0, 300.0, 260.0),     # panel a
+                 (100.0, 290.0, 300.0, 450.0)]     # panel b（panel 间距 30；到图注 200）
+        box, used = _grow_cluster(prims, [], (90.0, 310.0), 460.0, 96.0,
+                                  page_h=800.0)
+        assert box == (100.0, 100.0, 300.0, 450.0), "同栏两块 panel 应并成一张整图"
+        assert used == {0, 1}
+
+    def test_no_merge_when_panel_too_far_from_caption(self):
+        """超过 2.5×gap_max（=240）→ 不当成同一张图（防把上方无关内容吃进来）"""
+        prims = [(100.0, 100.0, 300.0, 260.0),
+                 (100.0, 400.0, 300.0, 560.0)]     # 到图注前沿 310 > 240
+        box, used = _grow_cluster(prims, [], (90.0, 310.0), 570.0, 96.0,
+                                  page_h=800.0)
+        assert box == (100.0, 400.0, 300.0, 560.0) and used == {1}
+
+    def test_relaxation_works_without_page_h(self):
+        """放宽分支**不依赖** page_h（page_h 只管"并后过高"护栏）——旧调用方同样享受修复。
+
+        图注前沿到 panel 顶 150（> gap_max 96，< 2.5×96 = 240）⇒ 放宽并入。
+        """
+        prims = [(100.0, 100.0, 300.0, 260.0),
+                 (100.0, 290.0, 300.0, 450.0)]
+        box, used = _grow_cluster(prims, [], (90.0, 310.0), 600.0, 96.0)
+        assert box == (100.0, 100.0, 300.0, 450.0) and used == {0, 1}
+
+    def test_rejects_beyond_gap_multiplier(self):
+        """超过 2.5×gap_max（=240）→ 不放宽（防把远处无关内容吃进来）"""
+        prims = [(100.0, 100.0, 300.0, 260.0),
+                 (100.0, 290.0, 300.0, 330.0)]     # 图注前沿(600)到其顶(290) = 310 > 240
+        box, used = _grow_cluster(prims, [], (90.0, 310.0), 600.0, 96.0)
+        assert box is None and not used
+
+    def test_no_merge_across_caption_boundary(self):
+        """候选越出图注栏界（如整幅页眉横线）→ 不许并入"""
+        prims = [(43.6, 29.7, 551.7, 29.9),        # 跨栏页眉横线
+                 (100.0, 290.0, 300.0, 450.0)]
+        box, used = _grow_cluster(prims, [], (90.0, 310.0), 600.0, 96.0,
+                                  page_h=800.0)
+        assert box == (100.0, 290.0, 300.0, 450.0) and used == {1}
+
+    def test_no_merge_other_column(self):
+        """左右栏各一张图（x 不重叠）→ 不许并成一张"""
+        prims = [(340.0, 100.0, 520.0, 260.0),     # 右栏图
+                 (100.0, 290.0, 300.0, 450.0)]     # 左栏图
+        box, used = _grow_cluster(prims, [], (90.0, 310.0), 600.0, 96.0,
+                                  page_h=800.0)
+        assert box == (100.0, 290.0, 300.0, 450.0) and used == {1}
+
+    def test_no_merge_when_cluster_too_tall(self):
+        """并后簇高 > 0.6×页高 → 拒绝（防一路吃到页眉）"""
+        prims = [(100.0, 60.0, 300.0, 300.0),      # 高 240
+                 (100.0, 330.0, 300.0, 560.0)]     # 并后 500 > 0.6×800 = 480
+        box, used = _grow_cluster(prims, [], (90.0, 310.0), 600.0, 96.0,
+                                  page_h=800.0)
+        assert box == (100.0, 330.0, 300.0, 560.0) and used == {1}
+
+
 class TestTextAvoidance:
     def test_trim_removes_trailing_body_line(self):
         box = (0.0, 0.0, 100.0, 100.0)
@@ -174,6 +242,26 @@ class TestCaptionDrivenExtraction:
         for f in figs:
             hits = _text_lines_inside(tuple(f.bbox), obs.get(f.page, []), frac=0.5)
             assert not hits, "%s 混入正文行: %s" % (f.fig_id, hits[:2])
+
+    @pytest.mark.skipif(NCOMMS_PDF is None, reason="ncomms PDF 不存在")
+    def test_ncomms_multipanel_figures_merged(self):
+        """★2026-09-17 修复回归：Figure 4/5 的**两块 panel 都要在**。
+
+        修复前实测（用户报障）：F004 只有下半张（h 118.7pt）、F005 只有下半张（116.4pt）；
+        修复后（同栏放宽并簇）：F004 h ≥ 240pt、F005 h ≥ 245pt（真值 255 / 262pt）。
+        若这里回退到 <150pt，说明多分图又被截成半张。
+        """
+        _, figs, _ = self._extract(NCOMMS_PDF, "ncomms")
+        # F004 对应 Figure 5 注（p5 右栏）、F005 对应 Figure 4 注（p5 左栏）——按图注文字定位，不硬编码 id
+        got = {}
+        for f in figs:
+            cap = (f.caption or "")
+            for n in ("4", "5"):
+                if cap.startswith("Figure %s |" % n):
+                    got[n] = round(f.bbox[3] - f.bbox[1], 1)
+        assert set(got) >= {"4", "5"}, "应同时抽出 Figure 4 与 Figure 5（实得 %s）" % sorted(got)
+        assert got["4"] >= 240, "Figure 4 应是两块 panel 的整图（实测 %s pt）" % got["4"]
+        assert got["5"] >= 245, "Figure 5 应是两块 panel 的整图（实测 %s pt）" % got["5"]
 
     @pytest.mark.skipif(PNAS_PDF is None, reason="pnas PDF 不存在")
     def test_body_sentence_not_treated_as_caption(self):

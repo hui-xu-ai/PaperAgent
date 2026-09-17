@@ -340,6 +340,16 @@ _BESIDE_BAND_FRAC = 0.18     # 图注纵向带外扩（× 页高）：骨架常�
 _BESIDE_X_GAP_FRAC = 0.25    # 图注与图体的水平间隙上限（× 页宽）
 _SEED_MIN_AREA_FRAC = 0.004  # "并排种子图元"最小面积（× 页面积），滤行内小位图
 _RECT_GAP_H_FRAC = 0.10      # 区域生长水平间隙上限（× 页宽）
+# ---- ★2026-09-17 多分图截断修复（用户实测：ncomms Figure 4/5 只剩下半张，Figure 1 5 块 panel 只剩 2 块）----
+# 根因：`_CLUSTER_GAP_FRAC` 是**页高**比例（782pt 页 ⇒ 93.9pt），而多分图 panel 间隙可达 139.9pt
+#（页高 17.9%）⇒ 生长在 panel a 前停住，产物只剩离图注最近的那一块（实测 trace 见
+# `.dsh-memory/project/FINDING-FIGURE-TRUNCATION-20260917.md`）。
+# 修法（保守，仅在"间隙 > gap_max"的放宽分支生效，常规并簇行为零改动）：
+_LOOSE_GAP_MUL = 2.5         # 放宽分支的间隙上限 = gap_max × 该系数
+_LOOSE_COL_OVL = 0.55        # 放宽并簇要求**同栏**（x 重叠 ≥ 该比例，相对较窄者）
+_LOOSE_H_RATIO = (0.5, 2.0)  # 放宽并簇要求与当前簇高度相当（倍数区间）
+_LOOSE_X_TOL = 3.0           # 越出图注栏界的容差（pt）
+_LOOSE_MAX_H_FRAC = 0.60     # 簇高上限（× 页高）——防一路吃到页眉
 
 
 def _inter_area(a: tuple, b: tuple) -> float:
@@ -393,13 +403,17 @@ def _collect_graphics(page) -> list[tuple]:
 
 def _grow_cluster(prims: list[tuple], obstacles: list[tuple], span: tuple,
                   start: float, gap_max: float, down: bool = False,
-                  skip: set | None = None):
+                  skip: set | None = None, page_h: float | None = None):
     """[局部] 从 start 沿方向生长图形簇（down=False 向上 / True 向下）。
 
     - 只并入与当前簇水平重叠 ≥15%（相对较窄者）的图元；
     - 与前沿垂直间隙 ≤ gap_max；
     - **前沿与候选图元之间夹着宽文本行（正文/标题/图注）→ 立即停止**：
       这是"图片裁到正文"的根治点（旧的"整栏渲染兜底"会一路吃到页眉）。
+    - ★2026-09-17 多分图修复：间隙 > gap_max 时**还有一次放宽机会**，但必须同时满足
+      「同栏（x 重叠 ≥ `_LOOSE_COL_OVL`）」「不越出图注栏界 `span`（容差 `_LOOSE_X_TOL`）」
+      「与当前簇高度相当」「并后簇高 ≤ `_LOOSE_MAX_H_FRAC`×页高（`page_h` 给出时）」——
+      即"同一张图的上下两个 panel"。缺 `page_h` 时自动跳过高度护栏（保持旧调用可用）。
     skip：已被别的图占用的图元下标。
     返回 (bbox | None, 用掉的图元下标集合)
     """
@@ -424,11 +438,30 @@ def _grow_cluster(prims: list[tuple], obstacles: list[tuple], span: tuple,
                     continue
                 gap = frontier - near
             if gap > gap_max:
-                continue
-            ov = min(x1, p[2]) - max(x0, p[0])
-            wmin = min(x1 - x0, p[2] - p[0])
-            if ov <= 0 or (wmin > 0 and ov / wmin < 0.15):
-                continue
+                # ---- 放宽分支：仅"同一张多分图"才放行（★2026-09-17）----
+                lov = min(x1, p[2]) - max(x0, p[0])
+                lwmin = min(x1 - x0, p[2] - p[0])
+                if lov <= 0 or (lwmin > 0 and lov / lwmin < _LOOSE_COL_OVL):
+                    continue                       # 不同栏（左栏图 vs 右栏图）
+                if p[0] < x0 - _LOOSE_X_TOL or p[2] > x1 + _LOOSE_X_TOL:
+                    continue                       # 越出图注栏界（页眉横线/整幅装饰）
+                if gap > gap_max * _LOOSE_GAP_MUL:
+                    continue                       # 离得太远，不是同一张图
+                if page_h:
+                    ny0 = min(cluster[1], p[1]) if cluster else p[1]
+                    ny1 = max(cluster[3], p[3]) if cluster else p[3]
+                    if (ny1 - ny0) > page_h * _LOOSE_MAX_H_FRAC:
+                        continue                   # 并后过高 → 会吃到页眉
+                if cluster is not None:
+                    ch, ph = cluster[3] - cluster[1], p[3] - p[1]
+                    if ph > 0 and ch > 0 and not (_LOOSE_H_RATIO[0] <= ch / ph
+                                                  <= _LOOSE_H_RATIO[1]):
+                        continue                   # 与当前簇高度悬殊 → 不是同一张图
+            else:
+                ov = min(x1, p[2]) - max(x0, p[0])
+                wmin = min(x1 - x0, p[2] - p[0])
+                if ov <= 0 or (wmin > 0 and ov / wmin < 0.15):
+                    continue
             if best is None or gap < best[0]:
                 best = (gap, i, p)
         if best is None:
@@ -786,7 +819,8 @@ def extract_figures_caption_driven(pdf_path: str | Path, local_skeleton, out_dir
                 start = cap_box[3] if down else cap_box[1]
                 cluster, used = _grow_cluster(
                     prims, c["obstacles"], (cap_box[0], cap_box[2]), start,
-                    gap_max, down=down, skip=used_prims.get(page, set()))
+                    gap_max, down=down, skip=used_prims.get(page, set()),
+                    page_h=ph)
                 if cluster is None:
                     continue
                 rec["cluster"] = [round(v, 1) for v in cluster]
@@ -824,7 +858,7 @@ def extract_figures_caption_driven(pdf_path: str | Path, local_skeleton, out_dir
             cluster, used = _grow_cluster(
                 prims, obstacles, (cap_box[0], cap_box[2]),
                 cap_box[3] if down else cap_box[1], gap_max, down=down,
-                skip=used_prims.get(page, set()))
+                skip=used_prims.get(page, set()), page_h=ph)
             if cluster is None:
                 continue
             rec["cluster"] = [round(v, 1) for v in cluster]
