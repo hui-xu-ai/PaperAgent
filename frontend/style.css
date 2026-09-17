@@ -12,6 +12,9 @@
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
   --primary-soft: #eff6ff;
+  /* 别名：.lit-*（AI检索面板）历史用法，映射到现有 token，随主题动态解析 */
+  --accent: var(--primary);
+  --fg: var(--text);
   --err: #dc2626;
   --warn: #d97706;
   --ok: #16a34a;
