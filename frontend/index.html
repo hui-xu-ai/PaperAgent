@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/vendor/katex/katex.min.css">
   <link rel="stylesheet" href="/vendor/github.min.css">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/css/graph.css">
 </head>
 <body>
 
@@ -37,6 +38,10 @@
       <button id="lit-admin-btn" class="btn btn-sm" title="AI 文献检索：bib 导入 / 元数据补全 / PaperRank / 聚类 / 向量检索 / 主题编译">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         AI检索
+      </button>
+      <button id="lit-graph-btn" class="btn btn-sm" title="文献计量图谱：引用网络可视化（引力布局 / 2D·3D / 过滤 / 节点详情）">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.4"/><circle cx="19" cy="7" r="2.4"/><circle cx="12" cy="18" r="2.4"/><path d="M7.2 6.8 16.7 7M6.4 8.2 10.6 15.9M17.7 9.2 13.3 16.2"/></svg>
+        文献图谱
       </button>
       <button id="settings-btn" class="btn btn-sm">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -1256,11 +1261,181 @@
   </div>
   <div class="offline-bar" id="offline-bar" style="display:none"></div>
 
+  <!-- ══════════ 文献计量图谱（最大化窗口 · 引用网络可视化）══════════ -->
+  <div class="modal-mask" id="lit-graph-modal" style="display:none">
+    <div class="lit-graph-win" role="dialog" aria-modal="true" aria-label="文献计量图谱">
+      <!-- 顶栏 -->
+      <div class="lg-topbar">
+        <span class="lg-title">🕸️ 文献计量图谱</span>
+        <div class="lg-seg" id="lg-mode-seg" title="2D 平面 / 3D 立体显示">
+          <button class="lg-seg-btn active" data-mode="2d">2D</button>
+          <button class="lg-seg-btn" data-mode="3d">3D</button>
+        </div>
+        <div class="lg-topbtns">
+          <button class="btn small" id="lg-layout-toggle" title="暂停/继续引力布局">⏸ 暂停布局</button>
+          <button class="btn small" id="lg-fit" title="缩放适配全图">⛶ 适配</button>
+          <input id="lg-search" class="lg-search" type="text" placeholder="🔎 定位节点（标题/DOI）" autocomplete="off">
+          <button class="btn small" id="lg-side-toggle" title="显示/隐藏过滤与样式面板">🎛 面板</button>
+          <button class="btn small" id="lg-detail-toggle" title="显示/隐藏详情面板">📄 详情</button>
+        </div>
+        <button class="lg-close" id="lit-graph-close" title="关闭">×</button>
+      </div>
+
+      <div class="lg-body">
+        <!-- 左侧：过滤 + 样式 -->
+        <aside class="lg-side" id="lg-side">
+          <div class="lg-side-tabs">
+            <button class="lg-side-tab active" data-panel="filter">过滤</button>
+            <button class="lg-side-tab" data-panel="style">样式</button>
+          </div>
+
+          <!-- 过滤面板 -->
+          <div class="lg-side-panel" id="lg-panel-filter">
+            <div class="lg-field">
+              <label>年份范围 <span class="lg-hint" id="lg-year-range"></span></label>
+              <div class="lg-row2">
+                <input type="number" id="lg-f-year-min" placeholder="最小">
+                <input type="number" id="lg-f-year-max" placeholder="最大">
+              </div>
+            </div>
+            <div class="lg-field">
+              <label>库内被引 ≥ <span class="lg-val" id="lg-f-libcit-val">0</span></label>
+              <input type="range" id="lg-f-libcit" min="0" max="10" value="0" step="1">
+              <div class="lg-hint">AI检索数据库内被引次数（决定节点大小）</div>
+            </div>
+            <div class="lg-field">
+              <label>文献被引 ≥ <span class="lg-val" id="lg-f-cited-val">0</span></label>
+              <input type="range" id="lg-f-cited" min="0" max="100" value="0" step="1">
+              <div class="lg-hint">文献本身被引次数（times_cited）</div>
+            </div>
+            <div class="lg-field">
+              <label>影响因子 ≥ <span class="lg-val" id="lg-f-if-val">0</span></label>
+              <input type="range" id="lg-f-if" min="0" max="50" value="0" step="0.5">
+            </div>
+            <div class="lg-field">
+              <label>JCR 分区</label>
+              <div class="lg-chips" id="lg-f-quartile">
+                <label class="lg-chip"><input type="checkbox" value="Q1" checked>Q1</label>
+                <label class="lg-chip"><input type="checkbox" value="Q2" checked>Q2</label>
+                <label class="lg-chip"><input type="checkbox" value="Q3" checked>Q3</label>
+                <label class="lg-chip"><input type="checkbox" value="Q4" checked>Q4</label>
+              </div>
+            </div>
+            <div class="lg-field">
+              <label class="lg-check"><input type="checkbox" id="lg-f-inkb">仅在知识库中</label>
+              <label class="lg-check"><input type="checkbox" id="lg-f-exref">排除参考文献节点</label>
+            </div>
+            <div class="lg-field">
+              <label>节点上限 <span class="lg-val" id="lg-f-limit-val">2000</span></label>
+              <input type="range" id="lg-f-limit" min="100" max="20000" value="2000" step="100">
+              <div class="lg-hint">按下方排序保留 Top-N（防卡顿）</div>
+            </div>
+            <div class="lg-field">
+              <label>截断排序</label>
+              <select id="lg-f-sort">
+                <option value="library_citations">库内被引</option>
+                <option value="times_cited">文献被引</option>
+                <option value="paper_rank">PaperRank</option>
+                <option value="impact_factor">影响因子</option>
+                <option value="year">年份</option>
+              </select>
+            </div>
+            <div class="lg-actions">
+              <button class="btn small primary" id="lg-apply">应用过滤</button>
+              <button class="btn small" id="lg-reset">重置</button>
+            </div>
+            <div class="lg-msg" id="lg-filter-msg"></div>
+          </div>
+
+          <!-- 样式面板 -->
+          <div class="lg-side-panel" id="lg-panel-style" style="display:none">
+            <div class="lg-field">
+              <label>节点配色（按影响因子）</label>
+              <select id="lg-s-colorscale">
+                <option value="viridis">Viridis（蓝→绿→黄）</option>
+                <option value="inferno">Inferno（黑→红→黄）</option>
+                <option value="cool">Cool（青→品红）</option>
+                <option value="grayscale">灰度</option>
+              </select>
+            </div>
+            <div class="lg-field">
+              <label>节点大小基准 <span class="lg-val" id="lg-s-size-val">1.0</span>×</label>
+              <input type="range" id="lg-s-size" min="0.3" max="3" value="1" step="0.1">
+            </div>
+            <div class="lg-field">
+              <label>标签显示</label>
+              <select id="lg-s-label">
+                <option value="year_cited">年份 + 被引</option>
+                <option value="title">标题（截断）</option>
+                <option value="none">不显示</option>
+              </select>
+            </div>
+            <div class="lg-field">
+              <label class="lg-check"><input type="checkbox" id="lg-s-edges" checked>显示引用边</label>
+              <label class="lg-check"><input type="checkbox" id="lg-s-edgelabel">显示边箭头方向</label>
+            </div>
+            <div class="lg-field">
+              <label>画布背景</label>
+              <select id="lg-s-bg">
+                <option value="dark">深色</option>
+                <option value="light">浅色</option>
+                <option value="grid">网格</option>
+                <option value="radial">径向渐变</option>
+              </select>
+              <div class="lg-row2" style="margin-top:6px">
+                <label class="lg-colorwrap">背景色<input type="color" id="lg-s-bgcolor" value="#0e1116"></label>
+                <label class="lg-colorwrap">边色<input type="color" id="lg-s-edgecolor" value="#3a4150"></label>
+              </div>
+            </div>
+            <div class="lg-field">
+              <label>引力布局参数</label>
+              <div class="lg-hint">scalingRatio（斥力）<span class="lg-val" id="lg-s-scaling-val">1.0</span></div>
+              <input type="range" id="lg-s-scaling" min="0.2" max="5" value="1" step="0.1">
+              <div class="lg-hint">gravity（向心引力）<span class="lg-val" id="lg-s-gravity-val">1.0</span></div>
+              <input type="range" id="lg-s-gravity" min="0" max="5" value="1" step="0.1">
+            </div>
+            <div class="lg-actions">
+              <button class="btn small" id="lg-relayout">重跑布局</button>
+            </div>
+          </div>
+        </aside>
+
+        <!-- 中间：画布 -->
+        <div class="lg-canvas-wrap" id="lg-canvas-wrap">
+          <div id="lg-canvas" class="lg-canvas"></div>
+          <div class="lg-hud" id="lg-hud">节点 0 · 边 0</div>
+          <div class="lg-legend" id="lg-legend"></div>
+          <div class="lg-loading" id="lg-loading" style="display:none"><div class="lg-spinner"></div><span>加载图谱…</span></div>
+        </div>
+
+        <!-- 右侧：节点详情 -->
+        <aside class="lg-detail" id="lg-detail">
+          <div class="lg-detail-head">
+            <span>文献详情</span>
+            <button class="lg-detail-close" id="lg-detail-close" title="关闭详情">×</button>
+          </div>
+          <div class="lg-detail-body" id="lg-detail-body">
+            <p class="lg-hint">点击节点查看详情；长按节点高亮其引用/被引关系。</p>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
   <script src="/vendor/marked.min.js"></script>
   <script src="/vendor/katex/katex.min.js"></script>
   <script src="/vendor/highlight.min.js"></script>
   <script src="/vendor/pdfjs/pdf.min.js"></script>
+  <!-- 图谱可视化库（UMD 全局：graphology / Sigma / forceatlas2 / ForceGraph3D）-->
+  <script src="/vendor/graphology/graphology.umd.min.js"></script>
+  <script src="/vendor/sigma/sigma.min.js"></script>
+  <script src="/vendor/fa2/graphology-layout-forceatlas2.umd.min.js"></script>
+  <script src="/vendor/3d-force-graph/3d-force-graph.min.js"></script>
   <script src="/version.js"></script>
+  <!-- lit-admin.js 必须在 app.js 之前（boot() 同步调用 bindLitAdmin）-->
+  <script src="/js/lit-admin.js"></script>
   <script src="/app.js"></script>
+  <!-- 文献计量图谱（ES 模块，自绑定 #lit-graph-btn，独立于 app.js）-->
+  <script type="module" src="/js/graph/main.js"></script>
 </body>
 </html>
