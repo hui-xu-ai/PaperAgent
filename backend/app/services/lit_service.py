@@ -245,6 +245,29 @@ class LitService:
         from paperlit import api as lit
         return lit.cluster_papers(cluster_id)
 
+    # ---------------------------------------------------------- 文献计量图谱
+
+    def graph_network(self, *, kb_dois: set[str] | None = None, **filters) -> dict:
+        """引用网络导出（服务端过滤）。kb_dois 由路由层注入（标记 in_kb）。"""
+        self._ensure()
+        from paperlit import api as lit
+        return lit.graph_network(kb_dois=kb_dois, **filters)
+
+    def graph_filter_facets(self, *, kb_dois: set[str] | None = None) -> dict:
+        self._ensure()
+        from paperlit import api as lit
+        return lit.graph_filter_facets(kb_dois=kb_dois)
+
+    def graph_neighbors(self, doi: str) -> dict:
+        self._ensure()
+        from paperlit import api as lit
+        return lit.graph_neighbors(doi)
+
+    def graph_node_detail(self, doi: str) -> dict | None:
+        self._ensure()
+        from paperlit import api as lit
+        return lit.graph_node_detail(doi)
+
     # ---------------------------------------------------------- 向量索引
 
     def build_vector_index(self, batch_size: int = 32) -> dict:

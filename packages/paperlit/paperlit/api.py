@@ -33,6 +33,7 @@ __all__ = [
     "preview_cleaning", "execute_cleaning",
     "compute_paper_rank", "top_papers",
     "compute_clusters", "cluster_papers",
+    "graph_network", "graph_filter_facets", "graph_neighbors", "graph_node_detail",
     "build_vector_index", "vector_search", "vector_index_size",
     "search",
     "cached_search", "cache_clear", "cache_stats",
@@ -289,6 +290,54 @@ def cluster_papers(cluster_id: int) -> list[dict]:
     from .graph import get_cluster_papers
     store = _require_store()
     return get_cluster_papers(store, cluster_id)
+
+
+# ---- 文献计量图谱（引用网络可视化）----
+
+def graph_network(*, year_min: int | None = None, year_max: int | None = None,
+                  min_library_citations: int | None = None,
+                  min_times_cited: int | None = None,
+                  min_impact_factor: float | None = None,
+                  quartiles: list[str] | None = None,
+                  cluster: int | None = None,
+                  exclude_references: bool = False,
+                  in_kb_only: bool = False,
+                  sort_by: str = "library_citations",
+                  limit: int = 5000,
+                  kb_dois: set[str] | None = None) -> dict:
+    """导出引用网络（节点 + 边），服务端过滤。见 graph.network.build_network。"""
+    from .graph import build_network
+    store = _require_store()
+    return build_network(
+        store, year_min=year_min, year_max=year_max,
+        min_library_citations=min_library_citations,
+        min_times_cited=min_times_cited,
+        min_impact_factor=min_impact_factor,
+        quartiles=quartiles, cluster=cluster,
+        exclude_references=exclude_references, in_kb_only=in_kb_only,
+        sort_by=sort_by, limit=limit, kb_dois=kb_dois,
+    )
+
+
+def graph_filter_facets(*, kb_dois: set[str] | None = None) -> dict:
+    """过滤器面板分面信息（取值范围 / 计数 / 聚类列表）。"""
+    from .graph import get_filter_facets
+    store = _require_store()
+    return get_filter_facets(store, kb_dois=kb_dois)
+
+
+def graph_neighbors(doi: str) -> dict:
+    """长按高亮用：引用该文献的（citing）与该文献引用的（cited）DOI。"""
+    from .graph import get_neighbors
+    store = _require_store()
+    return get_neighbors(store, doi)
+
+
+def graph_node_detail(doi: str) -> dict | None:
+    """节点详情（标题/摘要/关键词/作者/期刊/年份/IF/分区/被引 + 度数）。"""
+    from .graph import get_node_detail
+    store = _require_store()
+    return get_node_detail(store, doi)
 
 
 # ---- P4: 向量索引 ----

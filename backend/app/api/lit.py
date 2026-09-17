@@ -325,6 +325,86 @@ def graph_cluster(cluster_id: int = Query(..., ge=0)) -> list[dict]:
         _handle_error(e, "graph/cluster")
 
 
+# ============================================================ 文献计量图谱（引用网络可视化）
+
+_KB_DOIS_TTL = 30.0  # 秒：知识库 DOI 集合缓存（图谱标记 in_kb 用，避免每次扫盘）
+_kb_dois_cache: tuple[float, set[str]] | None = None
+
+
+def _get_kb_dois() -> set[str]:
+    """知识库 DOI 集合（短 TTL 缓存）。paperkb 不可用时返回空集（in_kb 全 False）。"""
+    global _kb_dois_cache
+    now = time.monotonic()
+    if _kb_dois_cache and now - _kb_dois_cache[0] < _KB_DOIS_TTL:
+        return _kb_dois_cache[1]
+    try:
+        dois = set(container.get_kbapi().kb_dois())
+    except Exception as e:  # noqa: BLE001 - 图谱不应因 kb 不可用而失败
+        logger.warning("获取知识库 DOI 集合失败（in_kb 标记降级为空）: %s", e)
+        dois = set()
+    _kb_dois_cache = (now, dois)
+    return dois
+
+
+@router.get("/graph/network")
+def graph_network(
+    year_min: int | None = Query(None),
+    year_max: int | None = Query(None),
+    min_library_citations: int | None = Query(None, ge=0),
+    min_times_cited: int | None = Query(None, ge=0),
+    min_impact_factor: float | None = Query(None, ge=0),
+    quartiles: str | None = Query(None, description="逗号分隔，如 Q1,Q2"),
+    cluster: int | None = Query(None),
+    exclude_references: bool = Query(False),
+    in_kb_only: bool = Query(False),
+    sort_by: str = Query("library_citations"),
+    limit: int = Query(5000, ge=1, le=100000),
+) -> dict:
+    """引用网络（节点 + 边），服务端过滤。节点上限 limit（按 sort_by 取 Top-N）。"""
+    try:
+        qlist = [q.strip() for q in quartiles.split(",") if q.strip()] \
+            if quartiles else None
+        return container.get_lit().graph_network(
+            year_min=year_min, year_max=year_max,
+            min_library_citations=min_library_citations,
+            min_times_cited=min_times_cited,
+            min_impact_factor=min_impact_factor,
+            quartiles=qlist, cluster=cluster,
+            exclude_references=exclude_references, in_kb_only=in_kb_only,
+            sort_by=sort_by, limit=limit, kb_dois=_get_kb_dois(),
+        )
+    except Exception as e:
+        _handle_error(e, "graph/network")
+
+
+@router.get("/graph/filters")
+def graph_filters() -> dict:
+    """过滤器面板分面（取值范围 / 计数 / 聚类列表）。"""
+    try:
+        return container.get_lit().graph_filter_facets(kb_dois=_get_kb_dois())
+    except Exception as e:
+        _handle_error(e, "graph/filters")
+
+
+@router.get("/graph/neighbors")
+def graph_neighbors(doi: str = Query(..., description="中心节点 DOI")) -> dict:
+    """长按高亮用：引用该文献的（citing）与该文献引用的（cited）DOI。"""
+    try:
+        return container.get_lit().graph_neighbors(doi)
+    except Exception as e:
+        _handle_error(e, "graph/neighbors")
+
+
+@router.get("/graph/node")
+def graph_node(doi: str = Query(..., description="节点 DOI")) -> dict:
+    """节点详情（标题/摘要/关键词/作者/期刊/年份/IF/分区/被引 + 度数）。"""
+    detail = container.get_lit().graph_node_detail(doi)
+    if detail is None:
+        raise HTTPException(404, f"未找到节点: {doi}")
+    detail["in_kb"] = doi in _get_kb_dois()
+    return detail
+
+
 # ================================================================ 向量索引
 
 @router.post("/vector/build")

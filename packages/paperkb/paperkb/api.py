@@ -1638,6 +1638,25 @@ def compile_backfill() -> dict:
             "failed": failed}
 
 
+def kb_dois() -> set[str]:
+    """知识库（knowledge_base/）中所有文献的 DOI/键集合（轻量，供图谱 in_kb 标记）。
+
+    与 ``stats()`` 不同：不计算编译状态/缺失清单，仅扫描 kb 目录映射键，开销小。
+    无 DOI 的资料（书/学位论文/中文文献）返回其 rid 键。
+    """
+    store = _need_store()
+    kb = store.roots.kb_dir
+    keys: set[str] = set()
+    if kb.exists():
+        for d in kb.iterdir():
+            if not d.is_dir() or d.name.startswith("_") or d.name == ".obsidian":
+                continue
+            key, _kind = dir_to_key(d.name, store)
+            if key:
+                keys.add(key)
+    return keys
+
+
 def stats() -> dict:
     """知识库统计/总览（P4 首页统计面板数据源）。
 
