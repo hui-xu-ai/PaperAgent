@@ -145,6 +145,12 @@ class ChatService:
                         "“知识库里有哪些关于人工肌肉的文献？”")
             self.store.add_message(session_id, "assistant", note, tokens=0)
             return session_id
+        if kind == "lit":
+            note = ("🔍 AI 文献检索模式：可自然语言完成文献检索与管理操作"
+                    "（如“检索钙钛矿太阳能电池”、“补全元数据”、“计算 PaperRank”、"
+                    "“构建向量索引”、“编译主题”），也支持文献库问答。")
+            self.store.add_message(session_id, "assistant", note, tokens=0)
+            return session_id
         paper = self.store.get_paper(paper_id) if paper_id else None
         if paper and paper["status"] == "translated" and paper["doc_json"]:
             summary = self._safe_doc_summary(paper)
@@ -542,6 +548,23 @@ class ChatService:
                 "④ 综述/写作类任务可多轮检索补证据（kb_recall）与修订（可写多次覆盖/新建）。")
         return base
 
+    @staticmethod
+    def _lit_system_prompt() -> str:
+        return ("你是一名 AI 文献检索助手。可调用工具完成文献检索与管理操作：\n"
+                "- 检索：lit_search（三层漏斗检索）、lit_vector_search（向量语义检索）。\n"
+                "- 文献浏览：lit_list_papers（分页列表）、lit_get_paper（按 DOI 查详情）。\n"
+                "- 元数据补全：lit_enrich_one（单篇）、lit_enrich_pending（批量）。\n"
+                "- 引用图谱：lit_compute_rank（PaperRank 计算）、lit_top_papers（排名列表）、"
+                "lit_compute_clusters（共被引聚类）、lit_cluster_papers（聚类文献）。\n"
+                "- 向量索引：lit_build_vector（构建索引）、lit_vector_search（语义检索）。\n"
+                "- 导入：lit_ingest_bib（单文件）、lit_ingest_bib_dir（目录批量）。\n"
+                "- 主题编译：lit_compile_topics（聚合）、lit_list_topics（列表）、lit_get_topic（详情）。\n"
+                "- 缓存：lit_cache_stats（统计）、lit_cache_clear（清空）。\n"
+                "- 状态：lit_status（文献库总览）。\n"
+                "规则：① 涉及库内任何数据必须先调用对应工具获取，**禁止凭记忆编造**；"
+                "② 写操作（导入/补全/计算/构建/编译/清空缓存）必须用户明确意图；"
+                "③ 信息不足先问用户或调用查询工具。")
+
     # ---------------------------------------------------------- 检索分级（T05）
     def _retrieval_mode(self) -> str:
         try:
@@ -635,7 +658,11 @@ class ChatService:
         history = self._fit_history(history)
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         for m in history:
-            messages.append({"role": m["role"], "content": m["content"]})
+            msg = {"role": m["role"], "content": m["content"]}
+            # 思考模式：历史 assistant 消息的 reasoning_content 必须回传 API
+            if m["role"] == "assistant" and m.get("reasoning_content"):
+                msg["reasoning_content"] = m["reasoning_content"]
+            messages.append(msg)
         user_content = question
         if context:
             user_content = f"以下为知识库相关片段（标注来源）：\n{context}\n\n问题：{question}"
@@ -677,7 +704,11 @@ class ChatService:
         history = self._fit_history(history)
         messages: list[dict] = [{"role": "system", "content": system}]
         for m in history:
-            messages.append({"role": m["role"], "content": m["content"]})
+            msg = {"role": m["role"], "content": m["content"]}
+            # 思考模式：历史 assistant 消息的 reasoning_content 必须回传 API
+            if m["role"] == "assistant" and m.get("reasoning_content"):
+                msg["reasoning_content"] = m["reasoning_content"]
+            messages.append(msg)
         messages.append({"role": "user", "content": question})
         tools = tool_specs()
         # 轮次上限按任务类型取 config；综述/写作类可放大（如 12）；召回预算同步放大。
@@ -721,6 +752,69 @@ class ChatService:
         yield {"type": "done", "cached": False, "message_id": mid,
                "tokens": self._estimate_tokens(question) + self._estimate_tokens(answer)}
 
+    def _ask_lit_tools(self, session_id: int, question: str,
+                       effort: str | None = None) -> Iterator[dict]:
+        """AI 文献检索模式：工具调用循环（complete_with_tools → 执行 → 回填 → 再请求）。
+
+        工具调用中间消息不入库（messages 只存最终问答，历史精简）；
+        每轮结果截断回填；轮次上限取自 config。
+        """
+        from .lit_tools import run_tool, tool_specs
+
+        system = self._lit_system_prompt()
+        extra = self._system_extra()
+        if extra:
+            system += "\n\n=== 用户附加指令 ===\n" + extra
+        history = self.store.recent_messages(session_id, self.settings.history_max_messages)
+        history = [m for m in history if m["role"] in ("user", "assistant")]
+        history = self._fit_history(history)
+        messages: list[dict] = [{"role": "system", "content": system}]
+        for m in history:
+            msg = {"role": m["role"], "content": m["content"]}
+            # 思考模式：历史 assistant 消息的 reasoning_content 必须回传 API
+            if m["role"] == "assistant" and m.get("reasoning_content"):
+                msg["reasoning_content"] = m["reasoning_content"]
+            messages.append(msg)
+        messages.append({"role": "user", "content": question})
+        tools = tool_specs()
+        max_rounds = self._manage_round_limit(question)
+        answer = ""
+        for _round in range(max_rounds):
+            try:
+                content, tool_calls = self.chat.complete_with_tools(
+                    f"session:{session_id}", messages, tools)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("AI 检索模式工具循环失败")
+                yield {"type": "error", "message": f"对话失败: {e}"}
+                return
+            if not tool_calls:
+                answer = (content or "").strip()
+                break
+            for tc in tool_calls:
+                name = tc["function"]["name"]
+                try:
+                    args = json.loads(tc["function"]["arguments"] or "{}")
+                except ValueError:
+                    args = {}
+                result = run_tool(name, args)
+                yield {"type": "tool", "name": name, "args": args,
+                       "summary": result["result"][:160], "ok": result["ok"]}
+                messages.append({
+                    "role": "assistant", "content": None,
+                    "tool_calls": [{"id": tc["id"], "type": "function",
+                                    "function": tc["function"]}]})
+                messages.append({"role": "tool", "tool_call_id": tc["id"],
+                                 "content": json.dumps(result, ensure_ascii=False)})
+        else:
+            answer = f"工具调用次数超限（{max_rounds} 轮），请简化操作或分步提问。"
+        if not answer:
+            answer = "（无回答）"
+        mid = self.store.add_message(session_id, "assistant", answer,
+                                     tokens=self._estimate_tokens(answer))
+        yield {"type": "delta", "text": answer}
+        yield {"type": "done", "cached": False, "message_id": mid,
+               "tokens": self._estimate_tokens(question) + self._estimate_tokens(answer)}
+
     # ---------------------------------------------------------- 普通聊天（V11）
     @staticmethod
     def _chat_system_prompt() -> str:
@@ -748,7 +842,11 @@ class ChatService:
         history = self._fit_history(history)
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         for m in history:
-            messages.append({"role": m["role"], "content": m["content"]})
+            msg = {"role": m["role"], "content": m["content"]}
+            # 思考模式：历史 assistant 消息的 reasoning_content 必须回传 API
+            if m["role"] == "assistant" and m.get("reasoning_content"):
+                msg["reasoning_content"] = m["reasoning_content"]
+            messages.append(msg)
         messages.append({"role": "user", "content": question})
 
         self.store.add_message(session_id, "user", question,
@@ -795,6 +893,9 @@ class ChatService:
             return
         if session.get("kind") == "chat":
             yield from self._ask_chat(session_id, question, effort=effort)
+            return
+        if session.get("kind") == "lit":
+            yield from self._ask_lit_tools(session_id, question, effort=effort)
             return
         paper = self.store.get_paper(session["paper_id"])
         if not paper or not paper.get("doc_json"):
@@ -917,7 +1018,11 @@ class ChatService:
         else:
             messages.append({"role": "system", "content": system})
         for m in history:
-            messages.append({"role": m["role"], "content": m["content"]})
+            msg = {"role": m["role"], "content": m["content"]}
+            # 思考模式：历史 assistant 消息的 reasoning_content 必须回传 API
+            if m["role"] == "assistant" and m.get("reasoning_content"):
+                msg["reasoning_content"] = m["reasoning_content"]
+            messages.append(msg)
         user_content = question
         if context:
             user_content = f"{ctx_label}\n{context}\n\n问题：{question}"
@@ -929,9 +1034,11 @@ class ChatService:
         yield {"type": "start", "cached": False, "retrieved": len(retrieved),
                "fulltext_prefix": bool(prefix_full)}
         parts: list[str] = []
+        reasoning_parts: list[str] = []
         try:
             for ev in self._llm_events(f"session:{session_id}", messages, effort):
                 if ev["type"] == "reasoning":
+                    reasoning_parts.append(ev["text"])
                     yield ev
                     continue
                 parts.append(ev["text"])
@@ -941,8 +1048,10 @@ class ChatService:
             yield {"type": "error", "message": f"对话失败: {e}"}
             return
         answer = "".join(parts).strip()
+        reasoning_content = "".join(reasoning_parts).strip() if reasoning_parts else None
         mid = self.store.add_message(session_id, "assistant", answer,
-                                     tokens=self._estimate_tokens(answer))
+                                     tokens=self._estimate_tokens(answer),
+                                     reasoning_content=reasoning_content)
         self.store.set_cached_answer(key, question, answer)
         yield {"type": "done", "cached": False, "message_id": mid,
                "tokens": self._estimate_tokens(question) + self._estimate_tokens(answer)}

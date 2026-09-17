@@ -8,6 +8,10 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
+# pytest 临时产物（conftest 指向 .tmp_test/；包内测试 basetemp=tests/tmp/）
+.tmp_test/
+**/tests/tmp/
+
 # Build
 dist/
 build/

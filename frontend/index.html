@@ -34,6 +34,10 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
         知识库管理
       </button>
+      <button id="lit-admin-btn" class="btn btn-sm" title="AI 文献检索：bib 导入 / 元数据补全 / PaperRank / 聚类 / 向量检索 / 主题编译">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        AI检索
+      </button>
       <button id="settings-btn" class="btn btn-sm">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         设置
@@ -250,6 +254,7 @@
       <div class="menu-item" data-kind="chat">💬 普通聊天 <span class="muted">不绑定论文，日常问答</span></div>
       <div class="menu-item" data-kind="global" data-mode="qa">📚 知识库问答 <span class="muted">精简模式 · 基于编译产物问答（省 token，推荐）</span></div>
       <div class="menu-item" data-kind="global" data-mode="manage">⚙️ 知识库管理 <span class="muted">管理模式 · 问答 + 编译/元数据/期刊等工具调用</span></div>
+      <div class="menu-item" data-kind="lit">🔍 AI检索 <span class="muted">文献检索 · 检索/管理/问答一体化工具调用</span></div>
     </div>
   </div>
 
@@ -769,6 +774,290 @@
               <div id="kba-ov-result" class="kba-result"></div>
             </section>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ AI检索管理中心（paperlit：检索/文献库/图谱/主题/导入/设置）══════════ -->
+  <div class="modal-mask" id="lit-admin-modal" style="display:none">
+    <div class="modal lit-admin-modal">
+      <div class="modal-header">
+        <h3>🔍 AI检索管理 <span id="lit-status" class="muted"></span></h3>
+        <button class="btn small" id="lit-close">✕</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-nav">
+          <button class="stab active" data-stab="import"><span class="snav-ico">📥</span>导入</button>
+          <button class="stab" data-stab="search"><span class="snav-ico">🔎</span>检索</button>
+          <button class="stab" data-stab="papers"><span class="snav-ico">📄</span>文献库</button>
+          <button class="stab" data-stab="graph"><span class="snav-ico">🕸️</span>图谱</button>
+          <button class="stab" data-stab="topics"><span class="snav-ico">🏷️</span>主题</button>
+          <button class="stab" data-stab="settings"><span class="snav-ico">⚙️</span>设置</button>
+        </div>
+        <div class="settings-pages">
+
+          <!-- 检索 -->
+          <div class="stab-page" id="lit-search" style="display:none">
+            <section class="scard wide">
+              <h4>🔎 文献检索（三层漏斗：关键词 → 向量 → 重排）</h4>
+              <div class="form-grid lit-search-row">
+                <label>检索词 <input id="lit-search-q" placeholder="输入关键词，Enter 检索"></label>
+                <button class="btn small primary" id="lit-search-go">检索</button>
+              </div>
+              <div id="lit-search-msg" class="kba-result"></div>
+              <div class="lit-results-toolbar" id="lit-results-toolbar" style="display:none">
+                <span id="lit-results-count" class="muted"></span>
+                <label>排序
+                  <select id="lit-sort-select">
+                    <option value="relevance">相关度</option>
+                    <option value="citations">被引次数</option>
+                    <option value="year">年份</option>
+                    <option value="paper_rank">PaperRank</option>
+                  </select>
+                </label>
+              </div>
+              <div id="lit-search-results" class="lit-results"></div>
+              <div class="form-actions" id="lit-loadmore-wrap" style="display:none">
+                <button class="btn small" id="lit-load-more">加载更多</button>
+              </div>
+            </section>
+            <section class="scard wide">
+              <h4>🗑️ 检索结果缓存</h4>
+              <p class="muted" style="margin:0 0 8px">缓存三层漏斗检索的结果（检索词 → 排序后的文献列表，24 小时有效）。重复检索直接命中，省去重排开销。<b>与 LLM 对话无关</b>，仅服务于本页检索。</p>
+              <div id="lit-cache-info" class="muted"></div>
+              <div class="form-actions">
+                <button class="btn small" id="lit-cache-refresh">刷新缓存统计</button>
+                <button class="btn small" id="lit-cache-clear">清空缓存</button>
+              </div>
+            </section>
+          </div>
+
+          <!-- 文献库 -->
+          <div class="stab-page" id="lit-papers" style="display:none">
+            <section class="scard wide">
+              <h4>📄 文献库 <span id="lit-papers-count" class="muted"></span></h4>
+              <div class="form-actions">
+                <button class="btn small primary" id="lit-papers-refresh">刷新</button>
+                <span class="muted">补全元数据请前往「导入」页 ③</span>
+              </div>
+              <div id="lit-papers-msg" class="kba-result"></div>
+              <table class="kba-table">
+                <thead><tr><th>DOI</th><th>标题</th><th>期刊</th><th>年</th><th>引用</th><th>来源</th><th>操作</th></tr></thead>
+                <tbody id="lit-papers-body"></tbody>
+              </table>
+              <div class="form-actions">
+                <button class="btn small" id="lit-papers-prev">上一页</button>
+                <span id="lit-papers-page" class="muted"></span>
+                <button class="btn small" id="lit-papers-next">下一页</button>
+              </div>
+            </section>
+          </div>
+
+          <!-- 图谱 -->
+          <div class="stab-page" id="lit-graph" style="display:none">
+            <section class="scard wide">
+              <h4>🕸️ PaperRank（引用图谱排名）</h4>
+              <div class="form-actions">
+                <button class="btn small" id="lit-rank-refresh">刷新 Top 20</button>
+                <span class="muted">计算请前往「导入」页 ⑤</span>
+              </div>
+              <div id="lit-rank-msg" class="kba-result"></div>
+              <table class="kba-table">
+                <thead><tr><th>#</th><th>DOI</th><th>标题</th><th>PaperRank</th><th>引用数</th></tr></thead>
+                <tbody id="lit-rank-body"></tbody>
+              </table>
+            </section>
+            <section class="scard wide">
+              <h4>🔗 共被引聚类</h4>
+              <div class="form-actions">
+                <button class="btn small primary" id="lit-cluster-compute">计算聚类</button>
+              </div>
+              <div id="lit-cluster-msg" class="kba-result"></div>
+              <div id="lit-cluster-list" class="lit-clusters"></div>
+            </section>
+          </div>
+
+          <!-- 主题 -->
+          <div class="stab-page" id="lit-topics" style="display:none">
+            <section class="scard wide">
+              <h4>🏷️ 主题编译（按 WoS 类别 / 关键词聚合）</h4>
+              <div class="form-grid lit-search-row">
+                <label>字段
+                  <select id="lit-topic-field">
+                    <option value="wos_categories">WoS 类别</option>
+                    <option value="keywords">关键词</option>
+                    <option value="research_areas">研究领域</option>
+                  </select>
+                </label>
+                <label>最少文献数 <input id="lit-topic-min" type="number" value="2" min="1" style="width:80px"></label>
+                <button class="btn small primary" id="lit-topic-compile">编译主题</button>
+              </div>
+              <div id="lit-topic-msg" class="kba-result"></div>
+              <table class="kba-table">
+                <thead><tr><th>主题</th><th>文献数</th><th>操作</th></tr></thead>
+                <tbody id="lit-topics-body"></tbody>
+              </table>
+              <div id="lit-topic-detail" class="lit-topic-detail"></div>
+            </section>
+          </div>
+
+          <!-- 导入 -->
+          <div class="stab-page" id="lit-import" style="display:block">
+            <section class="scard wide">
+              <h4>⚙️ 文献库状态</h4>
+              <div id="lit-settings-cards" class="lit-stat-cards">
+                <div class="lit-stat-card"><div class="lit-stat-num" id="lit-s-papers">-</div><div class="lit-stat-label">文献总数</div></div>
+                <div class="lit-stat-card"><div class="lit-stat-num" id="lit-s-citations">-</div><div class="lit-stat-label">引用边数</div></div>
+                <div class="lit-stat-card"><div class="lit-stat-num" id="lit-s-unenriched">-</div><div class="lit-stat-label">待补全</div></div>
+                <div class="lit-stat-card"><div class="lit-stat-num" id="lit-s-vectors">-</div><div class="lit-stat-label">向量索引</div></div>
+              </div>
+              <div class="lit-pipeline-status" id="lit-pipeline-status"></div>
+              <div class="form-actions">
+                <button class="btn small" id="lit-settings-refresh">刷新状态</button>
+              </div>
+            </section>
+            <section class="scard wide">
+              <h4>① 📥 导入 bib 文献</h4>
+              <p class="muted" style="margin:0 0 12px">支持 WoS 导出的 .bib 文件。导入时自动补全期刊全称（基于映射表）。<br>
+                <b>增量导入</b>：可直接导入新的 bib 文件，系统按 DOI 自动去重——已存在的文献跳过（导入结果会显示"跳过重复 N 篇"），仅新增文献入库，无需清空重建。</p>
+              <div class="lit-import-methods">
+                <div class="lit-import-method">
+                  <h5>方式一：输入文件路径</h5>
+                  <div class="form-grid">
+                    <input id="lit-bib-path" placeholder="如：用户提供的文献/Bib文件/savedrecs_1.bib">
+                  </div>
+                  <div class="form-actions">
+                    <button class="btn small primary" id="lit-bib-import">导入文件</button>
+                    <button class="btn small" id="lit-bib-dir-import">导入整个目录</button>
+                  </div>
+                </div>
+                <div class="lit-import-divider">或</div>
+                <div class="lit-import-method">
+                  <h5>方式二：上传文件</h5>
+                  <div class="form-grid">
+                    <input type="file" id="lit-bib-file" accept=".bib">
+                  </div>
+                  <div class="form-actions">
+                    <button class="btn small primary" id="lit-bib-upload">上传并导入</button>
+                  </div>
+                </div>
+              </div>
+              <div id="lit-import-msg" class="kba-result"></div>
+            </section>
+            <section class="scard wide">
+              <h4>② 🧹 文献清洗</h4>
+              <p class="muted" style="margin:0 0 12px">基于年份、影响因子、分区、库内引用组合筛选，移除低价值文献（可选步骤）。先"关联期刊指标"再"计算预览"，确认后清洗。</p>
+              <div class="lit-cleaning-rules">
+                <div class="lit-rule-row">
+                  <label><input type="checkbox" id="lit-clean-year-enable"> 年份 ≥</label>
+                  <input type="number" id="lit-clean-year-min" value="2015" min="1900" max="2030" style="width:70px" disabled>
+                </div>
+                <div class="lit-rule-row">
+                  <label><input type="checkbox" id="lit-clean-if-enable"> 影响因子 ≥</label>
+                  <input type="number" id="lit-clean-if-min" value="3.0" min="0" max="100" step="0.5" style="width:70px" disabled>
+                </div>
+                <div class="lit-rule-row">
+                  <label><input type="checkbox" id="lit-clean-quartile-enable"> 分区保留</label>
+                  <select id="lit-clean-quartile-keep" multiple style="width:120px" disabled>
+                    <option value="Q1" selected>Q1</option>
+                    <option value="Q2" selected>Q2</option>
+                    <option value="Q3">Q3</option>
+                    <option value="Q4">Q4</option>
+                  </select>
+                </div>
+                <div class="lit-rule-row">
+                  <label><input type="checkbox" id="lit-clean-citations-enable"> 库内引用 ≥</label>
+                  <input type="number" id="lit-clean-citations-min" value="2" min="0" max="100" style="width:70px" disabled>
+                </div>
+              </div>
+              <div class="form-actions" style="margin-top:12px">
+                <button class="btn small primary" id="lit-clean-preview">计算预览</button>
+                <button class="btn small danger" id="lit-clean-execute" disabled>确认清洗</button>
+                <button class="btn small" id="lit-clean-attach">关联期刊指标</button>
+              </div>
+              <div id="lit-clean-msg" class="kba-result"></div>
+            </section>
+            <section class="scard wide">
+              <h4>③ 🧬 补全元数据</h4>
+              <p class="muted" style="margin:0 0 8px">通过 DOI 从 OpenAlex/Crossref 补全标题、摘要、作者、被引次数等（含参考文献）。补全后可用于清洗第二阶段（按被引次数筛经典文献）。</p>
+              <div class="form-actions">
+                <button class="btn small primary" id="lit-enrich-pending">补全全部待补全元数据</button>
+                <span id="lit-unenriched-count" class="muted"></span>
+              </div>
+              <div id="lit-enrich-msg" class="kba-result"></div>
+            </section>
+            <section class="scard wide">
+              <h4>④ 📖 期刊名规范化</h4>
+              <p class="muted" style="margin:0 0 8px">将缩写期刊名（如 ADV MATER）统一为全称（如 Advanced Materials），经 OpenAlex 解析并写入映射表。已映射的期刊秒级命中，约需 2 分钟。</p>
+              <div class="form-actions">
+                <button class="btn small primary" id="lit-normalize-run">执行规范化</button>
+                <button class="btn small" id="lit-normalize-preview">预览当前期刊</button>
+              </div>
+              <div id="lit-normalize-msg" class="kba-result"></div>
+            </section>
+            <section class="scard wide">
+              <h4>⑤ 🕸️ PaperRank 计算</h4>
+              <p class="muted" style="margin:0 0 8px">基于库内引用图谱计算文献影响力排名。结果可在「图谱」页查看 Top 20 与共被引聚类。</p>
+              <div class="form-actions">
+                <button class="btn small primary" id="lit-rank-compute">计算 PaperRank</button>
+              </div>
+              <div id="lit-import-rank-msg" class="kba-result"></div>
+            </section>
+            <section class="scard wide">
+              <h4>⑥ 🔧 向量索引</h4>
+              <p class="muted" style="margin:0 0 8px">用 bge-m3 为文献构建向量索引，供三层漏斗检索的语义召回。新增文献后需重建以纳入索引。</p>
+              <div class="form-actions">
+                <button class="btn small primary" id="lit-vector-build">构建向量索引 (bge-m3)</button>
+              </div>
+              <div id="lit-vector-msg" class="kba-result"></div>
+            </section>
+            <section class="scard wide">
+              <h4>🚀 一键全流程</h4>
+              <p class="muted" style="margin:0 0 8px">按顺序自动执行：元数据补全 → 期刊名规范化 → PaperRank → 向量索引。<br>
+                <b>主题编译</b>耗 token，已剥离为手动操作，请在「主题」页按需触发。</p>
+              <div class="form-actions">
+                <button class="btn small primary" id="lit-pipeline-run">一键执行</button>
+              </div>
+              <div id="lit-pipeline-progress" class="kba-result"></div>
+            </section>
+          </div>
+
+          <!-- 设置 -->
+          <div class="stab-page" id="lit-settings" style="display:none">
+            <section class="scard wide">
+              <h4>🔑 API 配置</h4>
+              <p class="muted" style="margin:0 0 8px">嵌入与重排序模型需要 SiliconFlow API key（<a href="https://cloud.siliconflow.cn/" target="_blank" rel="noopener">申请地址</a>，支持 bge-m3/bge-reranker）</p>
+              <div class="lit-config-form">
+                <label>Embedding API Key
+                  <div class="lit-key-input-wrap">
+                    <input type="password" id="lit-emb-key" placeholder="sk-..." autocomplete="off">
+                    <button type="button" class="lit-key-toggle" data-target="lit-emb-key" title="显示/隐藏">👁</button>
+                  </div>
+                  <span class="muted" id="lit-emb-key-status"></span>
+                </label>
+                <label>Embedding 模型
+                  <input type="text" id="lit-emb-model" value="BAAI/bge-m3" placeholder="BAAI/bge-m3">
+                </label>
+                <label>Reranker API Key
+                  <div class="lit-key-input-wrap">
+                    <input type="password" id="lit-rer-key" placeholder="sk-..." autocomplete="off">
+                    <button type="button" class="lit-key-toggle" data-target="lit-rer-key" title="显示/隐藏">👁</button>
+                  </div>
+                  <span class="muted" id="lit-rer-key-status"></span>
+                </label>
+                <label>Reranker 模型
+                  <input type="text" id="lit-rer-model" value="BAAI/bge-reranker-v2-m3" placeholder="BAAI/bge-reranker-v2-m3">
+                </label>
+                <div class="form-actions">
+                  <button class="btn small" id="lit-config-load">加载配置</button>
+                  <button class="btn small primary" id="lit-config-save">保存配置</button>
+                </div>
+                <div id="lit-config-msg" class="kba-result"></div>
+              </div>
+            </section>
+          </div>
+
         </div>
       </div>
     </div>

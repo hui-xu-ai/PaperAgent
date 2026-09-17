@@ -25,6 +25,8 @@ from .store import Store
 from .task_service import TaskManager
 from .usage_service import UsageService
 from paperkb.config import Roots
+from .lit_service import LitService
+from paperlit.config import Roots as LitRoots, LitSettings
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,7 @@ _review: ReviewService | None = None
 _roots: Roots | None = None
 _kbapi: KbMetaService | None = None
 _compile_worker = None
+_lit: LitService | None = None
 _llm_ready: bool = False
 
 
@@ -62,6 +65,25 @@ def _build_roots() -> Roots:
     )
 
 
+def _build_lit_roots() -> LitRoots:
+    """paperlit 数据根路径（与 paperkb 共享 data_dir，独立 literature/ 子目录）。"""
+    return LitRoots(
+        data_dir=APP_DATA_DIR / "data",
+        lit_dir=APP_DATA_DIR / "data" / "literature",
+    )
+
+
+def _build_lit_settings() -> LitSettings:
+    """paperlit 行为设置（SiliconFlow API key 从环境变量注入）。"""
+    import os
+    s = LitSettings()
+    sf_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
+    if sf_key:
+        s.embedding_api_key = sf_key
+        s.reranker_api_key = sf_key
+    return s
+
+
 def init_container(settings: Settings) -> None:
     """应用启动时调用一次（V01 起内置 Token 防护红线：event_bus + TokenGuard）。
 
@@ -70,7 +92,7 @@ def init_container(settings: Settings) -> None:
     V05：plugin_registry 订阅事件总线驱动插件钩子。
     """
     global _settings, _store, _engine, _tasks, _chat, _event_bus, _guard, _usage, _llm_ready
-    global _settings_svc, _kb, _plugins, _review, _compile_worker, _roots, _kbapi, _assets
+    global _settings_svc, _kb, _plugins, _review, _compile_worker, _roots, _kbapi, _assets, _lit
     _settings = settings
     # R3：paperkb 根路径与薄访问器上提容器（单一注入点；懒初始化）。
     _roots = _build_roots()
@@ -109,6 +131,8 @@ def init_container(settings: Settings) -> None:
         logger.error("数据迁移失败（迁移内部已回滚，请查看日志与 data/_backups/）: %s", e)
         raise
     _kbapi = KbMetaService(_roots)
+    # paperlit 文献检索库（P1-P7）：独立 SQLite + FAISS 向量索引
+    _lit = LitService(_build_lit_roots(), _build_lit_settings())
     _event_bus = EventBus()
     _store = Store(settings.db_path, chat_db=_roots.chat_db, biblio_db=_roots.biblio_db)
     try:      # 建表后刷新清单 dbs 状态（ensure_manifest 早于建库 → 那时必然全 false）
@@ -120,6 +144,8 @@ def init_container(settings: Settings) -> None:
     _usage = UsageService(_store, event_bus=_event_bus)
     _guard = TokenGuard(event_bus=_event_bus, usage_service=_usage)
     _settings_svc = SettingsService(_store, app_settings=settings, env_sync=True)
+    # paperlit 设置注入（API key 从 SQLite 配置读取，.env 兜底）
+    _lit._settings_service = _settings_svc
     # T3：单价按 (provider_id, model) 解析（settings_service 是 DB 来源，保存后即时生效）
     _usage.set_price_resolver(
         lambda provider_id, model: _settings_svc.get_prices_for(provider_id, model))
@@ -288,6 +314,12 @@ def get_kbapi() -> KbMetaService:
     """paperkb 门面薄访问器（R3：backend 侧唯一注入点，替代逐方法透传）。"""
     assert _kbapi is not None, "容器未初始化"
     return _kbapi
+
+
+def get_lit() -> LitService:
+    """paperlit 门面薄访问器（backend 侧唯一注入点）。"""
+    assert _lit is not None, "容器未初始化"
+    return _lit
 
 
 def get_plugin_registry() -> PluginRegistry:

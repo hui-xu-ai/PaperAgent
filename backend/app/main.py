@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import chat, diary, events, kb, kbmeta, library, papers, plugins, review, tasks, usage
+from .api import chat, diary, events, kb, kbmeta, library, lit, papers, plugins, review, tasks, usage
 from .api import settings as settings_api
 from .config import (APP_DATA_DIR, APP_VERSION, FRONTEND_DIR, get_settings,
                      live_mineru_key, mineru_ready, resolve_live_mineru_parser)
@@ -205,6 +205,7 @@ app.include_router(usage.router)
 app.include_router(settings_api.router)
 app.include_router(kb.router)
 app.include_router(kbmeta.router)
+app.include_router(lit.router)
 app.include_router(library.router)
 app.include_router(review.router)
 app.include_router(plugins.router)

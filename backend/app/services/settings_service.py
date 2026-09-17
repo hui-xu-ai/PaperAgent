@@ -102,6 +102,12 @@ REASONING_EFFORT_LEVELS = ("auto", "none", "minimal", "low", "medium", "high")
 COMPILE_EFFORTS = REASONING_EFFORT_LEVELS
 TRANSLATE_EFFORTS = REASONING_EFFORT_LEVELS
 
+# AI检索（paperlit）配置
+KEY_LIT_EMBEDDING_API_KEY = "lit_embedding_api_key"
+KEY_LIT_RERANKER_API_KEY = "lit_reranker_api_key"
+KEY_LIT_EMBEDDING_MODEL = "lit_embedding_model"
+KEY_LIT_RERANKER_MODEL = "lit_reranker_model"
+
 
 def _mask(key: str) -> str:
     if not key:
@@ -911,6 +917,51 @@ class SettingsService:
     def save_custom_css(self, css: str) -> None:
         self.store.set_setting(self.KEY_CUSTOM_CSS, css)
 
+    # ---------------------------------------------------------- AI检索配置（paperlit）
+    def get_lit_config(self) -> dict:
+        """获取 AI检索 配置（API key 脱敏，从 .env 读取）。"""
+        emb_key = os.environ.get("LIT_EMBEDDING_API_KEY", "")
+        rer_key = os.environ.get("LIT_RERANKER_API_KEY", "")
+        # 兜底：SILICONFLOW_API_KEY
+        if not emb_key:
+            emb_key = os.environ.get("SILICONFLOW_API_KEY", "")
+        if not rer_key:
+            rer_key = os.environ.get("SILICONFLOW_API_KEY", "")
+        return {
+            "embedding_api_key": _mask(emb_key) if emb_key else "",
+            "reranker_api_key": _mask(rer_key) if rer_key else "",
+            "embedding_model": os.environ.get("LIT_EMBEDDING_MODEL", "BAAI/bge-m3"),
+            "reranker_model": os.environ.get("LIT_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
+            "has_embedding_key": bool(emb_key),
+            "has_reranker_key": bool(rer_key),
+        }
+
+    def save_lit_config(self, embedding_api_key: str = None, reranker_api_key: str = None,
+                        embedding_model: str = None, reranker_model: str = None) -> dict:
+        """保存 AI检索 配置到 .env（空字符串=清空，None=不修改）。返回回读结果。"""
+        env_vals: dict[str, str] = {}
+        if embedding_api_key is not None:
+            env_vals["LIT_EMBEDDING_API_KEY"] = embedding_api_key.strip()
+        if reranker_api_key is not None:
+            env_vals["LIT_RERANKER_API_KEY"] = reranker_api_key.strip()
+        if embedding_model is not None:
+            env_vals["LIT_EMBEDDING_MODEL"] = embedding_model.strip() or "BAAI/bge-m3"
+        if reranker_model is not None:
+            env_vals["LIT_RERANKER_MODEL"] = reranker_model.strip() or "BAAI/bge-reranker-v2-m3"
+        if env_vals:
+            self._write_env_keys(env_vals)
+        return self._readback_env_keys(env_vals) if env_vals else {"ok": True, "mismatch": []}
+
+    def get_lit_api_keys(self) -> tuple[str, str]:
+        """获取 AI检索 API key（明文，内部使用）。返回 (embedding_key, reranker_key)。"""
+        emb_key = os.environ.get("LIT_EMBEDDING_API_KEY", "")
+        rer_key = os.environ.get("LIT_RERANKER_API_KEY", "")
+        if not emb_key:
+            emb_key = os.environ.get("SILICONFLOW_API_KEY", "")
+        if not rer_key:
+            rer_key = os.environ.get("SILICONFLOW_API_KEY", "")
+        return (emb_key, rer_key)
+
     # ---------------------------------------------------------- 汇总
     def get_all(self) -> dict:
         return {
@@ -930,4 +981,5 @@ class SettingsService:
             "system_prompt_extra": self.get_system_prompt_extra(),
             "custom_css": self.get_custom_css(),
             "md_template": self.get_md_template(),
+            "lit_config": self.get_lit_config(),
         }

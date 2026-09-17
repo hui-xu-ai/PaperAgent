@@ -122,6 +122,7 @@ class Store:
                 session_id INTEGER NOT NULL REFERENCES sessions(id),
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                reasoning_content TEXT,
                 tokens INTEGER DEFAULT 0,
                 created_at TEXT
             );
@@ -344,11 +345,11 @@ class Store:
 
     # ---------------------------------------------------------- messages
     def add_message(self, session_id: int, role: str, content: str,
-                    tokens: int = 0) -> int:
+                    tokens: int = 0, reasoning_content: str | None = None) -> int:
         with self._lock, self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO messages(session_id, role, content, tokens, created_at) VALUES(?,?,?,?,?)",
-                (session_id, role, content, tokens, _now()))
+                "INSERT INTO messages(session_id, role, content, reasoning_content, tokens, created_at) VALUES(?,?,?,?,?,?)",
+                (session_id, role, content, reasoning_content, tokens, _now()))
             return int(cur.lastrowid)
 
     def recent_messages(self, session_id: int, limit: int = 20) -> list[dict]:

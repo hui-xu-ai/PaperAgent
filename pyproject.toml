@@ -47,7 +47,8 @@ namespaces = false
 [tool.pytest.ini_options]
 # 三包全跑（旧配置只跑 backend/tests → 519 个解析/知识库测试默认不执行，
 # 改善无法证明；2026-09-12 起默认全量，基线见 README/SHORT-TERM）。
-testpaths = ["backend/tests", "packages/paperkb/tests", "packages/paperparse/tests"]
+testpaths = ["backend/tests", "packages/paperkb/tests", "packages/paperparse/tests", "packages/paperlit/tests"]
 # CI/干净环境：即使没装 editable 根包，测试也能 import app（双保险）
-pythonpath = ["backend", "packages/paperparse", "packages/paperkb"]
+pythonpath = ["backend", "packages/paperparse", "packages/paperkb", "packages/paperlit"]
 addopts = "-q"
+cache_dir = ".tmp_test/.pytest_cache"

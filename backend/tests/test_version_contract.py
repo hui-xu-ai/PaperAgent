@@ -30,8 +30,12 @@ CONNECT_ALLOW = {
     "packages/paperkb/paperkb/journals.py",
     "packages/paperkb/paperkb/manifest.py",
     "packages/paperkb/paperkb/backup.py",
+    "packages/paperlit/paperlit/db.py",
+    # paperlit 的 journals.db 访问点（JournalMapper=journal_mappings 表；cleaning=读 jcr）
+    "packages/paperlit/paperlit/ingest/journal_mapper.py",
+    "packages/paperlit/paperlit/ingest/cleaning.py",
 }
-CONNECT_ALLOW_PREFIX = ("packages/paperkb/paperkb/migrations/",)
+CONNECT_ALLOW_PREFIX = ("packages/paperkb/paperkb/migrations/", "packages/paperlit/paperlit/migrations/")
 SCAN_EXCLUDE = ("/tests/", "/archive/", "/work/", ".venv")
 
 

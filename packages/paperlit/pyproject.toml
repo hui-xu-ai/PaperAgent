@@ -1,0 +1,23 @@
+# paperlit — 文献 AI 检索包（独立算法包，pip install -e）
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paperlit"
+version = "0.1.0"
+description = "PaperAgent 文献 AI 检索包：外部文献发现、引用图谱、向量检索、AI 检索对话"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+vector = ["faiss-cpu>=1.7", "httpx>=0.27"]
+graph = ["igraph>=0.11"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["paperlit*"]

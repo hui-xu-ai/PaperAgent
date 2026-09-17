@@ -61,8 +61,8 @@ def create_session(paper_id: int) -> SessionOut:
 def create_any_session(req: CreateSessionRequest) -> SessionOut:
     """通用会话创建（V07/V11/2026-08-27）：kind=global 知识库（mode=qa|manage）/
     chat 普通聊天 / paper 文献。"""
-    if req.kind not in ("paper", "global", "chat"):
-        raise HTTPException(400, "kind 仅支持 paper/global/chat")
+    if req.kind not in ("paper", "global", "chat", "lit"):
+        raise HTTPException(400, "kind 仅支持 paper/global/chat/lit")
     if req.kind == "paper" and not req.paper_id:
         raise HTTPException(400, "文献会话需要 paper_id")
     if req.kind == "global" and req.mode not in ("", "qa", "manage"):

@@ -28,7 +28,7 @@ DIST_ALIAS = {
     "webview": "pywebview", "pymupdf": "pymupdf",
 }
 # 通过 `pip install -e packages/<x>` 就地安装的兄弟包（不在 pyproject 的 dependencies 里）
-SIBLINGS = {"paperparse", "paperkb"}
+SIBLINGS = {"paperparse", "paperkb", "paperlit"}
 
 CASES = (
     ("packages/paperparse", ROOT / "packages/paperparse", ROOT / "packages/paperparse/pyproject.toml"),
