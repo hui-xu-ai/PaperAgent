@@ -77,6 +77,10 @@ def test_gate_hooks_waiting_review(env, monkeypatch):
                        parse_source="dual")
 
     class FakeEngine:
+        def resolve_output(self, pdf_path, doc_json=None):   # ★2026-09-18 新增调用点
+            from pathlib import Path as _P
+            return str(_P(pdf_path).parent), _P(pdf_path).stem
+
         def parse_pdf(self, pdf_path, **kw):   # P15：接收 cancel_check/on_wait
             return {"document_json": str(env["tmp"] / "doc.json"),
                     "parse_source": "dual", "warnings": []}

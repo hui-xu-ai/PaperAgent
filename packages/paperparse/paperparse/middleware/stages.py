@@ -489,12 +489,34 @@ class StageBuild(Stage):
         target = output_dir_name(ctx.metadata.doi, ctx.pdf_path)
         if ctx.paper_dir.name != target:
             new_dir = ctx.paper_dir.parent / target
-            if not new_dir.exists() and new_dir.parent.exists():
-                ctx.paper_dir.rename(new_dir)
-                ctx.paper_dir = new_dir
-                ctx.images_dir = ctx.paper_dir / "images"
-                ctx.intermediate = ctx.paper_dir / "intermediate"
-                ctx.auditor.relocate(ctx.paper_dir / "audit" / ctx.auditor.run_id)
+            if new_dir.parent.exists():
+                if new_dir.exists():
+                    # ★2026-09-18 修（用户实测：GUI「重试」把同一篇写出**两个目录**）：
+                    # 暂用名按**输入文件名**算（`orchestrator.py:67`），重试输入是
+                    # `library/<RID>/source.pdf` ⇒ 暂用名 `source`。旧逻辑 `if not new_dir.exists()`
+                    # 在正式目录已存在时**直接跳过重命名** ⇒ 新产物留在 `source/`，
+                    # 用户看到的 `library/<RID>/` 仍是旧图。
+                    # 改为**合并归位**（`dirs_exist_ok=True`）：同名文件被本次结果覆盖，
+                    # 逐条拷贝不动原目录的其它内容——不用"先删后移"，避免审计/中间件写到已删目录。
+                    import shutil as _shutil
+                    tmp_dir = ctx.paper_dir
+                    for _p in list(tmp_dir.iterdir()):
+                        _dst = new_dir / _p.name
+                        if _p.is_dir():
+                            _shutil.copytree(str(_p), str(_dst), dirs_exist_ok=True)
+                        else:
+                            _shutil.copy2(str(_p), str(_dst))
+                    ctx.paper_dir = new_dir
+                    ctx.images_dir = new_dir / "images"
+                    ctx.intermediate = new_dir / "intermediate"
+                    ctx.auditor.relocate(new_dir / "audit" / ctx.auditor.run_id)
+                    _shutil.rmtree(tmp_dir, ignore_errors=True)   # 移完再清暂用目录
+                else:
+                    ctx.paper_dir.rename(new_dir)
+                    ctx.paper_dir = new_dir
+                    ctx.images_dir = ctx.paper_dir / "images"
+                    ctx.intermediate = ctx.paper_dir / "intermediate"
+                    ctx.auditor.relocate(ctx.paper_dir / "audit" / ctx.auditor.run_id)
 
     def save(self, ctx: StageContext) -> None:
         pass  # document.json 已在 run 中落盘

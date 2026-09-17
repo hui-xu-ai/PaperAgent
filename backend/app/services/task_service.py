@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import logging
 import queue
+import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from ..config import Settings
@@ -216,6 +218,31 @@ class TaskManager:
             return cand
         return ""
 
+    @staticmethod
+    def _stage_input_with_canonical_name(settings: Settings, pdf_path: str,
+                                         canonical_name: str) -> str:
+        """★2026-09-18：把输入 PDF 暂存成**规范篇目录同名**，使产物精确落位。
+
+        为什么：`process_pdf_v2` 的出图目录 = `out_dir/<输入PDF文件名>/`（`p14_pipeline.py:1961`），
+        而 `_resolve_out_dir` 返回的是 `library/`。重试的输入是 `library/<RID>/source.pdf`
+        ⇒ 目录会算成 `library/source/`，同一篇出现两个目录（用户实测：看到的仍是旧图）。
+        把文件按规范名（`<RID>.pdf`）暂存后，`library/` + `<RID>` 正好 = 规范篇目录。
+        暂存件走 `engine_input_root`（`work/upload`，属"随时可清"区）。名字已一致时原样返回。
+        """
+        try:
+            src = Path(pdf_path)
+            if not src.is_file() or not canonical_name or src.stem == canonical_name:
+                return pdf_path
+            run_dir = Path(settings.engine_input_root) / ("retry_" + uuid.uuid4().hex[:12])
+            run_dir.mkdir(parents=True, exist_ok=True)
+            staged = run_dir / (canonical_name + ".pdf")
+            shutil.copy2(src, staged)
+            logger.info("重试输入已按规范名暂存: %s → %s", src.name, staged)
+            return str(staged)
+        except Exception as e:  # noqa: BLE001 - 暂存失败退回原路径（行为与修复前一致）
+            logger.warning("重试输入暂存失败（退回原路径）: %s", e)
+            return pdf_path
+
     def _run_pipeline(self, paper_id: int) -> None:
         paper = self.store.get_paper(paper_id)
         if not paper:
@@ -244,12 +271,22 @@ class TaskManager:
             self._set_task(paper_id, "running", 20, STAGES[1][1])
             # P15：取消/等待回调——官方云队列繁忙时等待重试，状态实时可见，用户可取消
             self._cancel_evt.clear()
+            # ★2026-09-18：输入按规范篇目录名暂存 ⇒ 产物精确落回 `library/<篇目录>/`
+            # （否则重试会按 `source.pdf` 另建 `library/source/`，用户看到的仍是旧产物）
+            _doc_json = str(paper.get("doc_json") or "") or None
+            # ★2026-09-18：产物根 + 规范篇目录名**同源取出**，再把输入按规范名暂存
+            # ⇒ 落点精确等于原篇目录（否则重试会另建 library/source/，用户看到的仍是旧产物）
+            _out_root, _canon = self.engine.resolve_output(pdf_path, _doc_json)
+            pdf_path = self._stage_input_with_canonical_name(self.settings, pdf_path, _canon)
             result = self.engine.parse_pdf(
                 pdf_path,
                 cancel_check=lambda: self._cancel_evt.is_set(),
                 on_wait=lambda sec, at: self._set_task(
                     paper_id, "running", 20,
-                    f"官方云队列繁忙，等待重试中（已等待 {sec}s，第 {at} 次，可取消）"))
+                    f"官方云队列繁忙，等待重试中（已等待 {sec}s，第 {at} 次，可取消）"),
+                # ★2026-09-18：带上既有 doc_json —— 引擎据此把产物写回**原篇目录**
+                # （否则重试会按输入文件名另建 `library/source/`，用户看到的仍是旧产物）
+                doc_json=str(paper.get("doc_json") or "") or None)
         except TaskCancelled as e:
             self._fail(paper_id, f"已取消：{e}")
             self.store.update_paper(paper_id, status="failed",

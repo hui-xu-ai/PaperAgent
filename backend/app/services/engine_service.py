@@ -128,7 +128,8 @@ class EngineService:
 
     def parse_pdf(self, pdf_path: str | Path, run_id: str | None = None,
                   parser: str | None = None,
-                  cancel_check=None, on_wait=None) -> dict:
+                  cancel_check=None, on_wait=None,
+                  doc_json: str | None = None) -> dict:
         """精准解析（parse_only=True）：document.json + en.md + images，0 AI token。
 
         **前置硬门禁（批2）**：未配置 MinerU Key（`.env`/os.environ 实时判定）→ 直接抛
@@ -155,7 +156,8 @@ class EngineService:
             try:
                 _res = self._parse_pdf_dual(pdf_path, run_id,
                                             cancel_check=cancel_check,
-                                            on_wait=on_wait)
+                                            on_wait=on_wait,
+                                            doc_json=doc_json)
                 # ★2026-09-17 L2/L3：**成功路径也要落盘**审计/告警（此前只在降级分支落盘，
                 # 于是"双通道成功但审计有可疑"这类信息拿不到）。
                 self._record_parse_warnings(_res)
@@ -242,8 +244,50 @@ class EngineService:
         except Exception:  # noqa: BLE001 - 设置服务不可用时按 env 默认
             return self.settings.parse_mode == "dual"
 
+    def resolve_output(self, pdf_path: str, doc_json: str | None = None) -> tuple[str, str]:
+        """★2026-09-18：解析产物该写进哪 —— 返回 `(out_root, canonical_name)`。
+
+        为什么需要（用户实测：GUI「重试」把同一篇写成两个目录）：
+        `process_pdf_v2` 出图目录 = `out_dir/<输入PDF文件名>/`（`p14_pipeline.py:1961`）。
+        重试的输入是 `library/<RID>/source.pdf` ⇒ 目录算成 `library/source/`，
+        用户原来看的 `library/<RID>/` 仍是旧图（**看到的等于没修**）。
+        约定：`out_root` 传 `library/`，并把输入文件名规范成 `canonical_name`（= 篇目录名），
+        则落点 `library/<canonical_name>` 精确等于原篇目录（不再分叉/不多一层）。
+
+        定位顺序（**两者同源，避免"目录对了、名字没对"的漂移**）：
+          1. `doc_json` 指向仍存在的 document.json → 篇目录 = 它所在目录；
+          2. 否则按**同篇 md5**（`*/source.pdf` 内容一致）找既有篇目录；
+          3. 都没有 → 篇目录名取输入 `stem`（= 旧行为，首次导入不变）。
+        """
+        root = Path(self.settings.engine_work_root)
+        name = ""
+        if doc_json:
+            d = Path(doc_json)
+            if d.is_file():
+                name = d.parent.name
+        if not name:
+            try:
+                import hashlib
+
+                cur = hashlib.md5(Path(pdf_path).read_bytes()).hexdigest()
+                for cand in root.glob("*/source.pdf"):
+                    try:
+                        if hashlib.md5(cand.read_bytes()).hexdigest() == cur:
+                            name = cand.parent.name
+                            break
+                    except OSError:
+                        continue
+            except Exception as e:  # noqa: BLE001 - 探测失败退回 stem（旧行为）
+                logger.warning("产物目录按 md5 探测失败（退回 stem）: %s", e)
+        return str(root), (name or Path(pdf_path).stem)
+
+    def _resolve_out_dir(self, pdf_path: str, doc_json: str | None = None) -> str:
+        """兼容旧调用：只取 `resolve_output` 的输出根（见其文档）。"""
+        return self.resolve_output(pdf_path, doc_json)[0]
+
     def _parse_pdf_dual(self, pdf_path: str, run_id: str | None = None,
-                        cancel_check=None, on_wait=None) -> dict:
+                        cancel_check=None, on_wait=None,
+                        doc_json: str | None = None) -> dict:
         """P15 Step5：parse_mode=dual 下的管线调度。
 
         **2026-08-26 冻结 P12**：pipeline=p12 回退路径（process_pdf_dual）已移除
@@ -288,9 +332,10 @@ class EngineService:
             logger.warning("PaddleOCR 缓存准备失败（回落直连 API）: %s", e)
         result = self._api.process_pdf_v2(
             pdf_path, md_path=str(md_path),
-            # ★ 统一规范库（T01）：所有解析/翻译/导出产物就地存放
-            #   library/<stem>/（engine_work_root）——P12 同布局，不得外置
-            out_dir=self.settings.engine_work_root,
+            # ★ 统一规范库（T01）：产物就地存放 library/<篇目录>/；
+            # ★2026-09-18：篇目录由 `_resolve_out_dir` 决定（已有 document.json 原地重写 /
+            #   同篇 md5 命中既有目录 / 退回 stem）——修"重试把同一篇写成两个目录"
+            out_dir=self._resolve_out_dir(pdf_path, doc_json),
             paddle=True,
             paddle_blocks_path=paddle_blocks_path,
             ai_review=provider is not None and ai_review,
