@@ -55,6 +55,9 @@ CREATE INDEX IF NOT EXISTS idx_papers_journal ON papers(journal);
 CREATE INDEX IF NOT EXISTS idx_papers_is_ref ON papers(is_reference);
 CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source_main);
 CREATE INDEX IF NOT EXISTS idx_papers_rank ON papers(paper_rank DESC);
+CREATE INDEX IF NOT EXISTS idx_papers_libcit ON papers(library_citations DESC);
+CREATE INDEX IF NOT EXISTS idx_papers_if ON papers(impact_factor DESC);
+CREATE INDEX IF NOT EXISTS idx_papers_cluster ON papers(cocitation_cluster);
 
 CREATE TABLE IF NOT EXISTS citations (
     citing_doi TEXT NOT NULL,
