@@ -20,7 +20,7 @@ from pathlib import Path
 from paperkb.version import (DATA_FORMAT, LAYOUT_VERSION,  # noqa: F401
                              MIN_READABLE_DATA_FORMAT)
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 # 前端版本文件（相对 frontend/）：单一来源，禁止在别处再写一份前端版本号常量。
 FRONTEND_VERSION_FILE = "version.js"

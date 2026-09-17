@@ -132,6 +132,49 @@
 - **不改数据格式**：`DATA_FORMAT` 保持 `2` ⇒ 老数据无需迁移；新参数写在 `.env`（缺失即用默认值）。
 - 删除的旧面登记在 `docs/COMPAT-REGISTER.md` C10–C13（防重复引入）。
 
+## [1.1.0] — 2026-09-18（文献计量图谱）
+
+**用户可见**
+- **新增「文献图谱」**：顶栏「AI检索」右侧新增入口，点击弹出**最大化窗口**展示 AI 检索库的
+  引用网络（引力布局，相关文献自然聚拢）。所有交互都在该窗口内完成。
+  - **节点大小** ∝ 库内被引次数（AI检索数据库内被引）；**节点颜色** ← 影响因子（可切配色方案）；
+    **节点标签** = 年份 + 被引（可切「标题/不显示」）。
+  - **点击节点** → 右侧详情面板（标题/摘要/关键词/作者/期刊/年份/IF/分区/库内被引/文献被引/出入度/DOI）。
+  - **长按节点** → **双色高亮**其引用关系：橙色=引用了该文献的（citing），青色=该文献所引用的（cited），
+    其余节点淡出；点击空白处取消。
+  - **2D 平面 / 3D 立体**一键切换（顶栏分段按钮）。
+  - **过滤面板**（服务端过滤，10 万级不卡）：年份范围、库内被引下限、文献被引下限、影响因子下限、
+    JCR 分区（Q1–Q4 多选）、仅在知识库中、排除参考文献节点、节点上限（Top-N 截断）、截断排序键。
+  - **样式面板**：配色方案、节点大小基准、标签模式、引用边显隐/箭头方向、画布背景
+    （深色/浅色/网格/径向渐变 + 自定义背景色与边色）、引力布局参数（斥力 scalingRatio / 向心 gravity）+ 重跑布局。
+  - 顶栏「⏸ 暂停布局 / ⛶ 适配 / 🔎 定位节点（标题或 DOI）/ 🎛 面板 / 📄 详情」快捷操作；
+    右下角图例说明配色与高亮双色含义，左下角 HUD 显示节点/边数与截断状态。
+
+**技术**
+- **前端模块化拆分**（用户要求）：`app.js` 6840 → 6168 行，AI检索面板逻辑抽离为独立经典脚本
+  `frontend/js/lit-admin.js`（679 行）；文献图谱以 **ES 模块**新建于 `frontend/js/graph/`
+  （`api`/`scales`/`layout.worker`/`renderer2d`/`renderer3d`/`panel`/`filters`/`settings`/`main`），
+  独立样式表 `frontend/css/graph.css`，与 `app.js`、`style.css` 解耦（自带 fetch，不碰全局业务状态）。
+- **渲染与性能**：2D 用 sigma.js v2（WebGL）+ graphology，布局用 **ForceAtlas2 Web Worker**
+  （主线程外增量迭代、Float32Array transferable 回传、**共被引聚类种子**让相关文献起始即靠拢）；
+  3D 用 3d-force-graph（自带 d3-force-3d 物理）。可视化库已 **vendor 到本地**（`frontend/vendor/`，无 CDN 依赖）。
+- **后端**：`packages/paperlit/paperlit/graph/network.py` 新增引用网络导出
+  （`build_network`/`get_filter_facets`/`get_neighbors`/`get_node_detail`），**全部服务端 SQL 过滤 +
+  Top-N 截断 + 临时表 JOIN 取边**（避开 IN 参数上限）；经 `paperlit.api` 门面 → `LitService` →
+  4 条路由 `GET /api/lit/v1/graph/{network,filters,neighbors,node}`。新增 22 项单测
+  （`packages/paperlit/tests/test_network.py`）。`papers` 表补 3 个排序索引（library_citations/impact_factor/cluster）。
+- **解耦**：`paperlit` 不依赖 `paperkb`；知识库 DOI 集合由路由层注入（`_get_kb_dois()`，30s 缓存，失败降级空集）
+  标记节点 `in_kb`。后端只返回**原始属性**，大小/颜色/标签的视觉映射全在前端按用户设置计算。
+- **遗留 bug 修复**：`style.css` 的 `.lit-*`（AI检索面板）历史上用 `var(--accent)`/`var(--fg)`
+  但二者从未在 `:root` 定义且无 fallback ⇒ 标题/统计数字/期刊名等 **14 处颜色失效**；
+  现映射到现有 token（`--primary`/`--text`），随主题动态解析。
+
+**数据与升级（零风险）**
+- **不改数据格式**：`DATA_FORMAT` 保持 `2` ⇒ 老数据无需迁移、无需重解析。
+- 图谱为**只读**视图，不写库；过滤/排序仅查询期生效。
+- 版本号同步升级 `backend/app/version.py`、`frontend/version.js`、根 `pyproject.toml` → `1.1.0`
+  （`backend/tests/test_version_contract.py` 全绿）。
+
 ## [1.0.0] — 2026-09-12（首个正式发布版）
 
 **用户可见**
