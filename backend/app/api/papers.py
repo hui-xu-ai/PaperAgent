@@ -224,6 +224,10 @@ def retry_pipeline(paper_id: int) -> dict:
                        "请在「＋导入」中重新导入该 PDF",
             "pdf_path": paper.get("pdf_path") or "",
         })
+    # 注：清空 doc_json 是原有行为（重解析会写回新的）。★2026-09-18 观察：产物目录**不看**
+    # doc_json —— `stages.py:489` 用 `output_dir_name(doi, pdf_path)` 现算，而重试的输入是
+    # `library/<RID>/source.pdf` ⇒ 目录名落成 `source`，与已有的 `library/<RID>/` 并存（重复目录）。
+    # 这是**独立于本次修复**的产物布局问题，已记入 FINDING-RETRY-STAGING §八，待拍板后再动。
     store.update_paper(paper_id, status="pending", error="",
                        doc_json="", run_id="", parse_source="")
     tasks.submit_pipeline(paper_id)  # 失败态任务会自动新建 task 记录
