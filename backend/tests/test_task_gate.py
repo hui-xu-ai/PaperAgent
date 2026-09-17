@@ -68,7 +68,11 @@ def test_gate_hooks_waiting_review(env, monkeypatch):
     """解析完成且有待复核项（策略=wait）→ status=waiting_review，不进入翻译。"""
     _make_dual(env["work"], "p1", pending=1)
     store = env["store"]
-    paper_id = store.create_paper(str(env["tmp"] / "p1.pdf"), title="p1")
+    # ★2026-09-17：`_run_pipeline` 现在会先自愈/校验输入 PDF（重试入口缺陷修复），
+    # 故这里的登记路径必须**真实存在**（本测试只验门控，用占位内容即可）。
+    pdf = env["tmp"] / "p1.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test stub")
+    paper_id = store.create_paper(str(pdf), title="p1")
     store.update_paper(paper_id, doc_json=str(env["tmp"] / "doc.json"),
                        parse_source="dual")
 

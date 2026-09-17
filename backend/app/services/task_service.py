@@ -13,6 +13,7 @@ import logging
 import queue
 import threading
 import time
+from pathlib import Path
 
 from ..config import Settings
 from .engine_service import EngineService, EngineError, TaskCancelled, parse_source_label
@@ -20,6 +21,12 @@ from .event_bus import EventBus
 from .store import Store
 
 logger = logging.getLogger(__name__)
+
+# ★2026-09-17 重试入口修复：登记的上传暂存件已被 `_clean_upload_staging` 清理、
+# 且 library 也找不到权威件时的用户可见文案（此前会伪装成"解析失败（全部通道）"）。
+MISSING_SOURCE_MSG = (
+    "原始 PDF 已不在暂存区，且未找到权威副本（%s 不存在）"
+    "——请在「＋导入」中重新导入该 PDF（产物可按需重新生成）")
 
 # 流水线阶段进度（粗粒度：解析 5-40，翻译 40-90，导出 90-100）
 STAGES = [
@@ -163,14 +170,74 @@ class TaskManager:
                 f"论文[{paper_id}] {message}",
                 {"paper_id": paper_id, "state": state, "progress": progress})
 
+    @staticmethod
+    def repair_pdf_path(store: Store, settings: Settings, engine: EngineService,
+                        paper: dict) -> str:
+        """★2026-09-17：把失效的 `papers.pdf_path` 回填为**权威副本**，返回可用路径或 ""。
+
+        为什么需要（用户实测缺陷，见
+        `.dsh-memory/project/FINDING-RETRY-STAGING-20260917.md`）：
+        `papers.pdf_path` 登记的是**上传暂存件** `work/upload/<run_id>/<名>.pdf`，而成功解析后
+        `_clean_upload_staging`（`work/` 属"随时可清"区，用户 2026-09-12 拍板）会把它删掉
+        ⇒ 「解析曾成功、之后失败」的篇点「重试」时，解析器拿到一个不存在的路径，报成
+        `PAPER-0001 输入文件不存在或不可读`（文案误导为"PDF 坏了"）。
+        权威副本其实一直在 `library/<资源>/source.pdf`。
+
+        顺序：登记路径可用 → 直接用；否则 `library/<资源>/source.pdf` → 再否则调
+        `engine.ensure_source_pdf` 按 `metadata.source_pdf` 三级兜底找回。找不到返回 ""，
+        由调用方给出"请重新导入"的**可操作**文案（不伪装成解析失败）。
+        成功回填时**写回 `papers.pdf_path`**——后续每次重试都不必再兜底。
+        """
+        raw = str((paper or {}).get("pdf_path") or "").strip()
+        if raw:
+            p = Path(raw)
+            if p.is_file():
+                return str(p)
+        doc_json = str((paper or {}).get("doc_json") or "").strip()
+        cand = ""
+        if doc_json:
+            d = Path(doc_json)
+            if d.is_file():
+                cand = str(d.parent / "source.pdf")
+            elif engine is not None:
+                # 兜底找回（三级搜索）。engine 可能是测试替身/精简实现，缺该方法时
+                # 不视为错误——只是"这次兜底不可用"。
+                try:
+                    cand = str(engine.ensure_source_pdf(str(d), raw or None) or "")
+                except Exception as e:  # noqa: BLE001 - 兜底失败按"未找到"处理
+                    logger.warning("ensure_source_pdf 兜底不可用（按未找到处理）: %s", e)
+                    cand = ""
+        if cand and Path(cand).is_file():
+            try:
+                store.update_paper(int(paper.get("id") or 0), pdf_path=cand)
+            except Exception as e:  # noqa: BLE001 - 回填失败不影响本次解析
+                logger.warning("回填 papers.pdf_path 失败（不阻塞）: %s", e)
+            logger.info("登记路径已失效 → 回填权威副本: %s", cand)
+            return cand
+        return ""
+
     def _run_pipeline(self, paper_id: int) -> None:
         paper = self.store.get_paper(paper_id)
         if not paper:
             logger.warning("论文不存在 paper_id=%s，跳过", paper_id)
             return
-        pdf_path = paper["pdf_path"]
+        pdf_path = self.repair_pdf_path(self.store, self.settings, self.engine, paper)
         self._set_task(paper_id, "running", 5, STAGES[0][1])
         self.store.update_paper(paper_id, status="parsing")
+        if not pdf_path:
+            # ★2026-09-17：不再伪装成"解析失败（全部通道）"——用户重试时看到的是
+            # "输入文件不存在"（PAPER-0001），会以为 PDF 坏了；真实原因是**登记路径
+            # 已被清理**（用户可见文案在 _fail 里给出可操作建议）。
+            msg = MISSING_SOURCE_MSG % Path(paper.get("pdf_path") or "(空)")
+            logger.warning("paper=%s %s", paper_id, msg)
+            self._fail(paper_id, msg)
+            self.store.update_paper(paper_id, status="failed", error=msg)
+            if self.event_bus:
+                self.event_bus.publish(
+                    "warning", "task", "parse_input_missing",
+                    f"论文[{paper_id}] {msg}",
+                    {"paper_id": paper_id, "pdf_path": paper.get("pdf_path") or ""})
+            return
 
         # 1) 解析（engine_service 内部沿降级链：v4 精准 → v1 免费 → pymupdf 本地）
         try:

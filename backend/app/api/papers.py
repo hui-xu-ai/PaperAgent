@@ -199,7 +199,14 @@ def retry_export(paper_id: int) -> dict:
 
 @router.post("/{paper_id}/retry")
 def retry_pipeline(paper_id: int) -> dict:
-    """P2-B 补充：失败论文一键重试——清状态重新入队（解析/翻译流水线）。"""
+    """P2-B 补充：失败论文一键重试——清状态重新入队（解析/翻译流水线）。
+
+    ★2026-09-17：入队前**自愈登记路径**（`TaskManager.repair_pdf_path`）——`papers.pdf_path`
+    登记的是上传暂存件，成功解析后已被 `_clean_upload_staging` 清掉；权威副本在
+    `library/<资源>/source.pdf`。不做这一步，"解析曾成功、之后失败"的篇点重试必然报
+    `PAPER-0001 输入文件不存在`（用户实测缺陷）。两处都找不到 → **409 + 可操作提示**，
+    而不是让它跑成"解析失败（全部通道）"。
+    """
     store = container.get_store()
     paper = store.get_paper(paper_id)
     if not paper:
@@ -207,13 +214,25 @@ def retry_pipeline(paper_id: int) -> dict:
     if paper.get("status") not in ("failed",):
         # 已完成/进行中不允许重试（防止重复消耗 MinerU/LLM 额度）
         raise HTTPException(400, f"仅失败状态的论文可重试（当前：{paper.get('status')}）")
+    tasks = container.get_tasks()
+    ready = tasks.repair_pdf_path(store, container.get_settings(),
+                                 container.get_engine(), paper)
+    if not ready:
+        raise HTTPException(409, detail={
+            "code": "PAPER-INPUT-MISSING",
+            "message": "原始 PDF 已不在暂存区，且 library 未找到权威副本——"
+                       "请在「＋导入」中重新导入该 PDF",
+            "pdf_path": paper.get("pdf_path") or "",
+        })
     store.update_paper(paper_id, status="pending", error="",
                        doc_json="", run_id="", parse_source="")
-    container.get_tasks().submit_pipeline(paper_id)  # 失败态任务会自动新建 task 记录
+    tasks.submit_pipeline(paper_id)  # 失败态任务会自动新建 task 记录
     container.get_event_bus().publish(
         "info", "task", "retry",
         f"论文[{paper_id}] 已重新提交流水线", {"paper_id": paper_id})
-    return {"ok": True, "paper_id": paper_id, "status": "pending"}
+    return {"ok": True, "paper_id": paper_id, "status": "pending",
+            "pdf_path": ready}
+
 
 
 @router.delete("/{paper_id}")
