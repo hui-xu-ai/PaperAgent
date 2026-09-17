@@ -107,13 +107,28 @@ class TestMultiPanelMerge:
         assert box == (100.0, 100.0, 300.0, 450.0), "同栏两块 panel 应并成一张整图"
         assert used == {0, 1}
 
-    def test_no_merge_when_panel_too_far_from_caption(self):
-        """超过 2.5×gap_max（=240）→ 不当成同一张图（防把上方无关内容吃进来）"""
+    def test_no_merge_when_panels_too_far_apart(self):
+        """放宽分支的量尺是**到当前簇沿**的距离（不是到图注前沿）⇒ 两块 panel 之间 270pt
+        （> 2.5×gap_max = 240）时仍拒绝：不能因为"图注离得远"就无限上探。"""
         prims = [(100.0, 100.0, 300.0, 260.0),
-                 (100.0, 400.0, 300.0, 560.0)]     # 到图注前沿 310 > 240
+                 (100.0, 530.0, 300.0, 560.0)]     # 与上块间距 270 > 240
         box, used = _grow_cluster(prims, [], (90.0, 310.0), 570.0, 96.0,
                                   page_h=800.0)
-        assert box == (100.0, 400.0, 300.0, 560.0) and used == {1}
+        assert box == (100.0, 530.0, 300.0, 560.0) and used == {1}
+
+    def test_caption_distance_no_longer_gates_the_merge(self):
+        """★量尺修正的正面断言：图注到**下方** panel 底 196pt（> gap_max 96，靠放宽并入），
+        再往上那块 panel 距图注 426pt（远超 2.5×gap_max=240）但距当前簇仅 30pt
+        ⇒ 两块都应并入（修复前按"图注距离"量，第二块必被拒 → 只剩半张）。"""
+        prims = [(100.0, 170.0, 300.0, 300.0),     # 上块：距图注 426
+                 (100.0, 330.0, 300.0, 526.0)]     # 下块：距图注 196，距上块 30
+        box, used = _grow_cluster(prims, [], (90.0, 310.0), 722.0, 96.0,
+                                  page_h=800.0)
+        assert box == (100.0, 170.0, 300.0, 526.0) and used == {0, 1}
+        # 对照：若连第一块都远到超出 2.5×gap_max（此处 400 > 240），则不成簇
+        box2, used2 = _grow_cluster(prims, [], (90.0, 310.0), 926.0, 96.0,
+                                    page_h=800.0)
+        assert box2 is None and not used2
 
     def test_relaxation_works_without_page_h(self):
         """放宽分支**不依赖** page_h（page_h 只管"并后过高"护栏）——旧调用方同样享受修复。
@@ -126,11 +141,16 @@ class TestMultiPanelMerge:
         assert box == (100.0, 100.0, 300.0, 450.0) and used == {0, 1}
 
     def test_rejects_beyond_gap_multiplier(self):
-        """超过 2.5×gap_max（=240）→ 不放宽（防把远处无关内容吃进来）"""
+        """到簇沿超过 2.5×gap_max（=240）→ 不放宽（防把远处无关内容吃进来）"""
         prims = [(100.0, 100.0, 300.0, 260.0),
-                 (100.0, 290.0, 300.0, 330.0)]     # 图注前沿(600)到其顶(290) = 310 > 240
+                 (100.0, 290.0, 300.0, 400.0)]     # 簇沿(400)到其底(260) = 140 ✓ 先并入
         box, used = _grow_cluster(prims, [], (90.0, 310.0), 600.0, 96.0)
-        assert box is None and not used
+        assert box == (100.0, 100.0, 300.0, 400.0) and used == {0, 1}
+        # 再远一档：590-260 = 330 > 240 ⇒ 只留下近的那块
+        prims2 = [(100.0, 100.0, 300.0, 260.0),
+                  (100.0, 590.0, 300.0, 700.0)]
+        box2, used2 = _grow_cluster(prims2, [], (90.0, 310.0), 710.0, 96.0)
+        assert box2 == (100.0, 590.0, 300.0, 700.0) and used2 == {1}
 
     def test_no_merge_across_caption_boundary(self):
         """候选越出图注栏界（如整幅页眉横线）→ 不许并入"""

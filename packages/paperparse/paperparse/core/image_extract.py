@@ -348,6 +348,9 @@ _RECT_GAP_H_FRAC = 0.10      # 区域生长水平间隙上限（× 页宽）
 _LOOSE_GAP_MUL = 2.5         # 放宽分支的间隙上限 = gap_max × 该系数
 _LOOSE_COL_OVL = 0.55        # 放宽并簇要求**同栏**（x 重叠 ≥ 该比例，相对较窄者）
 _LOOSE_H_RATIO = (0.5, 2.0)  # 放宽并簇要求与当前簇高度相当（倍数区间）
+_LOOSE_CONTAIN = 0.75        # （**未启用**，留档）横向包含度判据：试验过，会放行页眉带/横条
+_LOOSE_ASPECT_MAX = 20.0     # （**未启用**，留档）极扁横条排除：页眉分隔线 2540:1
+_LOOSE_TOP_SAFE_FRAC = 0.12  # （**未启用**，留档）页眉保护区（× 页高）
 _LOOSE_X_TOL = 3.0           # 越出图注栏界的容差（pt）
 _LOOSE_MAX_H_FRAC = 0.60     # 簇高上限（× 页高）——防一路吃到页眉
 
@@ -439,20 +442,33 @@ def _grow_cluster(prims: list[tuple], obstacles: list[tuple], span: tuple,
                 gap = frontier - near
             if gap > gap_max:
                 # ---- 放宽分支：仅"同一张多分图"才放行（★2026-09-17）----
+                # ★量尺修正：普通规则的 `gap` 从**起始前沿**（=图注那一侧）算起，它把
+                # "图注到最远那块 panel 的总距离"当成两个图元之间的距离。多分图（如 NC
+                # Figure 1：panel a 距图注 273pt，但距下方 panel 仅 10pt）会被这条误杀
+                # ——实测差 10.6pt 就卡住。故放宽分支改用**与当前簇沿的距离**作量尺：
+                # 这才是"是不是同一张图的两块"该看的距离。起始前沿仍是普通分支的量尺（不变）。
+                c_top = cluster[1] if cluster else start
+                c_bot = cluster[3] if cluster else start
+                eff_gap = (p[1] - c_bot) if down else (c_top - p[3])
                 lov = min(x1, p[2]) - max(x0, p[0])
                 lwmin = min(x1 - x0, p[2] - p[0])
                 if lov <= 0 or (lwmin > 0 and lov / lwmin < _LOOSE_COL_OVL):
                     continue                       # 不同栏（左栏图 vs 右栏图）
                 if p[0] < x0 - _LOOSE_X_TOL or p[2] > x1 + _LOOSE_X_TOL:
                     continue                       # 越出图注栏界（页眉横线/整幅装饰）
-                if gap > gap_max * _LOOSE_GAP_MUL:
-                    continue                       # 离得太远，不是同一张图
+                if eff_gap > gap_max * _LOOSE_GAP_MUL:
+                    continue                       # 离当前簇太远，不是同一张图
                 if page_h:
                     ny0 = min(cluster[1], p[1]) if cluster else p[1]
                     ny1 = max(cluster[3], p[3]) if cluster else p[3]
                     if (ny1 - ny0) > page_h * _LOOSE_MAX_H_FRAC:
                         continue                   # 并后过高 → 会吃到页眉
                 if cluster is not None:
+                    # 高度相当判据（★2026-09-17 保留 cc446d0 已验证口径）。
+                    # 已知局限：**簇已高 + 候选是矮的整幅宽 panel** 时会被拒（NC Figure 1 的
+                    # panel a 实测比 2.57 > 2.0 ⇒ 仍缺一块）。试过换成"横向包含度 ≥0.75"，
+                    # 会放行整幅页眉带/横条（实测 F001/F005 越过 y29.7 且 F004 变 duplicate），
+                    # 故回退——这条留待"panel 标签锚定"专项解决，不在本轮硬凑。
                     ch, ph = cluster[3] - cluster[1], p[3] - p[1]
                     if ph > 0 and ch > 0 and not (_LOOSE_H_RATIO[0] <= ch / ph
                                                   <= _LOOSE_H_RATIO[1]):
