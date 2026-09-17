@@ -78,6 +78,31 @@ class TestClusterGrowth:
         assert _joined((220.0, 100.0, 300.0, 200.0), reg, 60.0, 40.0)    # 水平相邻
         assert not _joined((400.0, 400.0, 500.0, 500.0), reg, 60.0, 40.0)
 
+    def test_zone_top_blocks_candidates_above_caption_barrier(self):
+        """★图注屏障（用户判据①：每张大图之间必有图注）：`zone_top` 之上的图元一律不并。
+
+        这组几何**隔离了变量**：分隔线 x=100..500 落在图注 span(95..505) 内（列包含会放行），
+        唯一拦得住它的就是 `zone_top`。同时验证"普通分支也要拦"——页眉分隔线离图元很近时
+        走的是普通 gap 分支，若只在放宽分支拦会漏（这是本轮踩过的坑）。
+        """
+        prims = [(100.0, 30.0, 500.0, 30.2),       # 页眉分隔线（距下方 panel 很近）
+                 (100.0, 60.0, 400.0, 200.0),
+                 (100.0, 220.0, 400.0, 300.0)]
+        box, used = _grow_cluster(prims, [], (95.0, 505.0), 310.0, 96.0,
+                                  page_h=800.0, zone_top=50.0)
+        assert used == {1, 2} and box == (100.0, 60.0, 400.0, 300.0), "屏障之上的分隔线必须被挡"
+        # 不给 zone_top（旧调用方）→ 分隔线会被并入（证明拦截确实来自 zone_top）
+        _box2, used2 = _grow_cluster(prims, [], (95.0, 505.0), 310.0, 96.0,
+                                     page_h=800.0)
+        assert 0 in used2
+
+    def test_column_containment_keeps_side_by_side_figures_apart(self):
+        """★列包含（≥70% 落在本图注 x 范围）：并排图各归各栏，不被并成一张。"""
+        prims = [(320.0, 60.0, 500.0, 300.0)]      # 右栏图（左栏图注只覆盖 43.6..285.3）
+        box, used = _grow_cluster(prims, [], (43.6, 285.3), 336.3, 96.0,
+                                  page_h=800.0, zone_top=39.0)
+        assert box is None and not used, "右栏图不得被左栏图注吸走"
+
     def test_rect_grow_merges_panels_but_not_across_text(self):
         """并排分图可合并；被宽文本行隔开的图元不许并入"""
         prims = [(100.0, 100.0, 200.0, 200.0),
@@ -265,23 +290,25 @@ class TestCaptionDrivenExtraction:
 
     @pytest.mark.skipif(NCOMMS_PDF is None, reason="ncomms PDF 不存在")
     def test_ncomms_multipanel_figures_merged(self):
-        """★2026-09-17 修复回归：Figure 4/5 的**两块 panel 都要在**。
+        """★多分图回归（2026-09-17/18 三轮修复的汇总闸门）。
 
-        修复前实测（用户报障）：F004 只有下半张（h 118.7pt）、F005 只有下半张（116.4pt）；
-        修复后（同栏放宽并簇）：F004 h ≥ 240pt、F005 h ≥ 245pt（真值 255 / 262pt）。
-        若这里回退到 <150pt，说明多分图又被截成半张。
+        用户报障时的实测：F004 只有下半张（118.7pt）、F005 只有下半张（116.4pt）、
+        F001 五块 panel 只剩两块（109pt）。现在三条都应覆盖整图：
+          · Figure 1 ≥ 330pt（真值 333）——由"图注屏障 + 列包含"修好；
+          · Figure 4 ≥ 250pt（真值 255）、Figure 5 ≥ 260pt（真值 262）。
+        回退到 <150pt 即说明多分图又被截成半张。
         """
         _, figs, _ = self._extract(NCOMMS_PDF, "ncomms")
-        # F004 对应 Figure 5 注（p5 右栏）、F005 对应 Figure 4 注（p5 左栏）——按图注文字定位，不硬编码 id
         got = {}
         for f in figs:
             cap = (f.caption or "")
-            for n in ("4", "5"):
+            for n in ("1", "4", "5"):
                 if cap.startswith("Figure %s |" % n):
                     got[n] = round(f.bbox[3] - f.bbox[1], 1)
-        assert set(got) >= {"4", "5"}, "应同时抽出 Figure 4 与 Figure 5（实得 %s）" % sorted(got)
-        assert got["4"] >= 240, "Figure 4 应是两块 panel 的整图（实测 %s pt）" % got["4"]
-        assert got["5"] >= 245, "Figure 5 应是两块 panel 的整图（实测 %s pt）" % got["5"]
+        assert set(got) >= {"1", "4", "5"}, "应抽出 Figure 1/4/5（实得 %s）" % sorted(got)
+        assert got["1"] >= 330, "Figure 1 应是 5 块 panel 的整图（实测 %s pt，真值 333）" % got["1"]
+        assert got["4"] >= 250, "Figure 4 应是两块 panel 的整图（实测 %s pt）" % got["4"]
+        assert got["5"] >= 260, "Figure 5 应是两块 panel 的整图（实测 %s pt）" % got["5"]
 
     @pytest.mark.skipif(PNAS_PDF is None, reason="pnas PDF 不存在")
     def test_body_sentence_not_treated_as_caption(self):

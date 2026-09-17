@@ -348,9 +348,13 @@ _RECT_GAP_H_FRAC = 0.10      # 区域生长水平间隙上限（× 页宽）
 _LOOSE_GAP_MUL = 2.5         # 放宽分支的间隙上限 = gap_max × 该系数
 _LOOSE_COL_OVL = 0.55        # 放宽并簇要求**同栏**（x 重叠 ≥ 该比例，相对较窄者）
 _LOOSE_H_RATIO = (0.5, 2.0)  # 放宽并簇要求与当前簇高度相当（倍数区间）
-_LOOSE_CONTAIN = 0.75        # （**未启用**，留档）横向包含度判据：试验过，会放行页眉带/横条
+_LOOSE_CONTAIN = 0.70        # ★列包含判据：候选**宽度的 ≥70% 须落在本图注的 x 范围**内。
+                             # 为什么：并排图（ncomms p5：Figure 4 左栏 / Figure 5 右栏，图注同 y 带）
+                             # 若无此判据会把左右两栏并成一张；整幅页眉横线也由此被挡。
+_LOOSE_TOP_SAFE_FRAC = 0.05  # ★页眉安全带（× 页高）：图的搜索区从该线以下开始。
+                             # 依据（用户判据②）：页眉与图之间隔着整条正文/页边空白（空白大），
+                             # 而图内 panel 间空白很小——ncomms 实测 5.7～18.2pt vs 页内图间 98pt。
 _LOOSE_ASPECT_MAX = 20.0     # （**未启用**，留档）极扁横条排除：页眉分隔线 2540:1
-_LOOSE_TOP_SAFE_FRAC = 0.12  # （**未启用**，留档）页眉保护区（× 页高）
 _LOOSE_X_TOL = 3.0           # 越出图注栏界的容差（pt）
 _LOOSE_MAX_H_FRAC = 0.60     # 簇高上限（× 页高）——防一路吃到页眉
 
@@ -406,7 +410,8 @@ def _collect_graphics(page) -> list[tuple]:
 
 def _grow_cluster(prims: list[tuple], obstacles: list[tuple], span: tuple,
                   start: float, gap_max: float, down: bool = False,
-                  skip: set | None = None, page_h: float | None = None):
+                  skip: set | None = None, page_h: float | None = None,
+                  zone_top: float | None = None):
     """[局部] 从 start 沿方向生长图形簇（down=False 向上 / True 向下）。
 
     - 只并入与当前簇水平重叠 ≥15%（相对较窄者）的图元；
@@ -440,6 +445,12 @@ def _grow_cluster(prims: list[tuple], obstacles: list[tuple], span: tuple,
                 if near > frontier + 0.5:
                     continue
                 gap = frontier - near
+            if not down and zone_top is not None and p[1] < zone_top - 0.5:
+                # ★图注屏障（用户判据①：每张大图之间必有图注 / 页眉不能并进图）：
+                # 向上生长时，候选不得越过「本栏上方最近一条图注的下沿」与「页眉安全带」。
+                # 必须在这一层判（而不是只在放宽分支里）——否则页眉横线等"距离很近"的
+                # 装饰图元走普通分支就被并进来了。
+                continue
             if gap > gap_max:
                 # ---- 放宽分支：仅"同一张多分图"才放行（★2026-09-17）----
                 # ★量尺修正：普通规则的 `gap` 从**起始前沿**（=图注那一侧）算起，它把
@@ -456,6 +467,10 @@ def _grow_cluster(prims: list[tuple], obstacles: list[tuple], span: tuple,
                     continue                       # 不同栏（左栏图 vs 右栏图）
                 if p[0] < x0 - _LOOSE_X_TOL or p[2] > x1 + _LOOSE_X_TOL:
                     continue                       # 越出图注栏界（页眉横线/整幅装饰）
+                # ★列包含：候选宽度须 ≥_LOOSE_CONTAIN 落在本图注 x 范围（并排图各归各栏）
+                _cov = (min(x1, p[2]) - max(x0, p[0])) / max(1e-6, p[2] - p[0])
+                if _cov < _LOOSE_CONTAIN:
+                    continue
                 if eff_gap > gap_max * _LOOSE_GAP_MUL:
                     continue                       # 离当前簇太远，不是同一张图
                 if page_h:
@@ -464,15 +479,13 @@ def _grow_cluster(prims: list[tuple], obstacles: list[tuple], span: tuple,
                     if (ny1 - ny0) > page_h * _LOOSE_MAX_H_FRAC:
                         continue                   # 并后过高 → 会吃到页眉
                 if cluster is not None:
-                    # 高度相当判据（★2026-09-17 保留 cc446d0 已验证口径）。
-                    # 已知局限：**簇已高 + 候选是矮的整幅宽 panel** 时会被拒（NC Figure 1 的
-                    # panel a 实测比 2.57 > 2.0 ⇒ 仍缺一块）。试过换成"横向包含度 ≥0.75"，
-                    # 会放行整幅页眉带/横条（实测 F001/F005 越过 y29.7 且 F004 变 duplicate），
-                    # 故回退——这条留待"panel 标签锚定"专项解决，不在本轮硬凑。
-                    ch, ph = cluster[3] - cluster[1], p[3] - p[1]
-                    if ph > 0 and ch > 0 and not (_LOOSE_H_RATIO[0] <= ch / ph
-                                                  <= _LOOSE_H_RATIO[1]):
-                        continue                   # 与当前簇高度悬殊 → 不是同一张图
+                    # ★2026-09-17：**不再用"候选/簇高度比"**。它会把"簇已高 + 上方还有一块
+                    # 全幅宽 panel"误杀（ncomms Figure 1 的 panel a 实测比 2.57 > 2.0，差 0.57
+                    # 倍就丢掉整块 panel）。改由下面两条语义判据承担"不是同一张图"的拦截：
+                    #   ① `zone_top` 图注屏障（用户判据①：两张大图之间必有图注）；
+                    #   ② `_LOOSE_CONTAIN` 列包含 ≥70%（并排图各归各栏）。
+                    # 这两条比"高度比"更接近版式事实，且实测零副作用（F002/F003/F006 不变）。
+                    pass
             else:
                 ov = min(x1, p[2]) - max(x0, p[0])
                 wmin = min(x1 - x0, p[2] - p[0])
@@ -744,6 +757,27 @@ def extract_figures_caption_driven(pdf_path: str | Path, local_skeleton, out_dir
                             "table": g[0][2]})
     anchors.sort(key=lambda a: (a["page"], a["box"][1]))
 
+    # ---- ★2026-09-17 图注屏障（用户判据①）：本图上限 = **本栏上方最近一条图注的下沿**。
+    # 依据："每张大图之间必有图注（图注在图下）"⇒ 同栏再往上的图注之下，绝不属于本图。
+    # 这修掉了"簇已很高 + 上方还有一块全幅宽 panel"被高度比判据误杀的问题
+    # （ncomms Figure 1：panel a 在 y50.8..142.2，与下方 4 块同属一张图，此前一直被丢）。
+    # 同时叠加**页眉安全带**（用户判据②：页眉与图之间隔着整条正文/页边空白，空白很大，
+    # 而图内 panel 间空白很小——实测 5.7~18.2pt vs 页内图间 98pt）。
+    page_h_map = {i + 1: doc[i].rect.height for i in range(doc.page_count)}
+    anchor_zone: list[float] = []
+    for a in anchors:
+        ph = page_h_map.get(a["page"], 782.0)
+        zt = ph * _LOOSE_TOP_SAFE_FRAC
+        ax0, _, ax1, _ = a["box"][0], a["box"][1], a["box"][2], a["box"][3]
+        for b in anchors:
+            if b is a or b["page"] != a["page"] or b["box"][3] > a["box"][1] + 0.5:
+                continue                      # 只算**在锚点上方**的图注
+            ov = min(ax1, b["box"][2]) - max(ax0, b["box"][0])
+            wmin = min(ax1 - ax0, b["box"][2] - b["box"][0])
+            if wmin > 0 and ov / wmin >= 0.5:  # 同栏
+                zt = max(zt, b["box"][3])
+        anchor_zone.append(zt)
+
     # 2) 页面几何 + 文本障碍行（骨架行中的"宽行"= 正文/标题/图注，用于避让）
     page_widths = {i + 1: doc[i].rect.width for i in range(doc.page_count)}
     page_heights = {i + 1: doc[i].rect.height for i in range(doc.page_count)}
@@ -783,17 +817,19 @@ def extract_figures_caption_driven(pdf_path: str | Path, local_skeleton, out_dir
 
     recs: list[dict] = []
     ctx: dict[int, dict] = {}
-    for a in anchors:
+    for _ai, a in enumerate(anchors):
         page = a["page"]
         rec = {"page": page, "num": a["num"], "caption": a["text"][:60],
                "kind": "table" if a["table"] else "figure",
-               "action": "no_graphic", "bbox": None, "cluster": None, "via": None}
+               "action": "no_graphic", "bbox": None, "cluster": None, "via": None,
+               "zone_top": round(anchor_zone[_ai], 1)}
         recs.append(rec)
         ctx[id(rec)] = {"a": a, "rec": rec,
                         "pw": page_widths.get(page, 595.0),
-                        "ph": page_heights.get(page, 800.0),
+                        "ph": page_h_map.get(page, 800.0),
                         "prims": graphics_by_page.get(page, []),
-                        "obstacles": obstacle_by_page.get(page, [])}
+                        "obstacles": obstacle_by_page.get(page, []),
+                        "zone_top": anchor_zone[_ai]}
 
     def _accept(c: dict, box: tuple | None) -> bool:
         """裁剪框 → 补边 → 尺寸/重复闸门 → 文本避让 → 渲染落盘"""
@@ -836,7 +872,7 @@ def extract_figures_caption_driven(pdf_path: str | Path, local_skeleton, out_dir
                 cluster, used = _grow_cluster(
                     prims, c["obstacles"], (cap_box[0], cap_box[2]), start,
                     gap_max, down=down, skip=used_prims.get(page, set()),
-                    page_h=ph)
+                    page_h=ph, zone_top=c.get("zone_top"))
                 if cluster is None:
                     continue
                 rec["cluster"] = [round(v, 1) for v in cluster]
@@ -874,7 +910,8 @@ def extract_figures_caption_driven(pdf_path: str | Path, local_skeleton, out_dir
             cluster, used = _grow_cluster(
                 prims, obstacles, (cap_box[0], cap_box[2]),
                 cap_box[3] if down else cap_box[1], gap_max, down=down,
-                skip=used_prims.get(page, set()), page_h=ph)
+                skip=used_prims.get(page, set()), page_h=ph,
+                zone_top=c.get("zone_top"))
             if cluster is None:
                 continue
             rec["cluster"] = [round(v, 1) for v in cluster]
