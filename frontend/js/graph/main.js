@@ -76,26 +76,27 @@ class GraphApp {
     if (this.mode === '2d' && this.renderer && this.ids.length) {
       layoutManager.save2dPositions(this._capturePositions2d());
     }
-    // 3D 模式也保存当前 FA2 坐标（如果有的话）
-    if (this.mode === '3d' && layoutManager._positions2d) {
-      // 3D 模式下 FA2 坐标已保存在 layoutManager 中，无需额外操作
-    }
 
     layoutManager.mode = mode;
     this.mode = mode;
     this.stopLayout();
     this.buildRenderer();
 
-    // 恢复 FA2 坐标（2D 和 3D 共用）
-    const saved = layoutManager.restore2dPositions();
-    if (saved) {
-      this.renderer.applyPositions(saved, this.ids);
-      this.paused = true;
-    } else if (mode === '2d') {
-      this.startLayout(true);
+    // 3D 模式：让 d3-force-3d 自然布局，不应用 FA2 坐标
+    if (mode === '3d') {
+      // 3D 渲染器会自己处理布局，只需等待渲染完成后 zoomToFit
+      setTimeout(() => {
+        if (this.renderer && this.renderer.fit) this.renderer.fit();
+      }, 500);
     } else {
-      // 3D 模式且无缓存坐标：先跑 FA2 再映射
-      this.startLayout(true);
+      // 2D 模式：恢复 FA2 坐标
+      const saved = layoutManager.restore2dPositions();
+      if (saved) {
+        this.renderer.applyPositions(saved, this.ids);
+        this.paused = true;
+      } else {
+        this.startLayout(true);
+      }
     }
     this._syncLayoutBtn();
   }

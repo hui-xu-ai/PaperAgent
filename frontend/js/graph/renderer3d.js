@@ -2,7 +2,7 @@
  *
  * 与 renderer2d.js 同构接口。位置由 FA2 worker 统一计算（main.js），
  *   applyPositions() 将 2D 坐标映射到 3D 的 x/y 平面（z=0）。
- * d3-force-3d 物理引擎已禁用（strength=0），避免覆盖 FA2 坐标。
+ * d3-force-3d 物理引擎已极弱化（strength≈0），避免覆盖 FA2 坐标。
  * 背景样式统一走容器 CSS + 透明场景，与 2D 表现一致。
  *
  * 深度视觉线索（方案A）：
@@ -47,8 +47,8 @@ export class Renderer3D {
     this._spacingFactor = 1.0;
     this._basePositions = null;
     this._g = null;
+    this._pendingData = null;
 
-    // 延迟初始化，确保容器有正确尺寸
     this._initWhenVisible();
   }
 
@@ -59,7 +59,6 @@ export class Renderer3D {
       if (w > 0 && h > 0) {
         this._initGraph();
       } else {
-        // 容器还不可见，等待下一帧
         requestAnimationFrame(tryInit);
       }
     };
@@ -74,7 +73,7 @@ export class Renderer3D {
       .nodeId('id')
       .nodeColor((d) => this._nodeColor(d))
       .nodeVal((d) => Math.max(0.4, (d.size || 2)) ** 2.2)
-      .nodeOpacity(0.92)
+      .nodeOpacity(0.85)
       .nodeLabel((d) => `<div style="font:12px system-ui;color:${initialTipColor}">${this._esc(d.label || d.title || d.id)}</div>`)
       .nodeResolution(12)
       .linkColor(() => this._style.edgeColor)
@@ -86,18 +85,21 @@ export class Renderer3D {
       .onNodeClick((node) => { this._clearLongTimer(); if (this._clickCb) this._clickCb(node.id); })
       .onNodeHover((node) => { this._hoverNode = node ? node.id : null; });
 
-    // 弱化 d3-force-3d 物理引擎，让 FA2 坐标主导
-    this._g.d3Force('charge').strength(-20);
-    this._g.d3Force('link').distance((l) => {
-      const srcSize = l.source.size || 2;
-      const tgtSize = l.target.size || 2;
-      const avgSize = (srcSize + tgtSize) / 2;
-      return Math.max(18, avgSize * 6);
-    });
-    this._g.d3AlphaDecay(0.05);
+    // 极弱化 d3-force-3d，让 FA2 坐标主导
+    const charge = this._g.d3Force('charge');
+    if (charge) charge.strength(-1);
+    const link = this._g.d3Force('link');
+    if (link) {
+      link.distance((l) => {
+        const srcSize = l.source.size || 2;
+        const tgtSize = l.target.size || 2;
+        return Math.max(18, ((srcSize + tgtSize) / 2) * 6);
+      });
+      link.strength(0.01);
+    }
+    this._g.d3AlphaDecay(0.1);
     this._wireLongPress();
 
-    // 应用待处理的数据
     if (this._pendingData) {
       this._g.graphData(this._pendingData);
       this._pendingData = null;
@@ -125,12 +127,10 @@ export class Renderer3D {
     const gnodes = nodes.map((n) => { this._byId.set(n.id, n); return { ...n }; });
     const links = (edges || []).map((e) => ({ source: e.source, target: e.target }));
     if (!this._g) {
-      // 渲染器还未初始化，先存储数据，等初始化后再设置
       this._pendingData = { nodes: gnodes, links };
       return;
     }
     this._g.graphData({ nodes: gnodes, links });
-    // 确保容器尺寸正确后触发重绘
     requestAnimationFrame(() => {
       if (this._g) {
         this._g.width(this._container.offsetWidth);
@@ -176,7 +176,7 @@ export class Renderer3D {
     this._updateZRange();
     this._g.nodeColor(this._g.nodeColor());
     this._g.nodeOpacity(this._g.nodeOpacity());
-    // 自动适配相机视角
+    // 自动适配相机视角到 FA2 坐标范围
     setTimeout(() => {
       if (this._g) this._g.zoomToFit(500, 60);
     }, 100);
@@ -218,7 +218,7 @@ export class Renderer3D {
     return this._adjustBrightness(color, d.z);
   }
 
-  _nodeOpacity(d) {
+  _nodeOpacityForNode(d) {
     const base = 0.92;
     const zNorm = this._normalizeZ(d.z);
     return 0.4 + zNorm * (base - 0.4);
@@ -231,6 +231,7 @@ export class Renderer3D {
   }
 
   _updateZRange() {
+    if (!this._g) return;
     const cur = this._g.graphData();
     if (!cur || !cur.nodes || !cur.nodes.length) {
       this._zRange = { min: 0, max: 0 };
@@ -350,7 +351,7 @@ export class Renderer3D {
 
   destroy() {
     this._clearLongTimer();
-    try { this._g._destructor && this._g._destructor(); } catch (_) {}
+    try { this._g && this._g._destructor && this._g._destructor(); } catch (_) {}
     this._container.innerHTML = '';
     this._byId.clear();
   }
