@@ -195,7 +195,7 @@ export class Renderer3D {
     const tipColor = this._computeTipColor(this._style.background, this._style.bgColor);
     this._g.nodeLabel((d) => `<div style="font:12px system-ui;color:${tipColor}">${this._esc(d.label || d.title || d.id)}</div>`)
       .linkColor(this._style.edgeColor)
-      .linkWidth(this._style.edgeWidth ? this._style.edgeWidth * 0.35 : 0.4)
+      .linkWidth(this._style.edgeWidth || 1.2)
       .linkVisibility(!!this._style.showEdges)
       .linkDirectionalArrowLength(this._style.showEdgeDir ? 2.2 : 0);
   }
