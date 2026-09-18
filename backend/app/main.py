@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="PaperAgent", version=APP_VERSION, lifespan=lifespan)
 
 # 开发环境 CORS 配置：允许前端（localhost:8080）跨域访问后端（localhost:8000）
+# 方法1：使用 CORSMiddleware（标准方式）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
@@ -49,6 +50,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 方法2：手动添加 CORS headers（备用，确保生效）
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    response = await call_next(request)
+    origin = request.headers.get("origin")
+    if origin in ["http://localhost:8080", "http://127.0.0.1:8080"]:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 # P5 点3：随窗口关闭自动退出——记录最近一次 API 活动时间（前端 5s 轮询即心跳）；
 # 前端关窗后无请求，空闲超时**优雅**退出（beforeunload sendBeacon 立即关兜底）。
