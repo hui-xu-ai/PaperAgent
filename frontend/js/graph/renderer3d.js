@@ -113,7 +113,15 @@ export class Renderer3D {
     this._wireLongPress();
 
     if (this._pendingData) {
+      // 保存相机状态防止自动缩放
+      const camPos = this._g.cameraPosition();
+      const zoom = this._g.zoom();
       this._g.graphData(this._pendingData);
+      // 恢复相机位置
+      if (camPos && camPos.x != null) {
+        this._g.cameraPosition(camPos, undefined, 0);
+        this._g.zoom(zoom || 1, 0);
+      }
       this._pendingData = null;
     }
   }

@@ -144,14 +144,15 @@ export class Renderer2D {
       if (e.source === e.target) continue;
       if (!this._graph.hasNode(e.source) || !this._graph.hasNode(e.target)) continue;
       try {
+        const edgeSize = this._style.edgeWidth != null ? this._style.edgeWidth : 1.2;
         const edgeId = this._graph.addEdge(e.source, e.target, {
-          size: Math.max(0.02, this._style.edgeWidth || 1.2),
+          size: edgeSize,
           color: this._style.edgeColor || '#8890a0',
           hidden: !this._style.showEdges,
           type: 'arrow',
         });
         // 确保边线属性正确设置（sigma 可能覆盖）
-        this._graph.setEdgeAttribute(edgeId, 'size', Math.max(0.02, this._style.edgeWidth || 1.2));
+        this._graph.setEdgeAttribute(edgeId, 'size', edgeSize);
         this._graph.setEdgeAttribute(edgeId, 'color', this._style.edgeColor || '#8890a0');
       } catch (_) { /* 重复边忽略 */ }
     }
@@ -205,7 +206,7 @@ export class Renderer2D {
     this._renderer.setSetting('labelColor', labelColor);
     this._renderer.setSetting('labelSize', 10);
     const edgeColor = this._style.edgeColor || (isLight ? '#5a6270' : '#a0aab8');
-    const edgeWidth = this._style.edgeWidth || 1.2;
+    const edgeWidth = this._style.edgeWidth != null ? this._style.edgeWidth : 1.2;
     this._renderer.setSetting('defaultEdgeColor', edgeColor);
     this._renderer.setSetting('defaultEdgeSize', edgeWidth);
     this._renderer.setSetting('renderEdgeLabels', false);
@@ -274,10 +275,11 @@ export class Renderer2D {
   clearHighlight() {
     this._hl = null;
     this._restoreAttrs();
+    const edgeWidth = this._style.edgeWidth != null ? this._style.edgeWidth : 1.2;
     this._graph.forEachEdge((edge) => {
       this._graph.setEdgeAttribute(edge, 'hidden', !this._style.showEdges);
       this._graph.setEdgeAttribute(edge, 'color', this._style.edgeColor);
-      this._graph.setEdgeAttribute(edge, 'size', this._style.edgeWidth || 1.2);
+      this._graph.setEdgeAttribute(edge, 'size', edgeWidth);
     });
     this._renderer.refresh();
   }
