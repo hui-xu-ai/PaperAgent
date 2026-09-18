@@ -1469,11 +1469,8 @@
   <script src="/vendor/katex/katex.min.js"></script>
   <script src="/vendor/highlight.min.js"></script>
   <script src="/vendor/pdfjs/pdf.min.js"></script>
-  <!-- 图谱可视化库（UMD 全局：graphology / Sigma / forceatlas2 / ForceGraph3D）-->
-  <script src="/vendor/graphology/graphology.umd.min.js"></script>
-  <script src="/vendor/sigma/sigma.min.js"></script>
-  <script src="/vendor/fa2/graphology-layout-forceatlas2.umd.min.js"></script>
-  <script src="/vendor/3d-force-graph/3d-force-graph.min.js"></script>
+  <!-- 图谱可视化库（three.js UMD 全局 THREE；graphology/fa2 由 layout.worker 自行 importScripts）-->
+  <script src="/vendor/three/three.min.js"></script>
   <script src="/version.js"></script>
   <!-- lit-admin.js 必须在 app.js 之前（boot() 同步调用 bindLitAdmin）-->
   <script src="/js/lit-admin.js"></script>

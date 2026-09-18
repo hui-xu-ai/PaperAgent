@@ -11,8 +11,7 @@ import * as api from './api.js';
 import { GraphDataModel } from './dataModel.js';
 import { LayoutEngine } from './layoutEngine.js';
 import { applyStyles, toRendererStyle } from './styleApplier.js';
-import { Renderer2D } from './renderer2d.js';
-import { Renderer3D } from './renderer3d.js';
+import { RendererThree } from './rendererThree.js';
 import { Panel } from './panel.js';
 import * as filters from './filters.js';
 import * as settings from './settings.js';
@@ -51,56 +50,20 @@ class GraphController {
 
   // ─ 渲染器管理 ───────────────────────────────────────
 
-  /** 构建渲染器（2D/3D切换）。 */
-  _buildRenderer() {
-    const container = $('lg-canvas');
-    if (this.renderer) this.renderer.destroy();
-
-    this.renderer = this.displayMode === '3d'
-      ? new Renderer3D(container)
-      : new Renderer2D(container);
-
+  /** 单场景渲染器只建一次；2D/3D 是其显示样式，不是两个引擎。 */
+  _ensureRenderer() {
+    if (this.renderer) return;
+    this.renderer = new RendererThree($('lg-canvas'));
     this.renderer
       .onClick((id) => this._onNodeClick(id))
       .onLongPress((id) => this._onNodeLongPress(id));
-
-    // 如果已有数据，立即渲染
-    if (this._loaded && this.data.nodeCount > 0) {
-      this._render();
-    }
   }
 
-  /** 设置显示模式（2D↔3D）。 */
+  /** 设置显示模式（2D↔3D）：场景内切相机/材质，位置与缩放观感保持连续。 */
   setDisplayMode(mode) {
     if (mode === this.displayMode) return;
-
-    // 保存当前坐标
-    if (this.layout.currentPositions) {
-      this.layout.save();
-    }
-
-    // 切换模式
     this.displayMode = mode;
-
-    // 先把已算好的坐标写进数据节点，新渲染器 setData 时即带真实坐标
-    const saved = this.layout.restore();
-    if (saved) this._syncPositionsToData(saved);
-
-    this._buildRenderer();
-
-    // 恢复坐标
-    if (saved) {
-      this.renderer.applyPositions(saved, this.data.ids);
-      this.paused = true;
-    } else if (this.layoutAlgorithm === 'fa2') {
-      // 无缓存且算法是FA2 → 启动worker
-      this._startFA2(true);
-    } else {
-      // 几何布局 → 重新计算
-      this._runGeometricLayout();
-    }
-
-    // 同步3D视角按钮显示
+    if (this.renderer) this.renderer.setDisplayMode(mode);
     this._sync3dViews();
   }
 
@@ -471,7 +434,7 @@ function openGraph() {
     bindUI();
 
     try {
-      app._buildRenderer();
+      app._ensureRenderer();
     } catch (e) {
       console.error('[graph] 渲染器初始化失败:', e);
       app.panel.setMessage('渲染器初始化失败：' + e.message);
