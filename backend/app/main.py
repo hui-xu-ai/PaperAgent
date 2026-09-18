@@ -17,6 +17,7 @@ from .engine_patch import apply_engine_asset_patch
 apply_engine_asset_patch()
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -39,6 +40,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PaperAgent", version=APP_VERSION, lifespan=lifespan)
+
+# 开发环境 CORS 配置：允许前端（localhost:8080）跨域访问后端（localhost:8000）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # P5 点3：随窗口关闭自动退出——记录最近一次 API 活动时间（前端 5s 轮询即心跳）；
 # 前端关窗后无请求，空闲超时**优雅**退出（beforeunload sendBeacon 立即关兜底）。
