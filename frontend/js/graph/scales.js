@@ -84,3 +84,7 @@ export function inferIfMax(nodes) {
   for (const n of nodes) if ((n.impact_factor || 0) > m) m = n.impact_factor;
   return m || 10;
 }
+
+/** 长按高亮配色（渲染器与图例共用）。 */
+export const HL_CITING = '#f97316';
+export const HL_CITED = '#22d3ee';

@@ -15,8 +15,8 @@
  *   focus(id) / fit() / onClick(cb) / onLongPress(cb) / destroy()
  */
 
-const HL_CITING = '#f97316';
-const HL_CITED = '#22d3ee';
+import { HL_CITING, HL_CITED } from './scales.js';
+
 const DIM_NODE = '#333a45';
 const DIM_EDGE = '#1c222b';
 

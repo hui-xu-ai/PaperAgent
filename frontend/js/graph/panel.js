@@ -3,8 +3,7 @@
  * 职责单一：把数据画进右侧详情区、左下角 HUD、右下角图例，并控制面板折叠。
  * 详情数据来自 api.getNode(doi)（标题/摘要/关键词/作者/被引/IF/分区/度数）。
  */
-import { paletteGradient } from './scales.js';
-import { HL_CITING, HL_CITED } from './renderer2d.js';
+import { paletteGradient, HL_CITING, HL_CITED } from './scales.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) =>
