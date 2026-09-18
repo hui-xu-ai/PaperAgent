@@ -1271,6 +1271,15 @@
           <button class="lg-seg-btn active" data-mode="2d">2D</button>
           <button class="lg-seg-btn" data-mode="3d">3D</button>
         </div>
+        <div class="lg-view-controls" id="lg-view-controls" title="3D 视角控制（仅3D模式有效）">
+          <button class="btn small" id="lg-view-front" title="前视图">前</button>
+          <button class="btn small" id="lg-view-top" title="俯视图">顶</button>
+          <button class="btn small" id="lg-view-side" title="侧视图">侧</button>
+          <button class="btn small" id="lg-view-iso" title="等轴测视图">等轴</button>
+          <button class="btn small" id="lg-view-reset" title="恢复初始视角">↺</button>
+          <label class="lg-spacing-label" title="节点间距（3D展开）">间距</label>
+          <input type="range" id="lg-spacing" class="lg-spacing-slider" min="1" max="3" step="0.1" value="1" title="调整节点间距">
+        </div>
         <div class="lg-topbtns">
           <button class="btn small" id="lg-layout-toggle" title="暂停/继续引力布局">⏸ 暂停布局</button>
           <button class="btn small" id="lg-fit" title="缩放适配全图">⛶ 适配</button>
@@ -1341,6 +1350,7 @@
               </select>
             </div>
             <div class="lg-actions">
+              <button class="btn small" id="lg-preview">预览节点数</button>
               <button class="btn small primary" id="lg-apply">应用过滤</button>
               <button class="btn small" id="lg-reset">重置</button>
             </div>
@@ -1377,15 +1387,18 @@
             <div class="lg-field">
               <label>画布背景</label>
               <select id="lg-s-bg">
+                <option value="light" selected>浅色</option>
+                <option value="gradient">渐变</option>
                 <option value="dark">深色</option>
-                <option value="light">浅色</option>
                 <option value="grid">网格</option>
                 <option value="radial">径向渐变</option>
               </select>
               <div class="lg-row2" style="margin-top:6px">
-                <label class="lg-colorwrap">背景色<input type="color" id="lg-s-bgcolor" value="#0e1116"></label>
-                <label class="lg-colorwrap">边色<input type="color" id="lg-s-edgecolor" value="#3a4150"></label>
+                <label class="lg-colorwrap">背景色<input type="color" id="lg-s-bgcolor" value="#f4f6fa"></label>
+                <label class="lg-colorwrap">边色<input type="color" id="lg-s-edgecolor" value="#8890a0"></label>
               </div>
+              <div class="lg-hint" style="margin-top:6px">边粗细<span class="lg-val" id="lg-s-edgewidth-val">1.2</span></div>
+              <input type="range" id="lg-s-edgewidth" min="0.2" max="4" value="1.2" step="0.2">
             </div>
             <div class="lg-field">
               <label>引力布局参数</label>
@@ -1406,10 +1419,19 @@
           <div class="lg-hud" id="lg-hud">节点 0 · 边 0</div>
           <div class="lg-legend" id="lg-legend"></div>
           <div class="lg-loading" id="lg-loading" style="display:none"><div class="lg-spinner"></div><span>加载图谱…</span></div>
+          <div class="lg-help-bar" id="lg-help-bar">
+            <span>左键：选择节点</span>
+            <span>中键/Shift+左键：平移画布</span>
+            <span>滚轮：缩放</span>
+            <span>长按节点：高亮引用关系</span>
+          </div>
         </div>
 
+        <!-- 详情面板拖动手柄 -->
+        <div class="lg-resize-handle" id="lg-resize-handle"></div>
+
         <!-- 右侧：节点详情 -->
-        <aside class="lg-detail" id="lg-detail">
+        <aside class="lg-detail collapsed" id="lg-detail">
           <div class="lg-detail-head">
             <span>文献详情</span>
             <button class="lg-detail-close" id="lg-detail-close" title="关闭详情">×</button>

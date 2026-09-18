@@ -48,10 +48,11 @@ export function paletteGradient(paletteName = 'viridis') {
   return `linear-gradient(90deg, ${parts.join(', ')})`;
 }
 
-/** 库内被引 → 节点半径（sqrt 缩放，base 为用户大小基准）。 */
+/** 库内被引 → 节点半径（pow(0.6) 缩放，base 为用户大小基准）。
+ *  相比 sqrt，pow(0.6) 使高被引节点更大、低被引节点更小，视觉差异更明显。 */
 export function sizeForCitations(libCitations, base = 1.0) {
   const c = Math.max(0, libCitations || 0);
-  return (1.6 + Math.sqrt(c) * 1.5) * base;
+  return (1.2 + Math.pow(c, 0.6) * 1.8) * base;
 }
 
 /** 节点标签。mode: 'year_cited' | 'title' | 'none'。 */

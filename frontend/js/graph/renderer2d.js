@@ -60,6 +60,33 @@ function _isLightHex(hex) {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5;
 }
 
+/** 自定义标签渲染器：先画描边（shadowBlur），再画文字，确保任何背景下都可读。 */
+function _labelRendererWithHalo(ctx, node, settings) {
+  const label = node.label;
+  if (!label) return;
+  const fontSize = settings.labelSize || 10;
+  const font = settings.labelFont || 'Arial';
+  const weight = settings.labelWeight || 'normal';
+  const lc = settings.labelColor;
+  const color = typeof lc === 'string' ? lc : (lc?.color || '#000');
+  const isLight = _isLightHex(color.replace('#', '').length === 6 ? color : '#ffffff');
+  const haloColor = isLight ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.8)';
+
+  ctx.font = `${weight} ${fontSize}px ${font}`;
+  const x = node.x + node.size + 3;
+  const y = node.y + fontSize / 3;
+
+  ctx.save();
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.shadowBlur = 6;
+  ctx.shadowColor = haloColor;
+  ctx.fillStyle = color;
+  ctx.fillText(label, x, y);
+  ctx.fillText(label, x, y);
+  ctx.restore();
+}
+
 export class Renderer2D {
   constructor(container) {
     this._container = container;
@@ -73,17 +100,19 @@ export class Renderer2D {
     this._longTimer = null;
     this._panning = false;
     this._panStart = null;
-    this._spaceDown = false;
+    this._panMoved = false;
 
     this._renderer = new SigmaClass(this._graph, container, {
       renderLabels: true,
-      labelRenderedSizeThreshold: 7,
+      labelRenderedSizeThreshold: 5,
+      labelRenderer: _labelRendererWithHalo,
       defaultEdgeType: 'line',
       defaultEdgeColor: this._style.edgeColor,
       defaultNodeColor: '#4f9cf9',
       zIndex: true,
       allowInvalidContainer: true,
     });
+    this._container.style.cursor = 'grab';
 
     this._origAttrs = null;
     this._tooltip = null;
@@ -169,7 +198,7 @@ export class Renderer2D {
       labelColor = BG_LABEL_COLOR[this._style.background] || BG_LABEL_COLOR.light;
     }
     this._renderer.setSetting('labelColor', labelColor);
-    this._renderer.setSetting('labelSize', 8);
+    this._renderer.setSetting('labelSize', 10);
     const edgeColor = this._style.edgeColor || (isLight ? '#5a6270' : '#a0aab8');
     this._renderer.setSetting('defaultEdgeColor', edgeColor);
     this._renderer.setSetting('defaultEdgeSize', this._style.edgeWidth || 1.2);
@@ -190,7 +219,13 @@ export class Renderer2D {
   _isCurrentBgLight() {
     const bg = BACKGROUNDS[this._style.background] || BACKGROUNDS.light;
     const hex = this._style.bgColor || bg.css;
-    if (!hex || hex.includes('gradient')) return false;
+    if (!hex) return false;
+    if (hex.includes('gradient')) {
+      // 从渐变中提取第一个颜色值判断
+      const match = hex.match(/#[0-9a-fA-F]{6}/);
+      if (match) return _isLightHex(match[0]);
+      return false; // 无法解析的渐变默认视为深色
+    }
     return _isLightHex(hex);
   }
 
@@ -324,13 +359,16 @@ export class Renderer2D {
     this._origAttrs = null;
   }
 
-  /** 平移：中键拖动 或 Space+左键拖动。 */
+  /** 平移：中键拖拽 或 Shift+左键拖拽（左键单击留给节点选择）。 */
   _wirePan() {
     const cam = () => this._renderer.getCamera();
+    let moved = false;
     this._container.addEventListener('mousedown', (e) => {
-      if (e.button === 1 || (e.button === 0 && this._spaceDown)) {
+      // 中键 或 Shift+左键 → 平移
+      if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
         e.preventDefault();
         this._panning = true;
+        moved = false;
         this._panStart = { x: e.clientX, y: e.clientY };
         this._container.style.cursor = 'grabbing';
       }
@@ -339,9 +377,9 @@ export class Renderer2D {
       if (!this._panning || !this._panStart) return;
       const dx = e.clientX - this._panStart.x;
       const dy = e.clientY - this._panStart.y;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
       const c = cam();
       const ratio = c.ratio || 1;
-      // 将屏幕像素位移转换为相机坐标位移（sigma 相机 y 轴向下）
       c.x -= (dx / this._container.offsetWidth) * ratio * 2;
       c.y += (dy / this._container.offsetHeight) * ratio * 2;
       this._panStart = { x: e.clientX, y: e.clientY };
@@ -350,19 +388,11 @@ export class Renderer2D {
       if (this._panning) {
         this._panning = false;
         this._panStart = null;
-        this._container.style.cursor = '';
+        this._container.style.cursor = 'grab';
+        this._panMoved = moved;
       }
     });
-    this._container.addEventListener('wheel', (e) => {
-      // 滚轮缩放（sigma 默认支持，这里确保不冲突）
-    }, { passive: true });
-    // Space 键监听
-    window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space' && !e.repeat) this._spaceDown = true;
-    });
-    window.addEventListener('keyup', (e) => {
-      if (e.code === 'Space') this._spaceDown = false;
-    });
+    this._container.addEventListener('wheel', () => {}, { passive: true });
   }
 
   _wireEvents() {
@@ -381,7 +411,9 @@ export class Renderer2D {
       this._hideTooltip();
       this._clearLongTimer();
     });
-    this._renderer.on('clickStage', () => { this.clearHighlight(); });
+    this._renderer.on('clickStage', () => {
+      if (!this._panMoved) this.clearHighlight();
+    });
     this._container.addEventListener('mousemove', (e) => {
       this._lastMouse = { x: e.clientX, y: e.clientY };
       if (this._hoverNode) this._showTooltip(this._hoverNode, e.clientX, e.clientY);

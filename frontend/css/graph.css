@@ -1,11 +1,11 @@
 /* ══════════════════ 文献计量图谱（最大化窗口）══════════════════
  * 独立样式表（前端模块化）：仅服务 #lit-graph-modal，与 style.css 解耦。
- * 深色可视化工具主题（图谱在暗背景下对比度更佳）。
+ * 浅色可视化工具主题。
  */
-#lit-graph-modal { z-index: 3200; background: rgba(6,9,14,.72); }
+#lit-graph-modal { z-index: 3200; background: rgba(200,205,215,.55); }
 .lit-graph-win {
-  --lg-bg: #0e1116; --lg-panel: #161b23; --lg-panel2: #1d242e;
-  --lg-border: #2a323d; --lg-text: #e6e9ef; --lg-muted: #93a0b0; --lg-accent: #4f9cf9;
+  --lg-bg: #f0f2f5; --lg-panel: #ffffff; --lg-panel2: #f4f6f9;
+  --lg-border: #d4d8e0; --lg-text: #1a1d23; --lg-muted: #5a6270; --lg-accent: #3b82f6;
   width: 100vw; height: 100vh; max-width: none; max-height: none; border-radius: 0;
   display: flex; flex-direction: column; background: var(--lg-bg); color: var(--lg-text);
   font-size: 13px; overflow: hidden;
@@ -17,9 +17,14 @@
 .lg-seg-btn { border: none; background: var(--lg-panel2); color: var(--lg-muted); padding: 4px 14px;
   cursor: pointer; font-size: 12px; }
 .lg-seg-btn.active { background: var(--lg-accent); color: #fff; }
+.lg-view-controls { display: flex; align-items: center; gap: 4px; padding: 0 6px;
+  border-left: 1px solid var(--lg-border); border-right: 1px solid var(--lg-border); }
+.lg-view-controls .btn.small { padding: 3px 8px; font-size: 11px; min-width: 28px; }
+.lg-spacing-label { font-size: 11px; color: var(--lg-muted); margin-left: 4px; white-space: nowrap; }
+.lg-spacing-slider { width: 80px; height: 4px; cursor: pointer; }
 .lg-topbtns { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 .lg-topbtns .btn.small { background: var(--lg-panel2); color: var(--lg-text); border: 1px solid var(--lg-border); }
-.lg-topbtns .btn.small:hover { background: #28313d; }
+.lg-topbtns .btn.small:hover { background: #e8eaef; }
 .lg-search { background: var(--lg-panel2); border: 1px solid var(--lg-border); color: var(--lg-text);
   border-radius: 7px; padding: 5px 9px; font-size: 12px; width: 200px; }
 .lg-close { margin-left: 6px; border: none; background: none; color: var(--lg-muted); font-size: 24px;
@@ -62,24 +67,33 @@
 .lg-canvas-wrap { flex: 1; position: relative; min-width: 0; overflow: hidden; background: var(--lg-bg); }
 .lg-canvas { position: absolute; inset: 0; }
 .lg-canvas canvas { display: block; }
-.lg-hud { position: absolute; left: 10px; bottom: 10px; background: rgba(14,17,22,.82);
+.lg-hud { position: absolute; left: 10px; bottom: 10px; background: rgba(255,255,255,.88);
   border: 1px solid var(--lg-border); border-radius: 7px; padding: 5px 10px; font-size: 11px;
   color: var(--lg-muted); pointer-events: none; backdrop-filter: blur(3px); }
-.lg-legend { position: absolute; right: 10px; bottom: 10px; background: rgba(14,17,22,.82);
+.lg-legend { position: absolute; right: 10px; bottom: 10px; background: rgba(255,255,255,.88);
   border: 1px solid var(--lg-border); border-radius: 7px; padding: 7px 10px; font-size: 10.5px;
   color: var(--lg-muted); pointer-events: none; max-width: 240px; }
 .lg-legend .lg-lg-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
 .lg-legend .lg-swatch { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
 .lg-legend .lg-gradient { height: 8px; border-radius: 4px; margin: 4px 0 2px; }
 .lg-loading { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px;
-  align-items: center; justify-content: center; background: rgba(14,17,22,.6); color: var(--lg-text); font-size: 13px; }
+  align-items: center; justify-content: center; background: rgba(240,242,245,.7); color: var(--lg-text); font-size: 13px; }
 .lg-spinner { width: 30px; height: 30px; border: 3px solid var(--lg-border); border-top-color: var(--lg-accent);
   border-radius: 50%; animation: lg-spin .8s linear infinite; }
 @keyframes lg-spin { to { transform: rotate(360deg); } }
 
+.lg-help-bar { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 12px; background: rgba(255,255,255,.85); border: 1px solid var(--lg-border);
+  border-radius: 7px; padding: 5px 12px; font-size: 10.5px; color: var(--lg-muted);
+  pointer-events: none; backdrop-filter: blur(3px); white-space: nowrap; }
+.lg-help-bar span { display: inline-flex; align-items: center; }
+
 .lg-detail { width: 320px; flex-shrink: 0; background: var(--lg-panel); border-left: 1px solid var(--lg-border);
   display: flex; flex-direction: column; overflow: hidden; transition: margin-right .18s ease; }
 .lg-detail.collapsed { margin-right: -320px; }
+.lg-resize-handle { width: 5px; flex-shrink: 0; cursor: col-resize; background: transparent;
+  position: relative; z-index: 10; transition: background .15s; }
+.lg-resize-handle:hover, .lg-resize-handle.active { background: var(--lg-accent); }
 .lg-detail-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px;
   border-bottom: 1px solid var(--lg-border); font-weight: 700; font-size: 13px; flex-shrink: 0; }
 .lg-detail-close { border: none; background: none; color: var(--lg-muted); font-size: 20px; cursor: pointer; line-height: 1; }
@@ -89,14 +103,14 @@
 .lg-d-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
 .lg-d-tag { font-size: 10.5px; background: var(--lg-panel2); border: 1px solid var(--lg-border);
   border-radius: 10px; padding: 2px 8px; color: var(--lg-muted); }
-.lg-d-tag.lg-q1 { color: #6ee7a0; border-color: #2c5e44; }
-.lg-d-tag.lg-inkb { color: #7dd3fc; border-color: #2c5570; }
+.lg-d-tag.lg-q1 { color: #15803d; border-color: #bbf7d0; background: #f0fdf4; }
+.lg-d-tag.lg-inkb { color: #1d4ed8; border-color: #bfdbfe; background: #eff6ff; }
 .lg-d-sec { font-size: 11px; font-weight: 700; color: var(--lg-accent); margin: 12px 0 4px;
   text-transform: uppercase; letter-spacing: .04em; }
-.lg-d-text { font-size: 12px; line-height: 1.55; color: #cfd6e0; }
+.lg-d-text { font-size: 12px; line-height: 1.55; color: #3a3f48; }
 .lg-d-authors { font-size: 11.5px; color: var(--lg-muted); line-height: 1.5; }
 .lg-d-kw { display: flex; flex-wrap: wrap; gap: 4px; }
-.lg-d-kw span { font-size: 10.5px; background: var(--lg-panel2); border-radius: 9px; padding: 2px 8px; color: #b9c4d2; }
+.lg-d-kw span { font-size: 10.5px; background: var(--lg-panel2); border-radius: 9px; padding: 2px 8px; color: #4a5568; }
 .lg-d-doi { font-size: 11px; color: var(--lg-muted); word-break: break-all; margin-top: 4px; }
 .lg-d-doi a { color: var(--lg-accent); text-decoration: none; }
 .lg-d-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0; }

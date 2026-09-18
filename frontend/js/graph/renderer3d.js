@@ -1,8 +1,14 @@
 /* graph/renderer3d.js — 3D 立体渲染（3d-force-graph，three.js / WebGL）。
  *
- * 与 renderer2d.js 同构接口。3D 自带 d3-force-3d 物理引擎 → 不需要 FA2 worker：
- *   applyPositions() 为 no-op；布局由库内部驱动（main.js 仅在 2D 模式跑 worker）。
+ * 与 renderer2d.js 同构接口。位置由 FA2 worker 统一计算（main.js），
+ *   applyPositions() 将 2D 坐标映射到 3D 的 x/y 平面（z=0）。
+ * d3-force-3d 物理引擎已禁用（strength=0），避免覆盖 FA2 坐标。
  * 背景样式统一走容器 CSS + 透明场景，与 2D 表现一致。
+ *
+ * 深度视觉线索（方案A）：
+ *   - nodeOpacity: 近实远虚（根据z深度调整透明度）
+ *   - nodeColor brightness: 近亮远暗（根据z深度调整亮度）
+ *   - 透视投影：近大远小（3d-force-graph内置）
  */
 import { HL_CITING, HL_CITED } from './renderer2d.js';
 
@@ -37,9 +43,32 @@ export class Renderer3D {
     this._longCb = null;
     this._hoverNode = null;
     this._longTimer = null;
+    this._zRange = { min: 0, max: 0 };
+    this._spacingFactor = 1.0;
+    this._basePositions = null;
+    this._g = null;
 
+    // 延迟初始化，确保容器有正确尺寸
+    this._initWhenVisible();
+  }
+
+  _initWhenVisible() {
+    const tryInit = () => {
+      const w = this._container.offsetWidth;
+      const h = this._container.offsetHeight;
+      if (w > 0 && h > 0) {
+        this._initGraph();
+      } else {
+        // 容器还不可见，等待下一帧
+        requestAnimationFrame(tryInit);
+      }
+    };
+    tryInit();
+  }
+
+  _initGraph() {
     const initialTipColor = this._computeTipColor(this._style.background, this._style.bgColor);
-    this._g = ForceGraph3D({ controlType: 'orbit' })(container)
+    this._g = ForceGraph3D({ controlType: 'orbit' })(this._container)
       .backgroundColor('rgba(0,0,0,0)')
       .showNavInfo(false)
       .nodeId('id')
@@ -57,14 +86,22 @@ export class Renderer3D {
       .onNodeClick((node) => { this._clearLongTimer(); if (this._clickCb) this._clickCb(node.id); })
       .onNodeHover((node) => { this._hoverNode = node ? node.id : null; });
 
-    this._g.d3Force('charge').strength(-42);
+    // 弱化 d3-force-3d 物理引擎，让 FA2 坐标主导
+    this._g.d3Force('charge').strength(-20);
     this._g.d3Force('link').distance((l) => {
       const srcSize = l.source.size || 2;
       const tgtSize = l.target.size || 2;
       const avgSize = (srcSize + tgtSize) / 2;
       return Math.max(18, avgSize * 6);
     });
+    this._g.d3AlphaDecay(0.05);
     this._wireLongPress();
+
+    // 应用待处理的数据
+    if (this._pendingData) {
+      this._g.graphData(this._pendingData);
+      this._pendingData = null;
+    }
   }
 
   /** 根据背景计算标签颜色（深色→白，浅色→黑）。 */
@@ -87,10 +124,23 @@ export class Renderer3D {
     this._byId.clear();
     const gnodes = nodes.map((n) => { this._byId.set(n.id, n); return { ...n }; });
     const links = (edges || []).map((e) => ({ source: e.source, target: e.target }));
+    if (!this._g) {
+      // 渲染器还未初始化，先存储数据，等初始化后再设置
+      this._pendingData = { nodes: gnodes, links };
+      return;
+    }
     this._g.graphData({ nodes: gnodes, links });
+    // 确保容器尺寸正确后触发重绘
+    requestAnimationFrame(() => {
+      if (this._g) {
+        this._g.width(this._container.offsetWidth);
+        this._g.height(this._container.offsetHeight);
+      }
+    });
   }
 
   updateNodeAttrs(nodes) {
+    if (!this._g) return;
     for (const n of nodes) this._byId.set(n.id, n);
     // 合并到当前图数据（保留物理坐标）。
     const cur = this._g.graphData();
@@ -104,9 +154,39 @@ export class Renderer3D {
     this._g.nodeLabel(this._g.nodeLabel());   // 触发标签重绘
   }
 
-  applyPositions() { /* 3D 用自带物理引擎，忽略 worker 坐标 */ }
+  /** 回写 FA2 坐标：2D 的 x/y 直接映射到 3D 的 x/y（z=0，保持平面布局）。 */
+  applyPositions(positions, ids) {
+    if (!positions || !ids || !this._g) return;
+    const cur = this._g.graphData();
+    if (!cur || !cur.nodes) return;
+    const posMap = new Map();
+    for (let i = 0; i < ids.length; i++) {
+      posMap.set(ids[i], { x: positions[2 * i], y: positions[2 * i + 1] });
+    }
+    for (const node of cur.nodes) {
+      const p = posMap.get(node.id);
+      if (p) {
+        node.x = p.x;
+        node.y = p.y;
+        node.z = 0;
+      }
+    }
+    this._g.graphData(cur);
+    this._saveBasePositions();
+    this._updateZRange();
+    this._g.nodeColor(this._g.nodeColor());
+    this._g.nodeOpacity(this._g.nodeOpacity());
+    // 自动适配相机视角
+    setTimeout(() => {
+      if (this._g) this._g.zoomToFit(500, 60);
+    }, 100);
+  }
 
   setStyle(style = {}) {
+    if (!this._g) {
+      Object.assign(this._style, style);
+      return;
+    }
     Object.assign(this._style, style);
     const base = this._style.bgColor || BACKGROUNDS[this._style.background] || BACKGROUNDS.gradient;
     if (base.includes('gradient')) {
@@ -126,24 +206,123 @@ export class Renderer3D {
   }
 
   _nodeColor(d) {
-    if (!this._hl) return d.color || '#4f9cf9';
-    if (d.id === this._hl.center) return '#ffffff';
-    if (this._hl.citing.has(d.id)) return HL_CITING;
-    if (this._hl.cited.has(d.id)) return HL_CITED;
-    return DIM_NODE;
+    let color;
+    if (!this._hl) {
+      color = d.color || '#4f9cf9';
+    } else {
+      if (d.id === this._hl.center) color = '#ffffff';
+      else if (this._hl.citing.has(d.id)) color = HL_CITING;
+      else if (this._hl.cited.has(d.id)) color = HL_CITED;
+      else color = DIM_NODE;
+    }
+    return this._adjustBrightness(color, d.z);
+  }
+
+  _nodeOpacity(d) {
+    const base = 0.92;
+    const zNorm = this._normalizeZ(d.z);
+    return 0.4 + zNorm * (base - 0.4);
+  }
+
+  _normalizeZ(z) {
+    const { min, max } = this._zRange;
+    if (max === min) return 0.5;
+    return (z - min) / (max - min);
+  }
+
+  _updateZRange() {
+    const cur = this._g.graphData();
+    if (!cur || !cur.nodes || !cur.nodes.length) {
+      this._zRange = { min: 0, max: 0 };
+      return;
+    }
+    let min = Infinity, max = -Infinity;
+    for (const n of cur.nodes) {
+      const z = n.z || 0;
+      if (z < min) min = z;
+      if (z > max) max = z;
+    }
+    this._zRange = { min, max };
+  }
+
+  _adjustBrightness(hex, z) {
+    const zNorm = this._normalizeZ(z);
+    const factor = 0.5 + zNorm * 0.5;
+    const c = hex.replace('#', '');
+    if (c.length < 6) return hex;
+    const r = Math.round(parseInt(c.substring(0, 2), 16) * factor);
+    const g = Math.round(parseInt(c.substring(2, 4), 16) * factor);
+    const b = Math.round(parseInt(c.substring(4, 6), 16) * factor);
+    return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+  }
+
+  setSpacing(factor) {
+    if (!this._basePositions || !this._g) return;
+    this._spacingFactor = factor;
+    const cur = this._g.graphData();
+    if (!cur || !cur.nodes) return;
+    for (const node of cur.nodes) {
+      const base = this._basePositions.get(node.id);
+      if (base) {
+        node.x = base.x * factor;
+        node.y = base.y * factor;
+        node.z = base.z * factor;
+      }
+    }
+    this._updateZRange();
+    this._g.graphData(cur);
+    this._g.nodeColor(this._g.nodeColor());
+    this._g.nodeOpacity(this._g.nodeOpacity());
+  }
+
+  _saveBasePositions() {
+    const cur = this._g.graphData();
+    if (!cur || !cur.nodes) return;
+    this._basePositions = new Map();
+    for (const node of cur.nodes) {
+      this._basePositions.set(node.id, { x: node.x || 0, y: node.y || 0, z: node.z || 0 });
+    }
+  }
+
+  viewFront() {
+    if (this._g) this._g.cameraPosition({ x: 0, y: 0, z: 800 }, { x: 0, y: 0, z: 0 }, 1000);
+  }
+
+  viewTop() {
+    if (this._g) this._g.cameraPosition({ x: 0, y: 800, z: 0 }, { x: 0, y: 0, z: 0 }, 1000);
+  }
+
+  viewSide() {
+    if (this._g) this._g.cameraPosition({ x: 800, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, 1000);
+  }
+
+  viewIsometric() {
+    if (this._g) {
+      const d = 600;
+      this._g.cameraPosition({ x: d, y: d, z: d }, { x: 0, y: 0, z: 0 }, 1000);
+    }
+  }
+
+  viewReset() {
+    if (this._g) this._g.zoomToFit(1000, 80);
   }
 
   highlight(center, citing = [], cited = []) {
+    if (!this._g) return;
     this._hl = { center, citing: new Set(citing), cited: new Set(cited) };
     this._g.nodeColor(this._g.nodeColor());
+    this._g.nodeOpacity(this._g.nodeOpacity());
   }
 
   clearHighlight() {
+    if (!this._g) return;
     this._hl = null;
     this._g.nodeColor(this._g.nodeColor());
+    this._g.nodeOpacity(this._g.nodeOpacity());
   }
 
   focus(id) {
+    if (!this._g) return false;
     const node = this._byId.get(id);
     if (!node) return false;
     this._g.centerAt(node.x || 0, node.y || 0, 500);
@@ -151,7 +330,7 @@ export class Renderer3D {
     return true;
   }
 
-  fit() { this._g.zoomToFit(500, 50); }
+  fit() { if (this._g) this._g.zoomToFit(500, 50); }
 
   onClick(cb) { this._clickCb = cb; return this; }
   onLongPress(cb) { this._longCb = cb; return this; }
