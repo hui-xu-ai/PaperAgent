@@ -74,13 +74,14 @@ def _require_store() -> LitStore:
 
 def ingest_bib(bib_path: str | Path, source_file: str = "",
                import_refs: bool = True, min_year: int | None = None,
-               max_year: int | None = None) -> dict:
+               max_year: int | None = None, progress_cb=None) -> dict:
     """导入单个 WoS bib 文件。
 
     Args:
         import_refs: 是否导入参考文献（默认导入）
         min_year: 最小年份（过滤早于此年份的文献）
         max_year: 最大年份（过滤晚于此年份的文献）
+        progress_cb: 可选回调 (current, total, doi) 用于进度显示
 
     Returns:
         {"parsed": int, "deduped": int, "new_papers": int,
@@ -92,7 +93,8 @@ def ingest_bib(bib_path: str | Path, source_file: str = "",
         source_file = Path(bib_path).name
 
     raw_papers = parse_bib_file(bib_path, source_file=source_file,
-                                journal_mapper=_journal_mapper)
+                                journal_mapper=_journal_mapper,
+                                progress_cb=progress_cb)
     # 年份过滤
     filtered_count = 0
     if min_year is not None or max_year is not None:
@@ -109,9 +111,10 @@ def ingest_bib(bib_path: str | Path, source_file: str = "",
                 continue
             filtered.append(p)
         raw_papers = filtered
-    unique_papers, dup_count = deduplicate(raw_papers, store)
+    unique_papers, dup_count = deduplicate(raw_papers, store,
+                                           progress_cb=progress_cb)
     result = ingest_papers(unique_papers, store, source_file=source_file,
-                           import_refs=import_refs)
+                           import_refs=import_refs, progress_cb=progress_cb)
     result["parsed"] = len(raw_papers) + filtered_count
     result["duplicates_skipped"] = dup_count
     result["filtered_by_year"] = filtered_count
@@ -184,7 +187,8 @@ def enrich_pending(batch_size: int = 100) -> dict:
     """
     from .ingest.enrich import enrich_all_pending
     store = _require_store()
-    return enrich_all_pending(store, batch_size=batch_size)
+    return enrich_all_pending(store, batch_size=batch_size,
+                              journal_mapper=_journal_mapper)
 
 
 def enrich_batch(dois: list[str]) -> dict:
@@ -196,7 +200,8 @@ def enrich_batch(dois: list[str]) -> dict:
     """
     from .ingest.enrich import enrich_batch as _enrich_batch
     store = _require_store()
-    return _enrich_batch(dois, store, rate_limit=_settings.enrich_rate_limit)
+    return _enrich_batch(dois, store, rate_limit=_settings.enrich_rate_limit,
+                         journal_mapper=_journal_mapper)
 
 
 def enrich_one(doi: str) -> dict:
@@ -207,7 +212,7 @@ def enrich_one(doi: str) -> dict:
     """
     from .ingest.enrich import enrich_one as _enrich_one
     store = _require_store()
-    return _enrich_one(doi, store)
+    return _enrich_one(doi, store, journal_mapper=_journal_mapper)
 
 
 def unenriched_count() -> int:
@@ -217,9 +222,21 @@ def unenriched_count() -> int:
     return len(dois)
 
 
+def pending_dois(include_non_wos: bool = True) -> list[str]:
+    """返回需要 WoS 补全的 DOI：未补全，或来源非 WoS。"""
+    store = _require_store()
+    return store.get_pending_dois(include_non_wos=include_non_wos)
+
+
+def all_dois() -> list[str]:
+    """返回文献库全部 DOI。"""
+    store = _require_store()
+    return store.get_all_dois()
+
+
 # ---- 期刊名规范化 ----
 
-def normalize_journals(rate_limit: float = 10.0) -> dict:
+def normalize_journals(rate_limit: float = 10.0, progress_cb=None) -> dict:
     """批量规范化期刊名（缩写 → 全称，经 OpenAlex 解析）。
 
     Returns:
@@ -229,7 +246,8 @@ def normalize_journals(rate_limit: float = 10.0) -> dict:
     """
     from .ingest.normalize import normalize_journals as _normalize
     store = _require_store()
-    return _normalize(store, rate_limit=rate_limit, journal_mapper=_journal_mapper)
+    return _normalize(store, rate_limit=rate_limit, journal_mapper=_journal_mapper,
+                      progress_cb=progress_cb)
 
 
 def get_unique_journals() -> list[dict]:
@@ -244,6 +262,12 @@ def get_journal_mapper_stats() -> dict:
     if _journal_mapper is None:
         return {"total": 0, "cache_size": 0, "by_source": {}}
     return _journal_mapper.get_stats()
+
+
+def if_covered_count() -> int:
+    """已关联影响因子的文献数。"""
+    store = _require_store()
+    return store.if_covered_count()
 
 
 def add_journal_mapping(abbreviation: str, full_name: str,
@@ -304,7 +328,8 @@ def graph_network(*, year_min: int | None = None, year_max: int | None = None,
                   in_kb_only: bool = False,
                   sort_by: str = "library_citations",
                   limit: int = 5000,
-                  kb_dois: set[str] | None = None) -> dict:
+                  kb_dois: set[str] | None = None,
+                  preview: bool = False) -> dict:
     """导出引用网络（节点 + 边），服务端过滤。见 graph.network.build_network。"""
     from .graph import build_network
     store = _require_store()
@@ -316,6 +341,7 @@ def graph_network(*, year_min: int | None = None, year_max: int | None = None,
         quartiles=quartiles, cluster=cluster,
         exclude_references=exclude_references, in_kb_only=in_kb_only,
         sort_by=sort_by, limit=limit, kb_dois=kb_dois,
+        preview=preview,
     )
 
 

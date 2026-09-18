@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -42,80 +41,89 @@ def _rule_conditions(rules: dict[str, Any]) -> tuple[list[str], list]:
     if "library_citations" in rules and "min" in rules["library_citations"]:
         conditions.append("library_citations < ?")
         params.append(rules["library_citations"]["min"])
+    if rules.get("non_wos_record"):
+        # 非真正 WoS 记录：来源非 wos，或缺摘要的空存根（WoS 流程最终无法补全者）
+        conditions.append(
+            "(source_main NOT LIKE 'wos%' OR abstract IS NULL OR abstract = '')"
+        )
     return conditions, params
 
 
-def _guarded_where(rules: dict[str, Any]) -> tuple[str, list] | None:
-    """带主文献保护的完整 WHERE 子句；无有效规则返回 None。
+def _scope_cond(rules: dict[str, Any]) -> str:
+    """作用范围条件：默认仅参考文献；include_mains=True 时含主文献（危险 opt-in）。"""
+    return "1=1" if rules.get("include_mains") else "is_reference=1"
 
-    形如 ``is_reference=1 AND (cond1 OR cond2 ...)``——只清洗参考文献，
-    主文献永远保留。
+
+def _guarded_where(rules: dict[str, Any]) -> tuple[str, list] | None:
+    """带作用范围的完整 WHERE 子句；无有效规则返回 None。
+
+    默认形如 ``is_reference=1 AND (cond1 OR cond2 ...)``——只清洗参考文献，
+    主文献永远保留；仅当显式 include_mains 时才放开主文献。
     """
     conditions, params = _rule_conditions(rules)
     if not conditions:
         return None
-    return "is_reference=1 AND (" + " OR ".join(conditions) + ")", params
+    return f"{_scope_cond(rules)} AND (" + " OR ".join(conditions) + ")", params
 
 
 def attach_journal_metrics(store: LitStore, journals_db_path: Path | str) -> dict:
     """关联期刊指标（影响因子、分区）到 papers 表。
+
+    算法：ATTACH JCR 库 → 按期刊名聚合取最新年份到临时表（建唯一索引）→
+    单条 ``UPDATE ... WHERE EXISTS`` 连接完成全部回写，O(N log M)，
+    50 万篇规模仍为秒级。（旧实现逐期刊循环 UPDATE、每次全表扫描，
+    期刊数×文献数 复杂度，大规模下不可用。）
 
     Args:
         store: LitStore 实例
         journals_db_path: journals.db 路径
 
     Returns:
-        {"matched": int, "unmatched": int, "total": int}
+        {"matched": int, "unmatched": int, "total": int, "updated_rows": int}
     """
     journals_db_path = Path(journals_db_path)
     if not journals_db_path.exists():
         raise FileNotFoundError(f"journals.db not found: {journals_db_path}")
 
-    # 读取 JCR 数据（取最新年份）
-    jcr_conn = sqlite3.connect(journals_db_path)
-    jcr_data = {}
-    try:
-        rows = jcr_conn.execute("""
-            SELECT journal_name, jif, quartile, year
-            FROM jcr
-            ORDER BY year DESC
-        """).fetchall()
-        for journal_name, jif, quartile, year in rows:
-            # 只保留每个期刊的最新记录
-            if journal_name not in jcr_data:
-                jcr_data[journal_name.upper()] = {
-                    "jif": jif,
-                    "quartile": quartile,
-                    "year": year,
-                }
-    finally:
-        jcr_conn.close()
-
-    logger.info("Loaded %d journal metrics from JCR", len(jcr_data))
-
-    # 更新 papers 表（impact_factor/quartile 列由 _SCHEMA 声明）
-    matched = 0
-    unmatched = 0
     with store._conn() as conn:
-        # 获取所有唯一期刊名
-        journals = conn.execute(
-            "SELECT DISTINCT journal FROM papers WHERE journal != ''"
-        ).fetchall()
+        conn.execute("ATTACH ? AS jcrdb", (str(journals_db_path),))
+        try:
+            conn.execute("""
+                CREATE TEMP TABLE jcr_latest AS
+                SELECT jname, jif, quartile FROM (
+                    SELECT UPPER(journal_name) AS jname, jif, quartile,
+                           ROW_NUMBER() OVER (PARTITION BY UPPER(journal_name)
+                                              ORDER BY year DESC) AS rn
+                    FROM jcrdb.jcr
+                ) WHERE rn = 1
+            """)
+            conn.execute(
+                "CREATE UNIQUE INDEX jcr_latest_jname ON jcr_latest(jname)")
+            conn.execute("""
+                UPDATE papers SET
+                  impact_factor = (SELECT m.jif FROM jcr_latest m
+                                   WHERE m.jname = UPPER(papers.journal)),
+                  quartile      = (SELECT m.quartile FROM jcr_latest m
+                                   WHERE m.jname = UPPER(papers.journal))
+                WHERE papers.journal != ''
+                  AND EXISTS (SELECT 1 FROM jcr_latest m
+                              WHERE m.jname = UPPER(papers.journal))
+            """)
+            updated = conn.execute("SELECT changes()").fetchone()[0]
+            total = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT UPPER(journal) j "
+                "FROM papers WHERE journal != '')").fetchone()[0]
+            matched = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT UPPER(journal) j "
+                "FROM papers WHERE journal != '') "
+                "WHERE j IN (SELECT jname FROM jcr_latest)").fetchone()[0]
+        finally:
+            conn.execute("DETACH jcrdb")
 
-        for (journal,) in journals:
-            journal_upper = journal.upper()
-            metrics = jcr_data.get(journal_upper)
-            if metrics:
-                conn.execute(
-                    "UPDATE papers SET impact_factor = ?, quartile = ? WHERE journal = ?",
-                    (metrics["jif"], metrics["quartile"], journal),
-                )
-                matched += 1
-            else:
-                unmatched += 1
-
-    logger.info("attach_journal_metrics: %d matched, %d unmatched", matched, unmatched)
-    return {"matched": matched, "unmatched": unmatched, "total": matched + unmatched}
+    logger.info("attach_journal_metrics: %d/%d journals matched, %d rows updated",
+                matched, total, updated)
+    return {"matched": matched, "unmatched": total - matched, "total": total,
+            "updated_rows": updated}
 
 
 def compute_library_citations(store: LitStore) -> dict:
@@ -161,6 +169,7 @@ def preview_cleaning(store: LitStore, rules: dict[str, Any]) -> dict:
                 "impact_factor": {"min": 3.0},
                 "quartile": {"keep": ["Q1", "Q2"]},
                 "library_citations": {"min": 2},
+                "non_wos_record": True,
             }
 
     Returns:
@@ -173,6 +182,7 @@ def preview_cleaning(store: LitStore, rules: dict[str, Any]) -> dict:
                 "if_filter": int,
                 "quartile_filter": int,
                 "citation_filter": int,
+                "non_wos_filter": int,
             },
             "samples": [{"doi": str, "title": str, "year": str, ...}, ...]
         }
@@ -196,30 +206,36 @@ def preview_cleaning(store: LitStore, rules: dict[str, Any]) -> dict:
         to_remove = len(to_remove_rows)
         to_keep = total - to_remove
 
-        # 分项统计（同样只数参考文献，主文献恒保留）
+        # 分项统计（与 _guarded_where 同范围：默认仅参考文献）
+        scope = _scope_cond(rules)
         breakdown = {}
         if "year" in rules and "min" in rules["year"]:
             breakdown["year_filter"] = conn.execute(
-                "SELECT COUNT(*) FROM papers WHERE is_reference=1 "
+                f"SELECT COUNT(*) FROM papers WHERE {scope} "
                 "AND CAST(year AS INTEGER) < ?",
                 (rules["year"]["min"],)).fetchone()[0]
         if "impact_factor" in rules and "min" in rules["impact_factor"]:
             breakdown["if_filter"] = conn.execute(
-                "SELECT COUNT(*) FROM papers WHERE is_reference=1 "
+                f"SELECT COUNT(*) FROM papers WHERE {scope} "
                 "AND impact_factor < ?",
                 (rules["impact_factor"]["min"],)).fetchone()[0]
         if "quartile" in rules and "keep" in rules["quartile"]:
             keep_list = rules["quartile"]["keep"]
             placeholders = ",".join(["?"] * len(keep_list))
             breakdown["quartile_filter"] = conn.execute(
-                f"SELECT COUNT(*) FROM papers WHERE is_reference=1 "
+                f"SELECT COUNT(*) FROM papers WHERE {scope} "
                 f"AND quartile NOT IN ({placeholders})",
                 keep_list).fetchone()[0]
         if "library_citations" in rules and "min" in rules["library_citations"]:
             breakdown["citation_filter"] = conn.execute(
-                "SELECT COUNT(*) FROM papers WHERE is_reference=1 "
+                f"SELECT COUNT(*) FROM papers WHERE {scope} "
                 "AND library_citations < ?",
                 (rules["library_citations"]["min"],)).fetchone()[0]
+        if rules.get("non_wos_record"):
+            breakdown["non_wos_filter"] = conn.execute(
+                f"SELECT COUNT(*) FROM papers WHERE {scope} "
+                "AND (source_main NOT LIKE 'wos%' OR abstract IS NULL OR abstract = '')"
+            ).fetchone()[0]
 
         # 样本（前 20 条）
         samples = []
@@ -232,6 +248,8 @@ def preview_cleaning(store: LitStore, rules: dict[str, Any]) -> dict:
                 "impact_factor": row["impact_factor"],
                 "quartile": row["quartile"],
                 "library_citations": row["library_citations"],
+                "source_main": row["source_main"],
+                "abstract_missing": not row["abstract"],
             })
 
     return {
@@ -273,6 +291,11 @@ def execute_cleaning(store: LitStore, rules: dict[str, Any], mode: str = "delete
                 WHERE citing_doi IN (SELECT doi FROM papers WHERE {where_clause})
                    OR cited_doi IN (SELECT doi FROM papers WHERE {where_clause})
             """, params + params)
+            # FTS 无删除触发器，须同步清理，否则残留孤儿索引行
+            conn.execute(f"""
+                DELETE FROM papers_fts
+                WHERE doi IN (SELECT doi FROM papers WHERE {where_clause})
+            """, params)
             conn.execute(f"DELETE FROM papers WHERE {where_clause}", params)
         elif mode == "mark":
             # is_cleaned 列由 _SCHEMA 声明

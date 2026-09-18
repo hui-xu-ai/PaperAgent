@@ -113,7 +113,8 @@ def build_network(store: LitStore, *,
                   in_kb_only: bool = False,
                   sort_by: str = "library_citations",
                   limit: int = DEFAULT_NODE_LIMIT,
-                  kb_dois: set[str] | None = None) -> dict:
+                  kb_dois: set[str] | None = None,
+                  preview: bool = False) -> dict:
     """导出引用网络（节点 + 边）。
 
     Args:
@@ -160,6 +161,16 @@ def build_network(store: LitStore, *,
         matched = conn.execute(
             f"SELECT COUNT(*) FROM papers {where_sql}", params
         ).fetchone()[0]
+
+        if preview:
+            if in_kb_only:
+                conn.execute("DROP TABLE IF EXISTS temp.kb")
+            truncated = matched > limit
+            return {
+                "nodes": [], "edges": [],
+                "meta": {"matched_nodes": matched, "returned_nodes": 0,
+                         "returned_edges": 0, "truncated": truncated},
+            }
 
         # 取 Top-N 节点（按 sort_col 降序；year 文本排序对 4 位数等价数值序）。
         rows = conn.execute(
@@ -323,6 +334,8 @@ def get_node_detail(store: LitStore, doi: str) -> dict | None:
         "title": paper.title,
         "abstract": paper.abstract,
         "authors": paper.authors,
+        "affiliations": paper.affiliations,
+        "corresponding": paper.corresponding,
         "journal": paper.journal,
         "year": _safe_int(paper.year),
         "keywords": paper.keywords,

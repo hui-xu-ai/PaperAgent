@@ -284,3 +284,100 @@ class TestEnrichAllPending:
 
         assert result["enriched"] == 0
         assert result["rounds"] == 1
+
+
+class _FakeMapper:
+    """记录 add_mapping / bulk_add_mappings 调用，模拟 JournalMapper。"""
+
+    def __init__(self):
+        self.added: list[tuple[str, str, str]] = []
+        self.bulk: list[dict] = []
+
+    def add_mapping(self, abbreviation, full_name, source="manual"):
+        self.added.append((abbreviation, full_name, source))
+        return True
+
+    def bulk_add_mappings(self, mappings, source="openalex"):
+        self.bulk.append(dict(mappings))
+        return len(mappings)
+
+
+class TestJournalMappingLearning:
+    def test_enrich_one_learns_abbrev_to_full(self, lit_store):
+        doi = "10.1038/learn-1"
+        lit_store.upsert_paper(Paper(doi=doi, journal="NAT ENERGY"))
+        mapper = _FakeMapper()
+
+        with (
+            patch("paperlit.ingest.enrich.openalex.fetch_one",
+                  return_value=_oa_work(doi, journal="Nature Energy")),
+            patch("paperlit.ingest.enrich.crossref.fetch_one"),
+        ):
+            enrich_one(doi, lit_store, journal_mapper=mapper)
+
+        assert ("NAT ENERGY", "Nature Energy", "enrich") in mapper.added
+        # 补全只补空字段：journal 保持原缩写，替换交给规范化
+        assert lit_store.get_paper(doi).journal == "NAT ENERGY"
+
+    def test_no_mapping_when_journal_empty(self, lit_store):
+        doi = "10.1038/learn-2"
+        lit_store.upsert_paper(Paper(doi=doi, journal=""))
+        mapper = _FakeMapper()
+
+        with (
+            patch("paperlit.ingest.enrich.openalex.fetch_one",
+                  return_value=_oa_work(doi, journal="Nature Energy")),
+            patch("paperlit.ingest.enrich.crossref.fetch_one"),
+        ):
+            enrich_one(doi, lit_store, journal_mapper=mapper)
+
+        assert mapper.added == []
+
+    def test_no_mapping_when_same_case_insensitive(self, lit_store):
+        doi = "10.1038/learn-3"
+        lit_store.upsert_paper(Paper(doi=doi, journal="Nature Energy"))
+        mapper = _FakeMapper()
+
+        with (
+            patch("paperlit.ingest.enrich.openalex.fetch_one",
+                  return_value=_oa_work(doi, journal="NATURE ENERGY")),
+            patch("paperlit.ingest.enrich.crossref.fetch_one"),
+        ):
+            enrich_one(doi, lit_store, journal_mapper=mapper)
+
+        assert mapper.added == []
+
+    def test_batch_learns_and_bulk_saves(self, lit_store):
+        dois = ["10.1038/bl-1", "10.1038/bl-2"]
+        lit_store.upsert_paper(Paper(doi="10.1038/bl-1", journal="NAT ENERGY"))
+        lit_store.upsert_paper(Paper(doi="10.1038/bl-2", journal="ADV MATER"))
+        mapper = _FakeMapper()
+
+        oa_results = {
+            "10.1038/bl-1": _oa_work("10.1038/bl-1", journal="Nature Energy"),
+            "10.1038/bl-2": _oa_work("10.1038/bl-2", journal="Advanced Materials"),
+        }
+        with (
+            patch("paperlit.ingest.enrich.openalex.fetch_batch",
+                  return_value=oa_results),
+            patch("paperlit.ingest.enrich.crossref.fetch_one"),
+        ):
+            result = enrich_batch(dois, lit_store, journal_mapper=mapper)
+
+        assert result["journal_mappings_learned"] == 2
+        assert len(mapper.bulk) == 1
+        assert mapper.bulk[0] == {
+            "NAT ENERGY": "Nature Energy",
+            "ADV MATER": "Advanced Materials",
+        }
+
+    def test_no_mapper_is_noop(self, lit_store):
+        doi = "10.1038/nomap"
+        lit_store.upsert_paper(Paper(doi=doi, journal="NAT ENERGY"))
+        with (
+            patch("paperlit.ingest.enrich.openalex.fetch_one",
+                  return_value=_oa_work(doi, journal="Nature Energy")),
+            patch("paperlit.ingest.enrich.crossref.fetch_one"),
+        ):
+            result = enrich_one(doi, lit_store)
+        assert result["ok"] is True

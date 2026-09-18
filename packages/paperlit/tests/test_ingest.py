@@ -167,10 +167,136 @@ class TestDedup:
         assert len(unique) == 0
         assert dups == 1
 
+    def test_doi_dup_fills_stub_empty_fields(self, lit_store):
+        """库内空存根 ← WoS bib 完整记录：只补空字段并升级来源/置 is_enriched。"""
+        lit_store.upsert_paper(Paper(
+            doi="10.1002/stub", title="", abstract="", is_reference=True,
+            source_main="wos_ref"))
+        papers = [Paper(doi="10.1002/STUB", title="Full Title", abstract="Full abstract",
+                        journal="ADV MATER", year="2021", authors=["A, B"],
+                        source_main="wos", source_file="wos.bib")]
+        unique, dups = deduplicate(papers, lit_store)
+        assert len(unique) == 0 and dups == 1
+        got = lit_store.get_paper("10.1002/stub")
+        assert got.title == "Full Title" and got.abstract == "Full abstract"
+        assert got.journal == "ADV MATER" and got.authors == ["A, B"]
+        assert got.source_main == "wos" and got.source_file == "wos.bib"
+        assert got.is_enriched is True and got.enriched_at
+        assert got.is_reference is True  # 入库身份不变
+
+    def test_doi_dup_never_overwrites_existing_values(self, lit_store):
+        lit_store.upsert_paper(Paper(
+            doi="10.1002/full", title="Old Title", abstract="Old abstract",
+            journal="OLD J", year="2020", times_cited=7, source_main="wos"))
+        papers = [Paper(doi="10.1002/full", title="New Title", abstract="New abstract",
+                        journal="NEW J", year="2021", times_cited=99,
+                        source_main="wos", source_file="wos2.bib")]
+        unique, dups = deduplicate(papers, lit_store)
+        assert len(unique) == 0 and dups == 1
+        got = lit_store.get_paper("10.1002/full")
+        assert got.title == "Old Title" and got.abstract == "Old abstract"
+        assert got.journal == "OLD J" and got.year == "2020"
+        assert got.times_cited == 7 and got.source_file == ""
+
+    def test_doi_dup_upgrades_single_author_stub(self, lit_store):
+        """库内单作者缩写存根 ← WoS 主记录完整作者列表：应升级而非保留存根。"""
+        lit_store.upsert_paper(Paper(
+            doi="10.1088/stub", title="T", abstract="A",
+            authors=["Yu CH"], is_reference=True, source_main="wos_ref"))
+        papers = [Paper(doi="10.1088/stub",
+                        authors=["Yu, Chi-Hua", "Qin, Zhao", "Buehler, Markus J."],
+                        affiliations=["MIT"], source_main="wos", source_file="wos.bib")]
+        unique, dups = deduplicate(papers, lit_store)
+        assert len(unique) == 0 and dups == 1
+        got = lit_store.get_paper("10.1088/stub")
+        assert got.authors == ["Yu, Chi-Hua", "Qin, Zhao", "Buehler, Markus J."]
+        assert got.affiliations == ["MIT"]
+
+    def test_dedup_reports_progress_per_paper(self, lit_store):
+        """判重阶段必须逐条报进度（补全文件耗时在此，不能停 0）。"""
+        lit_store.upsert_paper(Paper(doi="10.1088/exist", title="T", abstract="A"))
+        papers = [Paper(doi="10.1088/exist", title="T", abstract="A"),
+                  Paper(doi="10.1088/new", title="N", abstract="B")]
+        calls = []
+        deduplicate(papers, lit_store,
+                    progress_cb=lambda c, t, d, ph: calls.append((c, t, ph)))
+        assert [c[0] for c in calls] == [1, 2]
+        assert all(c[1] == 2 for c in calls)
+        assert all(c[2] == "判重与补全" for c in calls)
+
+    def test_doi_dup_keeps_real_authors_not_stub(self, lit_store):
+        """库内已有带 source_authors 的真实作者列表：不被 incoming 覆盖。"""
+        lit_store.upsert_paper(Paper(
+            doi="10.1088/real", title="T", abstract="A",
+            authors=["Yu, Chi-Hua"], source_authors="openalex", source_main="wos"))
+        papers = [Paper(doi="10.1088/real",
+                        authors=["A, B", "C, D", "E, F"], source_main="wos")]
+        unique, dups = deduplicate(papers, lit_store)
+        assert len(unique) == 0 and dups == 1
+        assert lit_store.get_paper("10.1088/real").authors == ["Yu, Chi-Hua"]
+
     def test_normalize_doi(self):
         assert _normalize_doi("https://doi.org/10.1002/aenm") == "10.1002/aenm"
         assert _normalize_doi("DOI: 10.1002/aenm.") == "10.1002/aenm"
         assert _normalize_doi("10.1002/AENM") == "10.1002/aenm"
+
+
+class TestCorrespondingParsing:
+    AFFS = [
+        "Buehler, MJ (Corresponding Author), MIT, Lab Atomist \\& Mol Mech, "
+        "Dept Civil \\& Environm Engn, 77 Massachusetts Ave, Cambridge, MA USA.",
+        "Yu, Chi-Hua; Qin, Zhao; Buehler, Markus J., MIT, Lab Atomist \\& Mol Mech, "
+        "Dept Civil \\& Environm Engn, 77 Massachusetts Ave, Cambridge, MA USA.",
+    ]
+    AUTHORS = ["Yu, Chi-Hua", "Qin, Zhao", "Buehler, Markus J."]
+
+    def test_matches_full_name_from_abbrev(self):
+        from paperlit.ingest.bib_ingest import parse_corresponding
+        assert parse_corresponding(self.AFFS, self.AUTHORS) == ["Buehler, Markus J."]
+
+    def test_no_marker_returns_empty(self):
+        from paperlit.ingest.bib_ingest import parse_corresponding
+        assert parse_corresponding(["MIT, Cambridge"], self.AUTHORS) == []
+        assert parse_corresponding([], self.AUTHORS) == []
+
+    def test_falls_back_to_abbrev_when_no_full_match(self):
+        from paperlit.ingest.bib_ingest import parse_corresponding
+        assert parse_corresponding(self.AFFS, ["Yu, Chi-Hua"]) == ["Buehler, MJ"]
+
+    def test_multiple_corresponding_matched(self):
+        from paperlit.ingest.bib_ingest import parse_corresponding
+        affs = ["Zhang, Y; Wang, JH (Corresponding Author), Peking Univ, Beijing."]
+        authors = ["Liu, Ying", "Zhang, Yan", "Wang, Jia-huai"]
+        assert parse_corresponding(affs, authors) == ["Zhang, Yan", "Wang, Jia-huai"]
+
+    def test_prefix_initials_match(self):
+        """WoS 缩写 ZY 对应全称 Zhenyang（首字母口径不一致）应前缀兼容匹配。"""
+        from paperlit.ingest.bib_ingest import parse_corresponding
+        affs = ["Xi, M; Wang, ZY (Corresponding Author), Chinese Acad Sci, Hefei."]
+        authors = ["Kang, Zihao", "Xi, Min", "Wang, Zhenyang"]
+        assert parse_corresponding(affs, authors) == ["Xi, Min", "Wang, Zhenyang"]
+
+    def test_author_whitespace_normalized(self, tmp_path):
+        bib = tmp_path / "ws.bib"
+        bib.write_text(
+            '@article{a,\n  doi = {10.1016/ws},\n  title = {T},\n'
+            '  author = {Zhang,\n   Yan and Wang, Jia-huai},\n}\n', encoding="utf-8")
+        from paperlit.ingest.bib_ingest import parse_bib_file
+        papers = parse_bib_file(bib)
+        assert papers[0].authors == ["Zhang, Yan", "Wang, Jia-huai"]
+
+    def test_bib_parse_sets_corresponding(self, tmp_path):
+        bib = tmp_path / "c.bib"
+        bib.write_text(
+            '@article{a,\n'
+            '  doi = {10.1088/corr},\n'
+            '  title = {T},\n'
+            '  author = {Yu, Chi-Hua and Qin, Zhao and Buehler, Markus J.},\n'
+            '  affiliation = {' + self.AFFS[0] + '\n' + self.AFFS[1] + '},\n'
+            '}\n', encoding="utf-8")
+        from paperlit.ingest.bib_ingest import parse_bib_file
+        papers = parse_bib_file(bib)
+        assert papers[0].corresponding == ["Buehler, Markus J."]
 
 
 class TestIngest:
@@ -188,6 +314,13 @@ class TestIngest:
         assert stats["main_papers"] == 3
         assert stats["reference_papers"] == result["new_refs"]
         assert stats["citations"] == result["new_citations"]
+
+    def test_ingest_stamps_is_enriched_when_complete(self, lit_store):
+        complete = Paper(doi="10.1002/c", title="T", abstract="A", source_main="wos")
+        stub = Paper(doi="10.1002/d", title="", abstract="", source_main="wos_ref")
+        ingest_papers([complete, stub], lit_store, source_file="t.bib")
+        assert lit_store.get_paper("10.1002/c").is_enriched is True
+        assert lit_store.get_paper("10.1002/d").is_enriched is False
 
     def test_citation_graph(self, lit_store, bib_file):
         papers = parse_bib_file(bib_file)

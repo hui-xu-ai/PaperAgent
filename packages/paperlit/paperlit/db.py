@@ -167,15 +167,26 @@ class LitStore:
                 "SELECT COUNT(*) FROM papers WHERE paper_rank > 0"
             ).fetchone()[0]
 
+    def if_covered_count(self) -> int:
+        """已关联影响因子（impact_factor>0）的文献数。"""
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE impact_factor > 0"
+            ).fetchone()[0]
+
     # ---- Paper CRUD ----
 
-    def upsert_paper(self, paper: Paper) -> bool:
-        """插入或更新文献。返回 True 表示新增，False 表示更新。"""
+    def upsert_paper(self, paper: Paper, conn=None) -> bool:
+        """插入或更新文献。返回 True 表示新增，False 表示更新。
+        conn: 可选共享连接（用于事务性批量导入）。"""
         now = datetime.now().isoformat(timespec="seconds")
         if not paper.imported_at:
             paper.imported_at = now
 
-        with self._conn() as conn:
+        own_conn = conn is None
+        if own_conn:
+            conn = self._conn()
+        try:
             existing = conn.execute(
                 "SELECT doi FROM papers WHERE doi=?", (paper.doi,)
             ).fetchone()
@@ -212,7 +223,16 @@ class LitStore:
                 paper.impact_factor, paper.quartile, paper.library_citations,
             ))
             self._sync_fts(conn, paper)
-        return is_new
+            if own_conn:
+                conn.commit()
+            return is_new
+        except BaseException:
+            if own_conn:
+                conn.rollback()
+            raise
+        finally:
+            if own_conn:
+                conn.close()
 
     def _sync_fts(self, conn: sqlite3.Connection, paper: Paper) -> None:
         conn.execute(
@@ -252,11 +272,17 @@ class LitStore:
                 ).fetchall()
         return [self._row_to_paper(r) for r in rows]
 
-    def paper_exists(self, doi: str) -> bool:
-        with self._conn() as conn:
+    def paper_exists(self, doi: str, conn=None) -> bool:
+        own_conn = conn is None
+        if own_conn:
+            conn = self._conn()
+        try:
             return conn.execute(
                 "SELECT 1 FROM papers WHERE doi=?", (doi,)
             ).fetchone() is not None
+        finally:
+            if own_conn:
+                conn.close()
 
     def get_unenriched_dois(self, limit: int = 100) -> list[str]:
         """获取待补全元数据的 DOI 列表（有 DOI 但未补全）。"""
@@ -269,22 +295,61 @@ class LitStore:
             """, (limit,)).fetchall()
         return [r["doi"] for r in rows]
 
+    def get_pending_dois(self, include_non_wos: bool = True,
+                         limit: int = 100000) -> list[str]:
+        """需要 WoS 补全的 DOI：未补全，或来源非 WoS（bib 数据信任级最高）。
+
+        include_non_wos=True 时把 openalex/crossref 等来源已补全的文献也纳入，
+        以便用 WoS bib 覆盖为最高信任级数据。
+        """
+        sql = "SELECT doi FROM papers WHERE doi != '' AND (is_enriched = 0"
+        if include_non_wos:
+            sql += " OR source_main NOT LIKE 'wos%'"
+        sql += ") ORDER BY paper_rank DESC, times_cited DESC LIMIT ?"
+        with self._conn() as conn:
+            rows = conn.execute(sql, (limit,)).fetchall()
+        return [r["doi"] for r in rows]
+
+    def get_all_dois(self) -> list[str]:
+        """全部文献 DOI（与 get_pending_dois 同口径，含引用存根）。"""
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT doi FROM papers WHERE doi != ''
+                ORDER BY paper_rank DESC, times_cited DESC
+            """).fetchall()
+        return [r["doi"] for r in rows]
+
     # ---- Citation CRUD ----
 
-    def upsert_citation(self, cit: Citation) -> bool:
-        """插入引用边。返回 True 表示新增。"""
-        with self._conn() as conn:
+    def upsert_citation(self, cit: Citation, conn=None) -> bool:
+        """插入引用边。返回 True 表示新增。
+        conn: 可选共享连接（用于事务性批量导入）。"""
+        own_conn = conn is None
+        if own_conn:
+            conn = self._conn()
+        try:
             existing = conn.execute(
                 "SELECT 1 FROM citations WHERE citing_doi=? AND cited_doi=?",
                 (cit.citing_doi, cit.cited_doi)
             ).fetchone()
             if existing:
+                if own_conn:
+                    conn.commit()
                 return False
             conn.execute("""
                 INSERT INTO citations(citing_doi, cited_doi, source, cited_brief)
                 VALUES (?,?,?,?)
             """, (cit.citing_doi, cit.cited_doi, cit.source, cit.cited_brief))
-        return True
+            if own_conn:
+                conn.commit()
+            return True
+        except BaseException:
+            if own_conn:
+                conn.rollback()
+            raise
+        finally:
+            if own_conn:
+                conn.close()
 
     def upsert_citations(self, citations: list[Citation]) -> int:
         """批量插入引用边。返回新增数量。"""
