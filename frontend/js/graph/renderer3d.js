@@ -12,17 +12,19 @@ const DIM_NODE = '#2c333d';
 const BACKGROUNDS = {
   dark: '#0e1116',
   light: '#f4f6fa',
-  grid: '#0e1116',
-  radial: '#0e1116',
+  grid: '#f4f6fa',
+  radial: '#f4f6fa',
+  gradient: '#667eea',
 };
 const BG_IMAGES = {
   dark: 'none',
   light: 'none',
   grid:
-    'linear-gradient(rgba(255,255,255,.045) 1px, transparent 1px),' +
-    'linear-gradient(90deg, rgba(255,255,255,.045) 1px, transparent 1px)',
+    'linear-gradient(rgba(0,0,0,.06) 1px, transparent 1px),' +
+    'linear-gradient(90deg, rgba(0,0,0,.06) 1px, transparent 1px)',
   radial:
-    'radial-gradient(circle at 50% 45%, #1b2430 0%, #0e1116 60%, #070a0e 100%)',
+    'radial-gradient(circle at 50% 45%, #ffffff 0%, #e8ecf2 50%, #c8d0dc 100%)',
+  gradient: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
 };
 
 export class Renderer3D {
@@ -30,12 +32,13 @@ export class Renderer3D {
     this._container = container;
     this._byId = new Map();
     this._hl = null;
-    this._style = { showEdges: true, edgeColor: '#3a4150', background: 'dark', bgColor: null, showEdgeDir: false };
+    this._style = { showEdges: true, edgeColor: '#8890a0', background: 'light', bgColor: null, showEdgeDir: false };
     this._clickCb = null;
     this._longCb = null;
     this._hoverNode = null;
     this._longTimer = null;
 
+    const initialTipColor = this._computeTipColor(this._style.background, this._style.bgColor);
     this._g = ForceGraph3D({ controlType: 'orbit' })(container)
       .backgroundColor('rgba(0,0,0,0)')
       .showNavInfo(false)
@@ -43,11 +46,11 @@ export class Renderer3D {
       .nodeColor((d) => this._nodeColor(d))
       .nodeVal((d) => Math.max(0.4, (d.size || 2)) ** 2.2)
       .nodeOpacity(0.92)
-      .nodeLabel((d) => `<div style="font:12px system-ui;color:#fff">${this._esc(d.title || d.id)}</div>`)
+      .nodeLabel((d) => `<div style="font:12px system-ui;color:${initialTipColor}">${this._esc(d.label || d.title || d.id)}</div>`)
       .nodeResolution(12)
       .linkColor(() => this._style.edgeColor)
       .linkOpacity(0.32)
-      .linkWidth(0.4)
+      .linkWidth(() => this._style.edgeWidth ? this._style.edgeWidth * 0.35 : 0.4)
       .linkDirectionalArrowLength(() => (this._style.showEdgeDir ? 2.2 : 0))
       .linkDirectionalArrowRelPos(1)
       .linkVisibility(() => this._style.showEdges)
@@ -55,8 +58,25 @@ export class Renderer3D {
       .onNodeHover((node) => { this._hoverNode = node ? node.id : null; });
 
     this._g.d3Force('charge').strength(-42);
-    this._g.d3Force('link').distance((l) => 18);
+    this._g.d3Force('link').distance((l) => {
+      const srcSize = l.source.size || 2;
+      const tgtSize = l.target.size || 2;
+      const avgSize = (srcSize + tgtSize) / 2;
+      return Math.max(18, avgSize * 6);
+    });
     this._wireLongPress();
+  }
+
+  /** 根据背景计算标签颜色（深色→白，浅色→黑）。 */
+  _computeTipColor(background, bgColor) {
+    const hex = bgColor || BACKGROUNDS[background] || BACKGROUNDS.light;
+    if (!hex || hex.includes('gradient')) return '#ffffff';
+    const c = hex.replace('#', '');
+    if (c.length < 6) return '#ffffff';
+    const r = parseInt(c.substring(0, 2), 16);
+    const g = parseInt(c.substring(2, 4), 16);
+    const b = parseInt(c.substring(4, 6), 16);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5 ? '#1a1d23' : '#ffffff';
   }
 
   _esc(s) {
@@ -81,17 +101,26 @@ export class Renderer3D {
     }
     this._g.nodeColor(this._g.nodeColor());   // 触发重绘
     this._g.nodeVal(this._g.nodeVal());
+    this._g.nodeLabel(this._g.nodeLabel());   // 触发标签重绘
   }
 
   applyPositions() { /* 3D 用自带物理引擎，忽略 worker 坐标 */ }
 
   setStyle(style = {}) {
     Object.assign(this._style, style);
-    const base = this._style.bgColor || BACKGROUNDS[this._style.background] || BACKGROUNDS.dark;
-    this._container.style.background = base;
-    this._container.style.backgroundImage = BG_IMAGES[this._style.background] || 'none';
+    const base = this._style.bgColor || BACKGROUNDS[this._style.background] || BACKGROUNDS.gradient;
+    if (base.includes('gradient')) {
+      this._container.style.background = '';
+      this._container.style.backgroundImage = base;
+    } else {
+      this._container.style.background = base;
+      this._container.style.backgroundImage = BG_IMAGES[this._style.background] || 'none';
+    }
     this._container.style.backgroundSize = this._style.background === 'grid' ? '34px 34px' : '';
-    this._g.linkColor(this._style.edgeColor)
+    const tipColor = this._computeTipColor(this._style.background, this._style.bgColor);
+    this._g.nodeLabel((d) => `<div style="font:12px system-ui;color:${tipColor}">${this._esc(d.label || d.title || d.id)}</div>`)
+      .linkColor(this._style.edgeColor)
+      .linkWidth(this._style.edgeWidth ? this._style.edgeWidth * 0.35 : 0.4)
       .linkVisibility(!!this._style.showEdges)
       .linkDirectionalArrowLength(this._style.showEdgeDir ? 2.2 : 0);
   }
@@ -143,6 +172,7 @@ export class Renderer3D {
   destroy() {
     this._clearLongTimer();
     try { this._g._destructor && this._g._destructor(); } catch (_) {}
+    this._container.innerHTML = '';
     this._byId.clear();
   }
 }

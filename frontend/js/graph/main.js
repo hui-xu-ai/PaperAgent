@@ -14,6 +14,7 @@ import { Renderer3D } from './renderer3d.js';
 import { Panel } from './panel.js';
 import * as filters from './filters.js';
 import * as settings from './settings.js';
+import { layoutManager } from './layoutManager.js';
 
 const $ = (id) => document.getElementById(id);
 const MAX_ITER = 600;          // FA2 迭代预算（收敛后自动停，省 CPU）
@@ -35,6 +36,7 @@ class GraphApp {
     this._waiting = false;
     this._iters = 0;
     this._loaded = false;
+    this._savedPositions2d = null;   // 2D→3D→2D 切换时保留已收敛坐标
   }
 
   // ── 渲染器 ──────────────────────────────────────────
@@ -49,6 +51,7 @@ class GraphApp {
 
   /** 把当前 nodes/edges 画进渲染器（加工视觉字段后 setData）。 */
   paint() {
+    if (!this.renderer) return;
     const ifMax = inferIfMax(this.nodes);
     decorateNodes(this.nodes, { ...settings.decorateOpts(this.style), ifMax });
     this.renderer.setData(this.nodes, this.edges);
@@ -59,6 +62,7 @@ class GraphApp {
 
   /** 仅刷新视觉（样式变更，不重建布局）。 */
   repaint() {
+    if (!this.renderer) return;
     const ifMax = inferIfMax(this.nodes);
     decorateNodes(this.nodes, { ...settings.decorateOpts(this.style), ifMax });
     this.renderer.updateNodeAttrs(this.nodes);
@@ -68,15 +72,69 @@ class GraphApp {
 
   setMode(mode) {
     if (mode === this.mode) return;
+    // 切离当前模式时保存坐标
+    if (this.mode === '2d' && this.renderer && this.ids.length) {
+      layoutManager.save2dPositions(this._capturePositions2d());
+    } else if (this.mode === '3d' && this.renderer && this.renderer._g) {
+      const graphData = this.renderer._g.graphData();
+      if (graphData && graphData.nodes) {
+        const nodeMap = new Map(graphData.nodes.map(n => [n.id, n]));
+        layoutManager.save3dPositions(nodeMap);
+      }
+    }
+    
+    layoutManager.mode = mode;
     this.mode = mode;
     this.stopLayout();
     this.buildRenderer();
-    if (mode === '2d') this.startLayout(true);
-    else this.paused = true;       // 3D 用自带物理，无需 worker
+    
+    if (mode === '2d') {
+      const saved = layoutManager.restore2dPositions();
+      if (saved) {
+        // 恢复已收敛的坐标，不重跑布局
+        this.renderer.applyPositions(saved, this.ids);
+        this.paused = true;
+      } else {
+        this.startLayout(true);
+      }
+    } else {
+      // 3D 模式：尝试恢复之前保存的 3D 坐标
+      const saved3d = layoutManager.restore3dPositions();
+      if (saved3d && this.renderer && this.renderer._g) {
+        const graphData = this.renderer._g.graphData();
+        if (graphData && graphData.nodes) {
+          for (const node of graphData.nodes) {
+            const pos = saved3d.get(node.id);
+            if (pos) {
+              node.x = pos.x;
+              node.y = pos.y;
+              node.z = pos.z || 0;
+            }
+          }
+          this.renderer._g.graphData(graphData);
+        }
+      }
+      this.paused = true;       // 3D 用自带物理，无需 worker
+    }
     this._syncLayoutBtn();
   }
 
-  // ── 数据加载 ────────────────────────────────────────
+  /** 从渲染器当前节点坐标快照（2D 切 3D 前调用）。 */
+  _capturePositions2d() {
+    if (!this.renderer || !this.renderer._graph) return null;
+    const g = this.renderer._graph;
+    const pos = new Float32Array(this.ids.length * 2);
+    for (let i = 0; i < this.ids.length; i++) {
+      const id = this.ids[i];
+      if (!g.hasNode(id)) continue;
+      const attr = g.getNodeAttributes(id);
+      pos[2 * i] = attr.x;
+      pos[2 * i + 1] = attr.y;
+    }
+    return pos;
+  }
+
+  // ── 数据加载 ───────────────────────────────────────
   async loadFilters() {
     try {
       const facets = await api.getFilters();
@@ -84,6 +142,18 @@ class GraphApp {
       filters.syncLabels();
     } catch (e) {
       this.panel.setMessage('分面加载失败：' + e.message);
+    }
+  }
+
+  /** 过滤预览：显示过滤后节点数（不实际加载图谱）。 */
+  async previewFilter() {
+    try {
+      const params = { ...filters.readFilters(), limit: 1, preview: true };
+      const data = await api.getNetwork(params);
+      const count = data.meta?.matched_nodes || 0;
+      this.panel.setMessage(`过滤后约 ${count} 个节点${data.meta?.truncated ? '（已截断）' : ''}`);
+    } catch (e) {
+      this.panel.setMessage('预览失败：' + e.message);
     }
   }
 
@@ -100,6 +170,8 @@ class GraphApp {
       this.clusters = {};
       for (const n of this.nodes) this.clusters[n.id] = n.cluster || 0;
       this._loaded = true;
+      layoutManager.clearCache();  // 数据变化时清除位置缓存
+      layoutManager.init(this.ids, this.edges, this.clusters);
       if (!this.nodes.length) {
         this.panel.setHud(0, 0, this.meta);
         this.panel.setMessage('无匹配节点，放宽过滤条件试试。');
@@ -142,6 +214,12 @@ class GraphApp {
         clusters: this.clusters,
         settings: settings.layoutSettings(this.style),
       });
+    } else {
+      // 仅更新布局参数（不重置坐标）
+      this.worker.postMessage({
+        type: 'update-settings',
+        settings: settings.layoutSettings(this.style),
+      });
     }
     this._syncLayoutBtn();
     this._tick();
@@ -171,23 +249,44 @@ class GraphApp {
 
   togglePause() {
     if (this.mode !== '2d') return;
-    if (this._iters >= MAX_ITER) this._iters = 0;   // 收敛后再点 → 继续迭代
+    if (this.paused && this._iters >= MAX_ITER) {
+      // 收敛后继续 → 重置迭代计数
+      this._iters = 0;
+    }
     this.paused = !this.paused;
-    if (!this.paused) this._tick();
-    else this.stopLayout();
+    if (!this.paused) {
+      // 继续布局：如果还没初始化过，先初始化
+      if (this._iters === 0 && this._loaded) {
+        this.startLayout(true);
+      } else {
+        this._tick();
+      }
+    } else {
+      this.stopLayout();
+    }
     this._syncLayoutBtn();
   }
 
   _syncLayoutBtn() {
     const b = $('lg-layout-toggle');
     if (!b) return;
-    b.textContent = this.paused || this.mode === '3d' ? '▶ 继续布局' : '⏸ 暂停布局';
+    const running = !this.paused && this.mode === '2d';
+    b.textContent = running ? '⏸ 暂停布局' : '▶ 恢复布局';
+    b.title = running ? '暂停引力布局迭代' : '继续/重新运行引力布局';
     b.disabled = this.mode === '3d';
   }
 
   relayout() {
-    if (this.mode === '2d') this.startLayout(true);
-    else if (this.renderer && this.renderer._g) this.renderer._g.d3ReheatSimulation();
+    this.style = settings.readStyle();
+    if (this.mode === '2d') {
+      // 重跑布局：重新初始化 worker
+      this.stopLayout();
+      this._iters = 0;
+      this.paused = false;
+      this.startLayout(true);
+    } else if (this.renderer && this.renderer._g) {
+      this.renderer._g.d3ReheatSimulation();
+    }
   }
 
   // ── 交互 ────────────────────────────────────────────
@@ -238,7 +337,12 @@ function openGraph() {
   if (!app) {
     app = new GraphApp();
     bindUI();
-    app.buildRenderer();
+    try {
+      app.buildRenderer();
+    } catch (e) {
+      console.error('[graph] 渲染器初始化失败:', e);
+      app.panel.setMessage('渲染器初始化失败，请尝试切换 2D/3D 模式：' + e.message);
+    }
     app.loadFilters();
     app.loadNetwork();
   }
@@ -279,13 +383,17 @@ function bindUI() {
   filters.bindLiveLabels();
   $('lg-apply').addEventListener('click', () => app.loadNetwork());
   $('lg-reset').addEventListener('click', () => { filters.resetFilters(); app.loadNetwork(); });
+  // 过滤预览按钮（如果存在）
+  const previewBtn = $('lg-preview');
+  if (previewBtn) previewBtn.addEventListener('click', () => app.previewFilter());
 
   // 样式面板（实时预览）
   settings.bindLiveLabels();
   const style = settings.readStyle;
   const live = () => { app.style = style(); app.repaint(); };
   for (const id of ['lg-s-colorscale', 'lg-s-size', 'lg-s-label', 'lg-s-edges',
-                    'lg-s-edgelabel', 'lg-s-bg', 'lg-s-bgcolor', 'lg-s-edgecolor']) {
+                    'lg-s-edgelabel', 'lg-s-bg', 'lg-s-bgcolor', 'lg-s-edgecolor',
+                    'lg-s-edgewidth']) {
     const el = $(id);
     el.addEventListener('input', live);
     el.addEventListener('change', live);
@@ -301,6 +409,35 @@ function bindUI() {
     app.panel.showDetailPlaceholder();
     if (app.renderer) app.renderer.clearHighlight();
   });
+
+  // 详情面板拖动调宽
+  const handle = $('lg-resize-handle');
+  const detail = $('lg-detail');
+  if (handle && detail) {
+    let dragging = false;
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      dragging = true;
+      handle.classList.add('active');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const modalRect = detail.parentElement.getBoundingClientRect();
+      let w = modalRect.right - e.clientX;
+      w = Math.max(200, Math.min(600, w));
+      detail.style.width = w + 'px';
+      detail.classList.remove('collapsed');
+    });
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove('active');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    });
+  }
 }
 
 function bindEntry() {

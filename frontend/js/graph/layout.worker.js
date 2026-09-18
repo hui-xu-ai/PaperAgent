@@ -1,40 +1,39 @@
-/* graph/layout.worker.js — ForceAtlas2 引力布局 Web Worker（经典 worker）。
+/* graph/layout.worker.js — ForceAtlas2 引力布局 Web Worker。
  *
- * 用 importScripts 加载 vendor 的 graphology + forceatlas2 UMD（无打包步骤）。
- * 主线程增量请求迭代（{type:'run', iterations}），worker 回传 Float32Array 坐标
- * （transferable，10 万节点也低开销）。布局在主线程之外跑 → UI 不卡。
+ * 用 importScripts 加载 vendor 的 graphology + forceatlas2 UMD。
+ * fa2.forceatlas2.assign() 是高层 API：接受 graphology 图 → 内部转 Float32Array
+ * → 迭代 → 回写坐标。比直接调 fa2.iterate（原始数组 API）安全。
  *
  * 协议：
- *   → {type:'init', ids:[], edges:[{source,target}], clusters:{id:cluster}, settings:{}}
+ *   → {type:'init', ids, edges, clusters, settings}
  *   ← {type:'ready', n}
  *   → {type:'run', iterations:N}
- *   ← {type:'positions', positions:Float32Array(2N)}   // 顺序同 init.ids
+ *   ← {type:'positions', positions:Float32Array(2N)}
+ *   → {type:'update-settings', settings}
  */
 importScripts(
   '/vendor/graphology/graphology.umd.min.js',
   '/vendor/fa2/graphology-layout-forceatlas2.umd.min.js'
 );
 
-const GraphCtor = self.graphology;     // UMD 全局：graphology Graph 类
-const fa2 = self.forceatlas2;          // IIFE 全局：{ iterate, inferSettings, ... }
+const GraphCtor = self.graphology.Graph || self.graphology;
+const fa2 = self.forceatlas2;
 
 let graph = null;
 let ids = [];
 let settings = null;
 
 function seedPositions(ids, clusters) {
-  // 聚类种子：同簇节点起始位置聚在一处（相关文献自然靠拢），簇心绕大圆分布。
   const clusterIds = [...new Set(ids.map(id => clusters[id] || 0))];
   const clusterAngle = {};
   clusterIds.forEach((c, i) => { clusterAngle[c] = (i / Math.max(1, clusterIds.length)) * Math.PI * 2; });
-  const R = Math.max(200, ids.length * 0.6);   // 规模自适应半径
+  const R = Math.max(200, ids.length * 0.6);
   const pos = {};
   ids.forEach((id, i) => {
     const c = clusters[id] || 0;
     const a = clusterAngle[c];
-    // 簇心 + 簇内小幅随机散布（确定性伪随机，避免每次抖动）
     const cx = Math.cos(a) * R, cy = Math.sin(a) * R;
-    const jitter = ((i * 2654435761) % 1000) / 1000;   // hash 散列
+    const jitter = ((i * 2654435761) % 1000) / 1000;
     const jr = 40 + jitter * 120;
     const ja = jitter * Math.PI * 2;
     pos[id] = { x: cx + Math.cos(ja) * jr, y: cy + Math.sin(ja) * jr };
@@ -54,15 +53,14 @@ self.onmessage = (e) => {
       graph.addNode(id, { x: seed[id].x, y: seed[id].y });
     }
     for (const ed of (msg.edges || [])) {
-      if (ed.source === ed.target) continue;            // 自环跳过
+      if (ed.source === ed.target) continue;
       if (!graph.hasNode(ed.source) || !graph.hasNode(ed.target)) continue;
-      try { graph.addEdge(ed.source, ed.target); } catch (_) { /* 重复边忽略 */ }
+      try { graph.addEdge(ed.source, ed.target); } catch (_) {}
     }
-    // FA2 设置：inferSettings 给基线，叠加用户调参 + 大图 Barnes-Hut 优化。
     const inferred = fa2.inferSettings ? fa2.inferSettings(graph) : {};
     settings = Object.assign({}, inferred, {
       barnesHutOptimize: ids.length > 2000,
-      slowDown: 5,
+      slowDown: 3,
       adjustSizes: true,
     }, msg.settings || {});
     self.postMessage({ type: 'ready', n: ids.length });
@@ -72,7 +70,8 @@ self.onmessage = (e) => {
   if (msg.type === 'run') {
     if (!graph) return;
     const iters = Math.max(1, msg.iterations | 0);
-    for (let i = 0; i < iters; i++) fa2.iterate(settings, graph);
+    // fa2.forceatlas2.assign = 高层 API：graph → 内部转数组 → 迭代 → 回写图
+    fa2.forceatlas2.assign(graph, { iterations: iters, settings });
     const pos = new Float32Array(ids.length * 2);
     for (let i = 0; i < ids.length; i++) {
       const a = graph.getNodeAttributes(ids[i]);

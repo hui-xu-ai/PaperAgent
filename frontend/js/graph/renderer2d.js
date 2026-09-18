@@ -21,23 +21,44 @@ export const HL_CITED = '#22d3ee';
 const DIM_NODE = '#333a45';
 const DIM_EDGE = '#1c222b';
 
-// 画布背景样式（dark/light/grid/radial）。
+// 画布背景样式（dark/light/grid/radial/gradient）。
 const BACKGROUNDS = {
   dark: { css: '#0e1116' },
   light: { css: '#f4f6fa' },
   grid: {
-    css: '#0e1116',
+    css: '#f4f6fa',
     image:
-      'linear-gradient(rgba(255,255,255,.045) 1px, transparent 1px),' +
-      'linear-gradient(90deg, rgba(255,255,255,.045) 1px, transparent 1px)',
+      'linear-gradient(rgba(0,0,0,.06) 1px, transparent 1px),' +
+      'linear-gradient(90deg, rgba(0,0,0,.06) 1px, transparent 1px)',
     size: '34px 34px',
   },
   radial: {
-    css: '#0e1116',
+    css: '#f4f6fa',
     image:
-      'radial-gradient(circle at 50% 45%, #1b2430 0%, #0e1116 60%, #070a0e 100%)',
+      'radial-gradient(circle at 50% 45%, #ffffff 0%, #e8ecf2 50%, #c8d0dc 100%)',
+  },
+  gradient: {
+    css: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
   },
 };
+
+// 背景 → 标签颜色映射（深色背景用白字，浅色背景用黑字）。
+const BG_LABEL_COLOR = {
+  dark: '#ffffff',
+  light: '#1a1d23',
+  grid: '#1a1d23',
+  radial: '#1a1d23',
+  gradient: '#ffffff',
+};
+
+/** 判断 HEX 颜色是否为浅色（用于标签颜色自适应）。 */
+function _isLightHex(hex) {
+  const c = hex.replace('#', '');
+  const r = parseInt(c.substring(0, 2), 16);
+  const g = parseInt(c.substring(2, 4), 16);
+  const b = parseInt(c.substring(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5;
+}
 
 export class Renderer2D {
   constructor(container) {
@@ -45,11 +66,14 @@ export class Renderer2D {
     this._graph = new GraphCtor({ multi: false, type: 'directed' });
     this._byId = new Map();          // id → 原始节点（详情用）
     this._hl = null;                 // { center, citing:Set, cited:Set }
-    this._style = { showEdges: true, edgeColor: '#3a4150', background: 'dark', bgColor: null };
+    this._style = { showEdges: true, edgeColor: '#8890a0', background: 'light', bgColor: null };
     this._clickCb = null;
     this._longCb = null;
     this._hoverNode = null;
     this._longTimer = null;
+    this._panning = false;
+    this._panStart = null;
+    this._spaceDown = false;
 
     this._renderer = new SigmaClass(this._graph, container, {
       renderLabels: true,
@@ -58,17 +82,20 @@ export class Renderer2D {
       defaultEdgeColor: this._style.edgeColor,
       defaultNodeColor: '#4f9cf9',
       zIndex: true,
-      allowInvalidContainer: false,
+      allowInvalidContainer: true,
     });
 
-    this._wireReducers();
+    this._origAttrs = null;
+    this._tooltip = null;
     this._wireEvents();
+    this._wirePan();
+    this._createTooltip();
   }
 
   // ───────────────────────────────────────────────── 数据
   /** 重建图（nodes 已带 size/color/label；x/y 可缺省→种子由 worker 负责）。 */
   setData(nodes, edges) {
-    this._graph.clearGraph();
+    this._graph.clear();
     this._byId.clear();
     for (const n of nodes) {
       this._byId.set(n.id, n);
@@ -87,7 +114,7 @@ export class Renderer2D {
       if (!this._graph.hasNode(e.source) || !this._graph.hasNode(e.target)) continue;
       try {
         this._graph.addEdge(e.source, e.target, {
-          size: 0.6,
+          size: this._style.edgeWidth || 1.2,
           color: this._style.edgeColor,
           hidden: !this._style.showEdges,
           type: 'arrow',
@@ -120,25 +147,75 @@ export class Renderer2D {
     this._renderer.refresh();
   }
 
-  /** 视觉样式（背景 / 边显隐 / 边色）。 */
+  /** 视觉样式（背景 / 边显隐 / 边色 / 标签颜色）。 */
   setStyle(style = {}) {
     Object.assign(this._style, style);
-    // 背景
-    const bg = BACKGROUNDS[this._style.background] || BACKGROUNDS.dark;
+    const bg = BACKGROUNDS[this._style.background] || BACKGROUNDS.light;
     const base = this._style.bgColor || bg.css;
-    this._container.style.background = base;
-    this._container.style.backgroundImage = bg.image || 'none';
+    if (base.includes('gradient')) {
+      this._container.style.background = '';
+      this._container.style.backgroundImage = base;
+    } else {
+      this._container.style.background = base;
+      this._container.style.backgroundImage = bg.image || 'none';
+    }
     if (bg.size) this._container.style.backgroundSize = bg.size;
     else this._container.style.backgroundSize = '';
-    // 边
-    const show = !!this._style.showEdges;
-    this._renderer.setSetting('defaultEdgeColor', this._style.edgeColor);
+    const isLight = this._isCurrentBgLight();
+    let labelColor;
+    if (this._style.bgColor) {
+      labelColor = _isLightHex(this._style.bgColor) ? '#1a1d23' : '#ffffff';
+    } else {
+      labelColor = BG_LABEL_COLOR[this._style.background] || BG_LABEL_COLOR.light;
+    }
+    this._renderer.setSetting('labelColor', labelColor);
+    this._renderer.setSetting('labelSize', 8);
+    const edgeColor = this._style.edgeColor || (isLight ? '#5a6270' : '#a0aab8');
+    this._renderer.setSetting('defaultEdgeColor', edgeColor);
+    this._renderer.setSetting('defaultEdgeSize', this._style.edgeWidth || 1.2);
     this._renderer.setSetting('renderEdgeLabels', false);
+    if (this._tooltip) {
+      this._tooltip.style.color = isLight ? '#1a1d23' : '#f0f2f5';
+      this._tooltip.style.background = isLight ? 'rgba(255,255,255,.92)' : 'rgba(22,27,35,.92)';
+      this._tooltip.style.borderColor = isLight ? '#c8cdd5' : '#3a4150';
+    }
+    const show = !!this._style.showEdges;
     this._graph.forEachEdge((_e, _a, s, t) => {
       this._graph.setEdgeAttribute(this._graph.edge(s, t), 'hidden', !show);
-      this._graph.setEdgeAttribute(this._graph.edge(s, t), 'color', this._style.edgeColor);
+      this._graph.setEdgeAttribute(this._graph.edge(s, t), 'color', edgeColor);
     });
     this._renderer.refresh();
+  }
+
+  _isCurrentBgLight() {
+    const bg = BACKGROUNDS[this._style.background] || BACKGROUNDS.light;
+    const hex = this._style.bgColor || bg.css;
+    if (!hex || hex.includes('gradient')) return false;
+    return _isLightHex(hex);
+  }
+
+  _createTooltip() {
+    const tip = document.createElement('div');
+    tip.className = 'lg-tooltip';
+    tip.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;padding:6px 10px;' +
+      'border-radius:6px;font:12px system-ui,sans-serif;max-width:320px;line-height:1.4;' +
+      'word-break:break-word;display:none;border:1px solid;box-shadow:0 2px 8px rgba(0,0,0,.12);';
+    document.body.appendChild(tip);
+    this._tooltip = tip;
+  }
+
+  _showTooltip(nodeId, x, y) {
+    if (!this._tooltip) return;
+    const data = this._byId.get(nodeId);
+    const title = data ? (data.title || data.id) : nodeId;
+    this._tooltip.textContent = title;
+    this._tooltip.style.display = 'block';
+    this._tooltip.style.left = (x + 14) + 'px';
+    this._tooltip.style.top = (y + 14) + 'px';
+  }
+
+  _hideTooltip() {
+    if (this._tooltip) this._tooltip.style.display = 'none';
   }
 
   // ───────────────────────────────────────────────── 高亮
@@ -149,11 +226,17 @@ export class Renderer2D {
       citing: new Set(citing.filter((id) => this._graph.hasNode(id))),
       cited: new Set(cited.filter((id) => this._graph.hasNode(id))),
     };
-    this._renderer.refresh();
+    this._applyHighlight();
   }
 
   clearHighlight() {
     this._hl = null;
+    this._restoreAttrs();
+    this._graph.forEachEdge((edge) => {
+      this._graph.setEdgeAttribute(edge, 'hidden', !this._style.showEdges);
+      this._graph.setEdgeAttribute(edge, 'color', this._style.edgeColor);
+      this._graph.setEdgeAttribute(edge, 'size', this._style.edgeWidth || 1.2);
+    });
     this._renderer.refresh();
   }
 
@@ -183,37 +266,102 @@ export class Renderer2D {
 
   destroy() {
     this._clearLongTimer();
+    if (this._tooltip && this._tooltip.parentNode) this._tooltip.remove();
+    this._tooltip = null;
     try { this._renderer.kill(); } catch (_) {}
-    this._graph.clearGraph();
+    this._graph.clear();
     this._byId.clear();
   }
 
   // ───────────────────────────────────────────────── 内部
-  _wireReducers() {
-    this._renderer.setNodeReducer((node, data) => {
-      if (!this._hl) return data;
-      const res = { ...data };
-      if (node === this._hl.center) {
-        res.color = '#ffffff';
-        res.highlighted = true;
-      } else if (this._hl.citing.has(node)) {
-        res.color = HL_CITING;
-      } else if (this._hl.cited.has(node)) {
-        res.color = HL_CITED;
+  /** 高亮：直接修改节点/边属性（vendor sigma 无 setNodeReducer API）。 */
+  _applyHighlight() {
+    if (!this._hl) return;
+    const { center, citing, cited } = this._hl;
+    if (!this._origAttrs) {
+      this._origAttrs = new Map();
+      this._graph.forEachNode((id, attrs) => {
+        this._origAttrs.set(id, { label: attrs.label || '', color: attrs.color || '#4f9cf9', size: attrs.size || 2 });
+      });
+    }
+    this._graph.forEachNode((id) => {
+      const orig = this._origAttrs.get(id);
+      let color, size;
+      if (id === center) {
+        color = '#ffffff'; size = orig.size * 1.3;
+      } else if (citing.has(id)) {
+        color = HL_CITING; size = orig.size;
+      } else if (cited.has(id)) {
+        color = HL_CITED; size = orig.size;
       } else {
-        res.color = DIM_NODE;
-        res.label = '';
+        color = DIM_NODE; size = orig.size * 0.5;
       }
-      return res;
+      this._graph.setNodeAttribute(id, 'color', color);
+      this._graph.setNodeAttribute(id, 'size', size);
+      // 保留原始标签（年份+被引），不清空
     });
-    this._renderer.setEdgeReducer((edge, data) => {
-      const res = { ...data };
-      if (!this._hl) return res;
-      const [s, t] = this._graph.extremities(edge);
-      if (s === this._hl.center) { res.color = HL_CITED; res.size = 1.4; res.hidden = false; }
-      else if (t === this._hl.center) { res.color = HL_CITING; res.size = 1.4; res.hidden = false; }
-      else { res.hidden = true; res.color = DIM_EDGE; }
-      return res;
+    this._graph.forEachEdge((edge, _attrs, s, t) => {
+      let color, size, hidden;
+      if (s === center) { color = HL_CITED; size = 2; hidden = false; }
+      else if (t === center) { color = HL_CITING; size = 2; hidden = false; }
+      else { color = DIM_EDGE; size = 0.4; hidden = true; }
+      this._graph.setEdgeAttribute(edge, 'color', color);
+      this._graph.setEdgeAttribute(edge, 'size', size);
+      this._graph.setEdgeAttribute(edge, 'hidden', hidden);
+    });
+    this._renderer.refresh();
+  }
+
+  _restoreAttrs() {
+    if (!this._origAttrs) return;
+    this._graph.forEachNode((id) => {
+      const o = this._origAttrs.get(id);
+      if (!o) return;
+      this._graph.setNodeAttribute(id, 'label', o.label);
+      this._graph.setNodeAttribute(id, 'color', o.color);
+      this._graph.setNodeAttribute(id, 'size', o.size);
+    });
+    this._origAttrs = null;
+  }
+
+  /** 平移：中键拖动 或 Space+左键拖动。 */
+  _wirePan() {
+    const cam = () => this._renderer.getCamera();
+    this._container.addEventListener('mousedown', (e) => {
+      if (e.button === 1 || (e.button === 0 && this._spaceDown)) {
+        e.preventDefault();
+        this._panning = true;
+        this._panStart = { x: e.clientX, y: e.clientY };
+        this._container.style.cursor = 'grabbing';
+      }
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!this._panning || !this._panStart) return;
+      const dx = e.clientX - this._panStart.x;
+      const dy = e.clientY - this._panStart.y;
+      const c = cam();
+      const ratio = c.ratio || 1;
+      // 将屏幕像素位移转换为相机坐标位移（sigma 相机 y 轴向下）
+      c.x -= (dx / this._container.offsetWidth) * ratio * 2;
+      c.y += (dy / this._container.offsetHeight) * ratio * 2;
+      this._panStart = { x: e.clientX, y: e.clientY };
+    });
+    window.addEventListener('mouseup', () => {
+      if (this._panning) {
+        this._panning = false;
+        this._panStart = null;
+        this._container.style.cursor = '';
+      }
+    });
+    this._container.addEventListener('wheel', (e) => {
+      // 滚轮缩放（sigma 默认支持，这里确保不冲突）
+    }, { passive: true });
+    // Space 键监听
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && !e.repeat) this._spaceDown = true;
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'Space') this._spaceDown = false;
     });
   }
 
@@ -222,11 +370,22 @@ export class Renderer2D {
       this._clearLongTimer();
       if (this._clickCb) this._clickCb(e.node);
     });
-    this._renderer.on('enterNode', (e) => { this._hoverNode = e.node; });
-    this._renderer.on('leaveNode', () => { this._hoverNode = null; this._clearLongTimer(); });
+    this._renderer.on('enterNode', (e) => {
+      this._hoverNode = e.node;
+      if (this._tooltip && this._lastMouse) {
+        this._showTooltip(e.node, this._lastMouse.x, this._lastMouse.y);
+      }
+    });
+    this._renderer.on('leaveNode', () => {
+      this._hoverNode = null;
+      this._hideTooltip();
+      this._clearLongTimer();
+    });
     this._renderer.on('clickStage', () => { this.clearHighlight(); });
-
-    // 长按（450ms）：基于当前悬停节点 + 容器按下计时。
+    this._container.addEventListener('mousemove', (e) => {
+      this._lastMouse = { x: e.clientX, y: e.clientY };
+      if (this._hoverNode) this._showTooltip(this._hoverNode, e.clientX, e.clientY);
+    });
     this._container.addEventListener('mousedown', () => {
       if (!this._hoverNode || !this._longCb) return;
       const target = this._hoverNode;
