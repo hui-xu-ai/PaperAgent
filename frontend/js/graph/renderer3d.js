@@ -39,6 +39,7 @@ export class Renderer3D {
     this._longTimer = null;
     this._g = null;
     this._pendingData = null;
+    this._fitted = false; // 首次数据载入后适配一次视角
 
     this._initWhenVisible();
   }
@@ -158,6 +159,14 @@ export class Renderer3D {
         this._g.height(this._container.offsetHeight);
       }
     });
+
+    // 新建渲染器首次拿到数据：适配一次视角（后续 setData/applyPositions 保持相机不动）
+    if (!this._fitted && nodes.length) {
+      this._fitted = true;
+      setTimeout(() => {
+        if (this._g) this._g.zoomToFit(400, 60);
+      }, 120);
+    }
   }
 
   /** 更新节点属性（用于动态样式变更）。 */
@@ -249,10 +258,10 @@ export class Renderer3D {
     }
     this._container.style.backgroundSize = background === 'grid' ? '34px 34px' : '';
 
-    // 更新边样式（**无最小值限制！**）
+    // 更新边样式（可见性按每条 link.hidden 判定，宽度 0 = 隐藏）
     this._g.linkColor(edgeColor)
       .linkWidth(edgeWidth)
-      .linkVisibility(showEdges)
+      .linkVisibility((d) => !d.hidden)
       .linkDirectionalArrowLength(showEdgeDir ? 2.2 : 0);
 
     // 更新既有边
@@ -261,7 +270,7 @@ export class Renderer3D {
       for (const link of cur.links) {
         link.color = edgeColor;
         link.width = edgeWidth;
-        link.hidden = !showEdges;
+        link.hidden = !showEdges || edgeWidth <= 0;
         link.showArrow = showEdgeDir;
       }
       this._g.graphData(cur);

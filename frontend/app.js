@@ -28,12 +28,8 @@ const state = {
 };
 
 /* ---------------- API helper ---------------- */
-// 开发环境：API代理配置（生产环境留空，使用同源策略）
-const APP_API_BASE = window.APP_API_BASE || '';
-
 async function api(path, opts = {}) {
-  const url = `${APP_API_BASE}${path}`;
-  const res = await fetch(url, opts);
+  const res = await fetch(path, opts);
   const ct = res.headers.get('content-type') || '';
   if (!res.ok) {
     let msg = res.statusText;

@@ -3,18 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- 开发环境：禁用浏览器缓存，确保JS/CSS实时更新 -->
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
   <title>PaperAgent · 文献 AI 阅读与翻译</title>
   <link rel="icon" href="/icon.ico" type="image/x-icon">
   <link rel="stylesheet" href="/vendor/katex/katex.min.css">
   <link rel="stylesheet" href="/vendor/github.min.css">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/css/graph.css">
-  <!-- 开发环境：API代理配置（生产环境留空，使用同源策略） -->
-  <script>window.APP_API_BASE = 'http://localhost:8000'; window.GRAPH_API_BASE = 'http://localhost:8000';</script>
 </head>
 <body>
 
@@ -1435,7 +1429,7 @@
                 <label class="lg-colorwrap">边色<input type="color" id="lg-s-edgecolor" value="#8890a0"></label>
               </div>
               <div class="lg-hint" style="margin-top:6px">边粗细<span class="lg-val" id="lg-s-edgewidth-val">1.2</span></div>
-              <input type="range" id="lg-s-edgewidth" min="0.02" max="1.5" value="1.2" step="0.1">
+              <input type="range" id="lg-s-edgewidth" min="0" max="1.5" value="1.2" step="0.1">
             </div>
           </div>
         </aside>
@@ -1482,9 +1476,9 @@
   <script src="/vendor/3d-force-graph/3d-force-graph.min.js"></script>
   <script src="/version.js"></script>
   <!-- lit-admin.js 必须在 app.js 之前（boot() 同步调用 bindLitAdmin）-->
-  <script src="/js/lit-admin.js?v=20260918"></script>
-  <script src="/app.js?v=20260918"></script>
+  <script src="/js/lit-admin.js"></script>
+  <script src="/app.js"></script>
   <!-- 文献计量图谱（ES 模块，自绑定 #lit-graph-btn，独立于 app.js）-->
-  <script type="module" src="/js/graph/main.js?v=20260918"></script>
+  <script type="module" src="/js/graph/main.js"></script>
 </body>
 </html>

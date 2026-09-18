@@ -26,6 +26,7 @@ const IDS = {
 };
 
 export function readStyle() {
+  const ew = Number($(IDS.edgeWidth).value);
   return {
     palette: $(IDS.colorscale).value || 'viridis',
     sizeBase: Number($(IDS.size).value) || 1,
@@ -35,7 +36,7 @@ export function readStyle() {
     background: $(IDS.bg).value || 'light',
     bgColor: $(IDS.bgColor).value || null,
     edgeColor: $(IDS.edgeColor).value || '#8890a0',
-    edgeWidth: Number($(IDS.edgeWidth).value) || 1.2,
+    edgeWidth: Number.isFinite(ew) ? ew : 1.2, // 允许 0（=隐藏边），不能用 || 兜底
   };
 }
 

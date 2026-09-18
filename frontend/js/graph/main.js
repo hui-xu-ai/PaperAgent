@@ -81,10 +81,14 @@ class GraphController {
 
     // 切换模式
     this.displayMode = mode;
+
+    // 先把已算好的坐标写进数据节点，新渲染器 setData 时即带真实坐标
+    const saved = this.layout.restore();
+    if (saved) this._syncPositionsToData(saved);
+
     this._buildRenderer();
 
     // 恢复坐标
-    const saved = this.layout.restore();
     if (saved) {
       this.renderer.applyPositions(saved, this.data.ids);
       this.paused = true;
@@ -98,6 +102,15 @@ class GraphController {
 
     // 同步3D视角按钮显示
     this._sync3dViews();
+  }
+
+  /** 把布局坐标写回数据节点（renderData 的 x/y 来源）。 */
+  _syncPositionsToData(pos) {
+    const nodes = this.data.nodes;
+    for (let i = 0; i < nodes.length; i++) {
+      nodes[i].x = pos[2 * i];
+      nodes[i].y = pos[2 * i + 1];
+    }
   }
 
   // ── 数据加载 ───────────────────────────────────────
@@ -256,9 +269,10 @@ class GraphController {
   /** 运行几何布局（circular/grid/random）。 */
   _runGeometricLayout() {
     const positions = this.layout.compute(this.layoutAlgorithm, this.currentLayoutOpts);
+    this._syncPositionsToData(positions);
+    this.layout.save(positions);
     if (this.renderer) {
       this.renderer.applyPositions(positions, this.data.ids);
-      this.layout.save(positions);
     }
     this.paused = true;
   }
@@ -295,10 +309,11 @@ class GraphController {
     this.worker.onmessage = (e) => {
       if (e.data.type === 'positions') {
         this._waiting = false;
+        const pos = new Float32Array(e.data.positions);
+        this._syncPositionsToData(pos);
+        this.layout.save(pos);
         if (this.renderer) {
-          const pos = new Float32Array(e.data.positions);
           this.renderer.applyPositions(pos, this.data.ids);
-          this.layout.save(pos);
         }
       }
     };

@@ -121,11 +121,11 @@ export function applyStyles(dataModel, styleOpts) {
     node.renderLabel = _computeNodeLabel(node, labelMode);
   });
 
-  // 应用边样式（**无最小值限制！**）
+  // 应用边样式（宽度 0 = 隐藏边）
   dataModel.edges.forEach(edge => {
     edge.renderColor = edgeColor;
-    edge.renderWidth = edgeWidth; // 直接使用用户设置的值，允许 0.0
-    edge.hidden = !showEdges;
+    edge.renderWidth = edgeWidth;
+    edge.hidden = !showEdges || edgeWidth <= 0;
   });
 
   return dataModel;

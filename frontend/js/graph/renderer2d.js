@@ -198,9 +198,9 @@ export class Renderer2D {
     this._renderer.setSetting('defaultEdgeColor', edgeColor);
     this._renderer.setSetting('defaultEdgeSize', edgeWidth);
 
-    // 更新既有边
+    // 更新既有边（宽度 0 = 隐藏）
     this._graph.forEachEdge((edge) => {
-      this._graph.setEdgeAttribute(edge, 'hidden', !showEdges);
+      this._graph.setEdgeAttribute(edge, 'hidden', !showEdges || edgeWidth <= 0);
       this._graph.setEdgeAttribute(edge, 'color', edgeColor);
       this._graph.setEdgeAttribute(edge, 'size', edgeWidth);
     });
