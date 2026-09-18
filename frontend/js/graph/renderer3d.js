@@ -73,17 +73,28 @@ export class Renderer3D {
       .nodeId('id')
       .nodeColor((d) => this._nodeColor(d))
       .nodeVal((d) => Math.max(0.4, (d.size || 2)) ** 2.2)
-      .nodeOpacity(0.85)
+      .nodeOpacity(0.92)
       .nodeLabel((d) => `<div style="font:12px system-ui;color:${initialTipColor}">${this._esc(d.label || d.title || d.id)}</div>`)
-      .nodeResolution(12)
+      .nodeResolution(24)
       .linkColor(() => this._style.edgeColor)
       .linkOpacity(0.32)
-      .linkWidth(() => this._style.edgeWidth ? this._style.edgeWidth * 0.35 : 0.4)
+      .linkWidth(() => this._style.edgeWidth || 1.2)
       .linkDirectionalArrowLength(() => (this._style.showEdgeDir ? 2.2 : 0))
       .linkDirectionalArrowRelPos(1)
       .linkVisibility(() => this._style.showEdges)
       .onNodeClick((node) => { this._clearLongTimer(); if (this._clickCb) this._clickCb(node.id); })
       .onNodeHover((node) => { this._hoverNode = node ? node.id : null; });
+
+    // 增强 3D 光照效果：通过 scene 对象添加环境光和方向光
+    setTimeout(() => {
+      if (this._g && this._g.scene && window.THREE) {
+        const ambientLight = new window.THREE.AmbientLight(0xffffff, 0.6);
+        this._g.scene.add(ambientLight);
+        const dirLight = new window.THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(200, 300, 400);
+        this._g.scene.add(dirLight);
+      }
+    }, 100);
 
     // 完全禁用 d3-force-3d 物理引擎，坐标完全由 FA2/几何布局决定
     const charge = this._g.d3Force('charge');
