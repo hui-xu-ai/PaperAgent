@@ -76,9 +76,15 @@ export class Renderer3D {
       .nodeOpacity(0.92)
       .nodeLabel((d) => `<div style="font:12px system-ui;color:${initialTipColor}">${this._esc(d.label || d.title || d.id)}</div>`)
       .nodeResolution(24)
-      .linkColor(() => this._style.edgeColor || '#8890a0')
+      .linkColor((d) => {
+        // 实时读取当前样式，支持动态更新
+        return this._style.edgeColor || '#8890a0';
+      })
       .linkOpacity(0.32)
-      .linkWidth(() => this._style.edgeWidth || 1.2)
+      .linkWidth((d) => {
+        // 实时读取当前样式，无最小值限制
+        return this._style.edgeWidth != null ? this._style.edgeWidth : 1.2;
+      })
       .linkDirectionalArrowLength(() => (this._style.showEdgeDir ? 2.2 : 0))
       .linkDirectionalArrowRelPos(1)
       .linkVisibility(() => this._style.showEdges)
@@ -136,7 +142,15 @@ export class Renderer3D {
       this._pendingData = { nodes: gnodes, links };
       return;
     }
+    // 保存当前相机状态，防止graphData()触发自动缩放
+    const camPos = this._g.cameraPosition();
+    const zoom = this._g.zoom();
     this._g.graphData({ nodes: gnodes, links });
+    // 恢复相机位置（如果之前已有设置）
+    if (camPos && camPos.x != null) {
+      this._g.cameraPosition(camPos, undefined, 0);
+      this._g.zoom(zoom || 1, 0);
+    }
     requestAnimationFrame(() => {
       if (this._g) {
         this._g.width(this._container.offsetWidth);
@@ -165,6 +179,10 @@ export class Renderer3D {
     if (!positions || !ids || !this._g) return;
     const cur = this._g.graphData();
     if (!cur || !cur.nodes) return;
+    // 保存当前相机状态
+    const camPos = this._g.cameraPosition();
+    const zoom = this._g.zoom();
+    
     const posMap = new Map();
     for (let i = 0; i < ids.length; i++) {
       posMap.set(ids[i], { x: positions[2 * i], y: positions[2 * i + 1] });
@@ -178,6 +196,11 @@ export class Renderer3D {
       }
     }
     this._g.graphData(cur);
+    // 恢复相机位置，防止自动缩放
+    if (camPos && camPos.x != null) {
+      this._g.cameraPosition(camPos, undefined, 0);
+      this._g.zoom(zoom || 1, 0);
+    }
     this._saveBasePositions();
     this._updateZRange();
     this._g.nodeColor(this._g.nodeColor());
