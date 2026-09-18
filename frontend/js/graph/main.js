@@ -1,11 +1,12 @@
 /* graph/main.js — 文献计量图谱编排入口（ES 模块，自绑定 #lit-graph-btn）。
  *
- * 数据流：
- *   /graph/filters → populateFacets（校准过滤 UI）
- *   /graph/network → decorateNodes(大小←库内被引/颜色←IF/标签←年份+被引)
- *                  → renderer.setData → 2D 跑 FA2 worker 增量布局 → applyPositions
- * 交互：点击→详情；长按→双色高亮(citing/cited)；过滤→重载；样式→实时；2D/3D→切换渲染器。
- * 与 app.js 完全解耦：自带 fetch（api.js），只读 DOM，不碰全局业务状态。
+ * 三维度解耦：
+ *   数据过滤（哪些节点）→ 过滤面板 → loadNetwork()
+ *   布局算法（节点在哪）→ 布局面板 → runLayout()
+ *   显示样式（节点长啥样）→ 样式面板 → paint()/repaint()
+ *
+ * 2D/3D 是显示维度，不影响布局坐标（FA2 产出 2D 坐标，3D 渲染器直接复用）。
+ * 布局算法切换自动重算；"重跑布局"按钮全局可用。
  */
 import * as api from './api.js';
 import { decorateNodes, inferIfMax } from './scales.js';
@@ -15,9 +16,10 @@ import { Panel } from './panel.js';
 import * as filters from './filters.js';
 import * as settings from './settings.js';
 import { layoutManager } from './layoutManager.js';
+import { ALGORITHMS } from './layoutAlgorithms.js';
 
 const $ = (id) => document.getElementById(id);
-const MAX_ITER = 600;          // FA2 迭代预算（收敛后自动停，省 CPU）
+const MAX_ITER = 600;
 
 class GraphApp {
   constructor() {
@@ -27,29 +29,29 @@ class GraphApp {
     this.meta = null;
     this.ids = [];
     this.clusters = {};
-    this.mode = '2d';
+    this.displayMode = '2d';
+    this.layoutAlgorithm = 'fa2';
     this.renderer = null;
     this.worker = null;
     this.paused = false;
     this.style = settings.readStyle();
+    this.layout = settings.readLayout();
     this._rafId = null;
     this._waiting = false;
     this._iters = 0;
     this._loaded = false;
-    this._savedPositions2d = null;   // 2D→3D→2D 切换时保留已收敛坐标
   }
 
   // ── 渲染器 ──────────────────────────────────────────
   buildRenderer() {
     const container = $('lg-canvas');
     if (this.renderer) this.renderer.destroy();
-    this.renderer = this.mode === '3d' ? new Renderer3D(container) : new Renderer2D(container);
+    this.renderer = this.displayMode === '3d' ? new Renderer3D(container) : new Renderer2D(container);
     this.renderer.onClick((id) => this.onNodeClick(id));
     this.renderer.onLongPress((id) => this.onNodeLongPress(id));
     if (this._loaded) this.paint();
   }
 
-  /** 把当前 nodes/edges 画进渲染器（加工视觉字段后 setData）。 */
   paint() {
     if (!this.renderer) return;
     const ifMax = inferIfMax(this.nodes);
@@ -60,7 +62,6 @@ class GraphApp {
     this.panel.renderLegend(this.style.palette, ifMax);
   }
 
-  /** 仅刷新视觉（样式变更，不重建布局）。 */
   repaint() {
     if (!this.renderer) return;
     const ifMax = inferIfMax(this.nodes);
@@ -70,38 +71,30 @@ class GraphApp {
     this.panel.renderLegend(this.style.palette, ifMax);
   }
 
-  setMode(mode) {
-    if (mode === this.mode) return;
-    // 切离当前模式时保存 FA2 坐标（2D 和 3D 共享同一套位置）
-    if (this.mode === '2d' && this.renderer && this.ids.length) {
+  setDisplayMode(mode) {
+    if (mode === this.displayMode) return;
+    if (this.displayMode === '2d' && this.renderer && this.ids.length) {
       layoutManager.save2dPositions(this._capturePositions2d());
     }
-
-    layoutManager.mode = mode;
-    this.mode = mode;
+    this.displayMode = mode;
     this.stopLayout();
     this.buildRenderer();
-
-    // 3D 模式：让 d3-force-3d 自然布局，不应用 FA2 坐标
     if (mode === '3d') {
-      // 3D 渲染器会自己处理布局，只需等待渲染完成后 zoomToFit
       setTimeout(() => {
         if (this.renderer && this.renderer.fit) this.renderer.fit();
       }, 500);
     } else {
-      // 2D 模式：恢复 FA2 坐标
       const saved = layoutManager.restore2dPositions();
       if (saved) {
         this.renderer.applyPositions(saved, this.ids);
         this.paused = true;
-      } else {
-        this.startLayout(true);
+      } else if (this.layoutAlgorithm === 'fa2') {
+        this.startFA2(true);
       }
     }
-    this._syncLayoutBtn();
+    this._sync3dViews();
   }
 
-  /** 从渲染器当前节点坐标快照（2D 切 3D 前调用）。 */
   _capturePositions2d() {
     if (!this.renderer || !this.renderer._graph) return null;
     const g = this.renderer._graph;
@@ -127,7 +120,6 @@ class GraphApp {
     }
   }
 
-  /** 过滤预览：显示过滤后节点数（不实际加载图谱）。 */
   async previewFilter() {
     try {
       const params = { ...filters.readFilters(), limit: 1, preview: true };
@@ -152,7 +144,7 @@ class GraphApp {
       this.clusters = {};
       for (const n of this.nodes) this.clusters[n.id] = n.cluster || 0;
       this._loaded = true;
-      layoutManager.clearCache();  // 数据变化时清除位置缓存
+      layoutManager.clearCache();
       layoutManager.init(this.ids, this.edges, this.clusters);
       if (!this.nodes.length) {
         this.panel.setHud(0, 0, this.meta);
@@ -161,7 +153,7 @@ class GraphApp {
         return;
       }
       this.paint();
-      this.startLayout(true);
+      this.runLayout(true);
     } catch (e) {
       this.panel.setMessage('图谱加载失败：' + e.message);
     } finally {
@@ -169,25 +161,18 @@ class GraphApp {
     }
   }
 
-  // ── FA2 worker 布局（2D 和 3D 共用同一套坐标）──────────────
-  _ensureWorker() {
-    if (this.worker) return;
-    this.worker = new Worker('/js/graph/layout.worker.js');
-    this.worker.onmessage = (e) => {
-      if (e.data.type === 'positions') {
-        this._waiting = false;
-        if (this.renderer) {
-          const pos = new Float32Array(e.data.positions);
-          this.renderer.applyPositions(pos, this.ids);
-          // 同时保存到 layoutManager，供模式切换时恢复
-          layoutManager.save2dPositions(pos);
-        }
-      }
-    };
+  // ── 布局调度 ───────────────────────────────────────
+  runLayout(reinit) {
+    if (!this._loaded || !this.nodes.length) return;
+    this.stopLayout();
+    if (this.layoutAlgorithm === 'fa2') {
+      this.startFA2(reinit);
+    } else {
+      this.runGeometricLayout();
+    }
   }
 
-  startLayout(reinit) {
-    if (!this._loaded || !this.nodes.length) return;
+  startFA2(reinit) {
     this._ensureWorker();
     if (reinit) {
       this._iters = 0;
@@ -197,17 +182,71 @@ class GraphApp {
         ids: this.ids,
         edges: this.edges.map((e) => ({ source: e.source, target: e.target })),
         clusters: this.clusters,
-        settings: settings.layoutSettings(this.style),
+        settings: settings.layoutSettings(this.layout),
       });
     } else {
-      // 仅更新布局参数（不重置坐标）
       this.worker.postMessage({
         type: 'update-settings',
-        settings: settings.layoutSettings(this.style),
+        settings: settings.layoutSettings(this.layout),
       });
     }
-    this._syncLayoutBtn();
     this._tick();
+  }
+
+  runGeometricLayout() {
+    const fn = ALGORITHMS[this.layoutAlgorithm];
+    if (!fn) return;
+    const pos = fn(this.ids, this.edges, this.layout.spacing);
+    if (this.renderer) {
+      this.renderer.applyPositions(pos, this.ids);
+      layoutManager.save2dPositions(pos);
+    }
+    this.paused = true;
+  }
+
+  relayout() {
+    this.style = settings.readStyle();
+    this.layout = settings.readLayout();
+    this.runLayout(true);
+  }
+
+  setAlgorithm(algo) {
+    this.layoutAlgorithm = algo;
+    this._toggleFA2Params(algo === 'fa2');
+    this.runLayout(true);
+  }
+
+  setSpacing(val) {
+    this.layout.spacing = val;
+    if (this.layoutAlgorithm !== 'fa2') {
+      this.runGeometricLayout();
+    }
+  }
+
+  _toggleFA2Params(show) {
+    const el = $('lg-fa2-params');
+    if (el) el.style.display = show ? '' : 'none';
+  }
+
+  _sync3dViews() {
+    const el = $('lg-3d-views');
+    if (el) el.style.display = this.displayMode === '3d' ? '' : 'none';
+  }
+
+  // ── FA2 worker ──────────────────────────────────────
+  _ensureWorker() {
+    if (this.worker) return;
+    this.worker = new Worker('/js/graph/layout.worker.js');
+    this.worker.onmessage = (e) => {
+      if (e.data.type === 'positions') {
+        this._waiting = false;
+        if (this.renderer) {
+          const pos = new Float32Array(e.data.positions);
+          this.renderer.applyPositions(pos, this.ids);
+          layoutManager.save2dPositions(pos);
+        }
+      }
+    };
   }
 
   stopLayout() {
@@ -220,7 +259,7 @@ class GraphApp {
     const loop = () => {
       this._rafId = null;
       if (this.paused) return;
-      if (this._iters >= MAX_ITER) { this.paused = true; this._syncLayoutBtn(); return; }
+      if (this._iters >= MAX_ITER) { this.paused = true; return; }
       if (!this._waiting && this.worker) {
         this._waiting = true;
         const per = this.ids.length > 5000 ? 2 : 5;
@@ -230,43 +269,6 @@ class GraphApp {
       this._rafId = requestAnimationFrame(loop);
     };
     this._rafId = requestAnimationFrame(loop);
-  }
-
-  togglePause() {
-    if (this.paused && this._iters >= MAX_ITER) {
-      // 收敛后继续 → 重置迭代计数
-      this._iters = 0;
-    }
-    this.paused = !this.paused;
-    if (!this.paused) {
-      // 继续布局：如果还没初始化过，先初始化
-      if (this._iters === 0 && this._loaded) {
-        this.startLayout(true);
-      } else {
-        this._tick();
-      }
-    } else {
-      this.stopLayout();
-    }
-    this._syncLayoutBtn();
-  }
-
-  _syncLayoutBtn() {
-    const b = $('lg-layout-toggle');
-    if (!b) return;
-    const running = !this.paused;
-    b.textContent = running ? '⏸ 暂停布局' : '▶ 恢复布局';
-    b.title = running ? '暂停引力布局迭代' : '继续/重新运行引力布局';
-    b.disabled = false;
-  }
-
-  relayout() {
-    this.style = settings.readStyle();
-    // 重跑布局：重新初始化 worker（2D 和 3D 共用 FA2）
-    this.stopLayout();
-    this._iters = 0;
-    this.paused = false;
-    this.startLayout(true);
   }
 
   // ── 交互 ────────────────────────────────────────────
@@ -301,16 +303,11 @@ class GraphApp {
 
   fit() { if (this.renderer) this.renderer.fit(); }
 
-  // ── 3D 视角预设 ──────────────────────────────────────
-  viewFront() { if (this.mode === '3d' && this.renderer) this.renderer.viewFront(); }
-  viewTop() { if (this.mode === '3d' && this.renderer) this.renderer.viewTop(); }
-  viewSide() { if (this.mode === '3d' && this.renderer) this.renderer.viewSide(); }
-  viewIsometric() { if (this.mode === '3d' && this.renderer) this.renderer.viewIsometric(); }
+  viewFront() { if (this.displayMode === '3d' && this.renderer) this.renderer.viewFront(); }
+  viewTop() { if (this.displayMode === '3d' && this.renderer) this.renderer.viewTop(); }
+  viewSide() { if (this.displayMode === '3d' && this.renderer) this.renderer.viewSide(); }
+  viewIsometric() { if (this.displayMode === '3d' && this.renderer) this.renderer.viewIsometric(); }
   viewReset() { if (this.renderer) this.renderer.viewReset ? this.renderer.viewReset() : this.renderer.fit(); }
-
-  setSpacing(factor) {
-    if (this.mode === '3d' && this.renderer) this.renderer.setSpacing(factor);
-  }
 
   destroy() {
     this.stopLayout();
@@ -332,7 +329,7 @@ function openGraph() {
       app.buildRenderer();
     } catch (e) {
       console.error('[graph] 渲染器初始化失败:', e);
-      app.panel.setMessage('渲染器初始化失败，请尝试切换 2D/3D 模式：' + e.message);
+      app.panel.setMessage('渲染器初始化失败：' + e.message);
     }
     app.loadFilters();
     app.loadNetwork();
@@ -342,31 +339,30 @@ function openGraph() {
 function closeGraph() {
   const modal = $('lit-graph-modal');
   modal.style.display = 'none';
-  // 关窗即释放 worker/渲染器，重开时惰性重建（省显存/CPU）。
   if (app) { app.destroy(); app = null; }
 }
 
 function bindUI() {
-  // 顶栏：模式 / 布局 / 适配 / 搜索 / 面板 / 详情
-  $('lg-mode-seg').addEventListener('click', (e) => {
-    const btn = e.target.closest('.lg-seg-btn');
-    if (!btn) return;
-    for (const b of $('lg-mode-seg').querySelectorAll('.lg-seg-btn')) b.classList.toggle('active', b === btn);
-    app.setMode(btn.dataset.mode);
+  // 顶栏
+  $('lg-relayout-global').addEventListener('click', () => {
+    app.style = settings.readStyle();
+    app.layout = settings.readLayout();
+    app.runLayout(true);
   });
-  $('lg-layout-toggle').addEventListener('click', () => app.togglePause());
   $('lg-fit').addEventListener('click', () => app.fit());
   $('lg-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') app.search(e.target.value); });
   $('lg-side-toggle').addEventListener('click', () => app.panel.toggleSide());
   $('lg-detail-toggle').addEventListener('click', () => app.panel.toggleDetail());
 
-  // 侧栏 tab
+  // 侧栏三 tab
+  const panels = { filter: 'lg-panel-filter', layout: 'lg-panel-layout', style: 'lg-panel-style' };
   for (const tab of document.querySelectorAll('.lg-side-tab')) {
     tab.addEventListener('click', () => {
       for (const t of document.querySelectorAll('.lg-side-tab')) t.classList.toggle('active', t === tab);
       const which = tab.dataset.panel;
-      $('lg-panel-filter').style.display = which === 'filter' ? '' : 'none';
-      $('lg-panel-style').style.display = which === 'style' ? '' : 'none';
+      for (const [key, id] of Object.entries(panels)) {
+        $(id).style.display = key === which ? '' : 'none';
+      }
     });
   }
 
@@ -374,14 +370,23 @@ function bindUI() {
   filters.bindLiveLabels();
   $('lg-apply').addEventListener('click', () => app.loadNetwork());
   $('lg-reset').addEventListener('click', () => { filters.resetFilters(); app.loadNetwork(); });
-  // 过滤预览按钮（如果存在）
   const previewBtn = $('lg-preview');
   if (previewBtn) previewBtn.addEventListener('click', () => app.previewFilter());
 
-  // 样式面板（实时预览）
+  // 布局面板：算法切换自动重算
   settings.bindLiveLabels();
-  const style = settings.readStyle;
-  const live = () => { app.style = style(); app.repaint(); };
+  $('lg-l-algorithm').addEventListener('change', (e) => {
+    app.layout = settings.readLayout();
+    app.setAlgorithm(e.target.value);
+  });
+  $('lg-s-scaling').addEventListener('change', () => { app.layout = settings.readLayout(); });
+  $('lg-s-gravity').addEventListener('change', () => { app.layout = settings.readLayout(); });
+  $('lg-l-spacing').addEventListener('input', (e) => {
+    app.setSpacing(parseFloat(e.target.value));
+  });
+
+  // 样式面板
+  const live = () => { app.style = settings.readStyle(); app.repaint(); };
   for (const id of ['lg-s-colorscale', 'lg-s-size', 'lg-s-label', 'lg-s-edges',
                     'lg-s-edgelabel', 'lg-s-bg', 'lg-s-bgcolor', 'lg-s-edgecolor',
                     'lg-s-edgewidth']) {
@@ -389,12 +394,16 @@ function bindUI() {
     el.addEventListener('input', live);
     el.addEventListener('change', live);
   }
-  // 引力参数：改完点「重跑布局」生效（避免拖动时频繁 reinit）。
-  $('lg-s-scaling').addEventListener('change', () => { app.style = style(); });
-  $('lg-s-gravity').addEventListener('change', () => { app.style = style(); });
-  $('lg-relayout').addEventListener('click', () => { app.style = style(); app.relayout(); });
 
-  // 3D 视角预设按钮
+  // 2D/3D 显示模式切换（样式面板内）
+  $('lg-display-mode').addEventListener('click', (e) => {
+    const btn = e.target.closest('.lg-seg-btn');
+    if (!btn) return;
+    for (const b of $('lg-display-mode').querySelectorAll('.lg-seg-btn')) b.classList.toggle('active', b === btn);
+    app.setDisplayMode(btn.dataset.mode);
+  });
+
+  // 3D 视角按钮
   for (const [id, method] of [
     ['lg-view-front', 'viewFront'], ['lg-view-top', 'viewTop'],
     ['lg-view-side', 'viewSide'], ['lg-view-iso', 'viewIsometric'],
@@ -403,14 +412,8 @@ function bindUI() {
     const el = $(id);
     if (el) el.addEventListener('click', () => app[method]());
   }
-  const spacingSlider = $('lg-spacing');
-  if (spacingSlider) {
-    spacingSlider.addEventListener('input', (e) => {
-      app.setSpacing(parseFloat(e.target.value));
-    });
-  }
 
-  // 详情面板关闭
+  // 详情面板
   $('lg-detail-close').addEventListener('click', () => {
     app.panel.toggleDetail(false);
     app.panel.showDetailPlaceholder();

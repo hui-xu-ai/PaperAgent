@@ -1267,21 +1267,8 @@
       <!-- 顶栏 -->
       <div class="lg-topbar">
         <span class="lg-title">🕸️ 文献计量图谱</span>
-        <div class="lg-seg" id="lg-mode-seg" title="2D 平面 / 3D 立体显示">
-          <button class="lg-seg-btn active" data-mode="2d">2D</button>
-          <button class="lg-seg-btn" data-mode="3d">3D</button>
-        </div>
-        <div class="lg-view-controls" id="lg-view-controls" title="3D 视角控制（仅3D模式有效）">
-          <button class="btn small" id="lg-view-front" title="前视图">前</button>
-          <button class="btn small" id="lg-view-top" title="俯视图">顶</button>
-          <button class="btn small" id="lg-view-side" title="侧视图">侧</button>
-          <button class="btn small" id="lg-view-iso" title="等轴测视图">等轴</button>
-          <button class="btn small" id="lg-view-reset" title="恢复初始视角">↺</button>
-          <label class="lg-spacing-label" title="节点间距（3D展开）">间距</label>
-          <input type="range" id="lg-spacing" class="lg-spacing-slider" min="1" max="3" step="0.1" value="1" title="调整节点间距">
-        </div>
         <div class="lg-topbtns">
-          <button class="btn small" id="lg-layout-toggle" title="暂停/继续引力布局">⏸ 暂停布局</button>
+          <button class="btn small primary" id="lg-relayout-global" title="用当前算法和参数重新计算布局">🔄 重跑布局</button>
           <button class="btn small" id="lg-fit" title="缩放适配全图">⛶ 适配</button>
           <input id="lg-search" class="lg-search" type="text" placeholder="🔎 定位节点（标题/DOI）" autocomplete="off">
           <button class="btn small" id="lg-side-toggle" title="显示/隐藏过滤与样式面板">🎛 面板</button>
@@ -1295,6 +1282,7 @@
         <aside class="lg-side" id="lg-side">
           <div class="lg-side-tabs">
             <button class="lg-side-tab active" data-panel="filter">过滤</button>
+            <button class="lg-side-tab" data-panel="layout">布局</button>
             <button class="lg-side-tab" data-panel="style">样式</button>
           </div>
 
@@ -1351,14 +1339,57 @@
             </div>
             <div class="lg-actions">
               <button class="btn small" id="lg-preview">预览节点数</button>
-              <button class="btn small primary" id="lg-apply">应用过滤</button>
+              <button class="btn small primary" id="lg-apply">计算布局</button>
               <button class="btn small" id="lg-reset">重置</button>
             </div>
             <div class="lg-msg" id="lg-filter-msg"></div>
           </div>
 
+          <!-- 布局面板 -->
+          <div class="lg-side-panel" id="lg-panel-layout" style="display:none">
+            <div class="lg-field">
+              <label>布局算法</label>
+              <select id="lg-l-algorithm">
+                <option value="fa2" selected>ForceAtlas2（力导向）</option>
+                <option value="circular">圆形排列</option>
+                <option value="grid">网格排列</option>
+                <option value="random">随机分布</option>
+              </select>
+              <div class="lg-hint">切换算法后自动重算；圆形/网格/随机支持10万+节点</div>
+            </div>
+            <div class="lg-field" id="lg-fa2-params">
+              <label>FA2 参数</label>
+              <div class="lg-hint">scalingRatio（斥力）<span class="lg-val" id="lg-s-scaling-val">1.0</span></div>
+              <input type="range" id="lg-s-scaling" min="0.2" max="5" value="1" step="0.1">
+              <div class="lg-hint">gravity（向心引力）<span class="lg-val" id="lg-s-gravity-val">1.0</span></div>
+              <input type="range" id="lg-s-gravity" min="0" max="5" value="1" step="0.1">
+            </div>
+            <div class="lg-field">
+              <label>防重叠间距 <span class="lg-val" id="lg-l-spacing-val">1.0</span></label>
+              <input type="range" id="lg-l-spacing" min="0.5" max="5" value="1" step="0.1">
+              <div class="lg-hint">节点表面之间的最小距离</div>
+            </div>
+          </div>
+
           <!-- 样式面板 -->
           <div class="lg-side-panel" id="lg-panel-style" style="display:none">
+            <div class="lg-field">
+              <label>小球样式</label>
+              <div class="lg-seg" id="lg-display-mode" title="2D 平面 / 3D 立体显示">
+                <button class="lg-seg-btn active" data-mode="2d">2D 平面</button>
+                <button class="lg-seg-btn" data-mode="3d">3D 立体</button>
+              </div>
+            </div>
+            <div class="lg-field" id="lg-3d-views" style="display:none">
+              <label>3D 视角</label>
+              <div class="lg-view-btns">
+                <button class="btn small" id="lg-view-front" title="前视图">前</button>
+                <button class="btn small" id="lg-view-top" title="俯视图">顶</button>
+                <button class="btn small" id="lg-view-side" title="侧视图">侧</button>
+                <button class="btn small" id="lg-view-iso" title="等轴测视图">等轴</button>
+                <button class="btn small" id="lg-view-reset" title="恢复初始视角">↺</button>
+              </div>
+            </div>
             <div class="lg-field">
               <label>节点配色（按影响因子）</label>
               <select id="lg-s-colorscale">
@@ -1399,16 +1430,6 @@
               </div>
               <div class="lg-hint" style="margin-top:6px">边粗细<span class="lg-val" id="lg-s-edgewidth-val">1.2</span></div>
               <input type="range" id="lg-s-edgewidth" min="0.2" max="4" value="1.2" step="0.2">
-            </div>
-            <div class="lg-field">
-              <label>引力布局参数</label>
-              <div class="lg-hint">scalingRatio（斥力）<span class="lg-val" id="lg-s-scaling-val">1.0</span></div>
-              <input type="range" id="lg-s-scaling" min="0.2" max="5" value="1" step="0.1">
-              <div class="lg-hint">gravity（向心引力）<span class="lg-val" id="lg-s-gravity-val">1.0</span></div>
-              <input type="range" id="lg-s-gravity" min="0" max="5" value="1" step="0.1">
-            </div>
-            <div class="lg-actions">
-              <button class="btn small" id="lg-relayout">重跑布局</button>
             </div>
           </div>
         </aside>

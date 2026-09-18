@@ -17,11 +17,12 @@
 .lg-seg-btn { border: none; background: var(--lg-panel2); color: var(--lg-muted); padding: 4px 14px;
   cursor: pointer; font-size: 12px; }
 .lg-seg-btn.active { background: var(--lg-accent); color: #fff; }
-.lg-view-controls { display: flex; align-items: center; gap: 4px; padding: 0 6px;
-  border-left: 1px solid var(--lg-border); border-right: 1px solid var(--lg-border); }
-.lg-view-controls .btn.small { padding: 3px 8px; font-size: 11px; min-width: 28px; }
-.lg-spacing-label { font-size: 11px; color: var(--lg-muted); margin-left: 4px; white-space: nowrap; }
-.lg-spacing-slider { width: 80px; height: 4px; cursor: pointer; }
+.lg-topbtns .btn.small.primary { background: var(--lg-accent); color: #fff; border-color: var(--lg-accent); }
+.lg-topbtns .btn.small.primary:hover { background: #2563eb; }
+.lg-view-btns { display: flex; gap: 4px; flex-wrap: wrap; }
+.lg-view-btns .btn.small { padding: 3px 8px; font-size: 11px; min-width: 28px;
+  background: var(--lg-panel2); color: var(--lg-text); border: 1px solid var(--lg-border); }
+.lg-view-btns .btn.small:hover { background: #e8eaef; }
 .lg-topbtns { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 .lg-topbtns .btn.small { background: var(--lg-panel2); color: var(--lg-text); border: 1px solid var(--lg-border); }
 .lg-topbtns .btn.small:hover { background: #e8eaef; }
