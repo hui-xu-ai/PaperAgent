@@ -111,6 +111,8 @@ export class Renderer2D {
       defaultNodeColor: '#4f9cf9',
       zIndex: true,
       allowInvalidContainer: true,
+      mouseEnabled: false,
+      mouseWheelEnabled: true,
     });
     this._container.style.cursor = 'grab';
 
@@ -200,8 +202,9 @@ export class Renderer2D {
     this._renderer.setSetting('labelColor', labelColor);
     this._renderer.setSetting('labelSize', 10);
     const edgeColor = this._style.edgeColor || (isLight ? '#5a6270' : '#a0aab8');
+    const edgeWidth = this._style.edgeWidth || 1.2;
     this._renderer.setSetting('defaultEdgeColor', edgeColor);
-    this._renderer.setSetting('defaultEdgeSize', this._style.edgeWidth || 1.2);
+    this._renderer.setSetting('defaultEdgeSize', edgeWidth);
     this._renderer.setSetting('renderEdgeLabels', false);
     if (this._tooltip) {
       this._tooltip.style.color = isLight ? '#1a1d23' : '#f0f2f5';
@@ -209,9 +212,10 @@ export class Renderer2D {
       this._tooltip.style.borderColor = isLight ? '#c8cdd5' : '#3a4150';
     }
     const show = !!this._style.showEdges;
-    this._graph.forEachEdge((_e, _a, s, t) => {
-      this._graph.setEdgeAttribute(this._graph.edge(s, t), 'hidden', !show);
-      this._graph.setEdgeAttribute(this._graph.edge(s, t), 'color', edgeColor);
+    this._graph.forEachEdge((edge) => {
+      this._graph.setEdgeAttribute(edge, 'hidden', !show);
+      this._graph.setEdgeAttribute(edge, 'color', edgeColor);
+      this._graph.setEdgeAttribute(edge, 'size', edgeWidth);
     });
     this._renderer.refresh();
   }

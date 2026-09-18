@@ -94,7 +94,6 @@ class GraphApp {
     }
     this._sync3dViews();
   }
-
   _capturePositions2d() {
     if (!this.renderer || !this.renderer._graph) return null;
     const g = this.renderer._graph;
@@ -153,7 +152,13 @@ class GraphApp {
         return;
       }
       this.paint();
-      this.runLayout(true);
+      if (this.displayMode === '2d') {
+        this.runLayout(true);
+      } else {
+        setTimeout(() => {
+          if (this.renderer && this.renderer.fit) this.renderer.fit();
+        }, 500);
+      }
     } catch (e) {
       this.panel.setMessage('图谱加载失败：' + e.message);
     } finally {
@@ -164,6 +169,7 @@ class GraphApp {
   // ── 布局调度 ───────────────────────────────────────
   runLayout(reinit) {
     if (!this._loaded || !this.nodes.length) return;
+    if (this.displayMode === '3d') return;
     this.stopLayout();
     if (this.layoutAlgorithm === 'fa2') {
       this.startFA2(reinit);
@@ -240,7 +246,7 @@ class GraphApp {
     this.worker.onmessage = (e) => {
       if (e.data.type === 'positions') {
         this._waiting = false;
-        if (this.renderer) {
+        if (this.renderer && this.displayMode === '2d') {
           const pos = new Float32Array(e.data.positions);
           this.renderer.applyPositions(pos, this.ids);
           layoutManager.save2dPositions(pos);
