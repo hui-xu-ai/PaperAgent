@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 
 from fastapi import APIRouter, HTTPException
@@ -10,6 +11,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..services import container
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
@@ -162,9 +165,17 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
         raise HTTPException(400, "问题不能为空")
 
     def gen() -> Iterator[str]:
-        chat = container.get_chat()
-        for event in chat.ask_stream(req.session_id, question, effort=req.effort):
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        # 生成器内任何异常（含首个事件前的 DB/容器错误）都必须变成 error 事件：
+        # 否则 StreamingResponse 已发 200 头，异常只进 uvicorn stderr（不落日志文件），
+        # 前端拿到空流 → 表现为"（无回答）"且无现场（2026-09-19 实测踩坑）。
+        try:
+            chat = container.get_chat()
+            for event in chat.ask_stream(req.session_id, question, effort=req.effort):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:  # noqa: BLE001
+            logger.exception("SSE 问答流中断 session=%s", req.session_id)
+            payload = {"type": "error", "message": f"服务端异常: {e}"}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",

@@ -139,6 +139,11 @@ class TokenGuard:
         "translate": {"max_calls": 80, "max_total_input_chars": 3_000_000},
         # M4：paperkb 问答（用户高频交互；独立组防与后台任务互挤）
         "ask": {"max_calls": 200, "max_total_input_chars": 5_000_000},
+        # 交互会话（chat/lit/manage/paper，context=session:<id>）：与 ask 同级——
+        # 用户主动多轮问答 + 工具循环（单问最多 6-12 轮），默认组 6 次会把整个
+        # 会话在进程生命周期内锁死（2026-09-19 实测：lit 一问吃满 6 轮后第二问被拦）。
+        # 失控风险仍由"单问轮次上限 + 累计输入字符上限"双重兜底。
+        "session": {"max_calls": 200, "max_total_input_chars": 5_000_000},
         "default": {"max_calls": 6,  "max_total_input_chars": 300_000},
     }
 
@@ -593,7 +598,8 @@ class ChatCompleter:
     def complete(self, messages: list[dict[str, str]], context: str = "chat") -> str:
         """非流式对话补全（用于回答缓存回填/离线场景）。"""
         if self.guard:
-            input_chars = sum(len(m.get("content", "")) for m in messages)
+            # content 可能是 None（工具循环里的 assistant 中间消息）→ 不能裸 len()
+            input_chars = sum(len(m.get("content") or "") for m in messages)
             self.guard.begin_call(context, input_chars)
         resp = self._client.chat.completions.create(
             model=self.model,
@@ -607,7 +613,14 @@ class ChatCompleter:
             raise DeepSeekError(
                 f"对话补全返回空信封（choices 为空，魔塔免费额度可能耗尽或限流）"
                 f"（魔塔免费额度/Key 问题？请在 设置中心-模型 切换供应商）")
-        text = (resp.choices[0].message.content or "").strip()
+        msg = resp.choices[0].message
+        text = (msg.content or "").strip()
+        if not text:
+            # 思考型模型可能把输出全放进 reasoning_content（content 为空 → "（无回答）"）
+            reasoning = getattr(msg, "reasoning_content", None)
+            if reasoning is None and isinstance(getattr(msg, "model_extra", None), dict):
+                reasoning = msg.model_extra.get("reasoning_content")
+            text = (reasoning or "").strip()
         usage = getattr(resp, "usage", None)
         if usage is not None and self.guard:
             cache_hit = cache_hit_tokens(usage)
@@ -620,11 +633,12 @@ class ChatCompleter:
         return text
 
     def complete_with_tools(self, context: str, messages: list[dict],
-                            tools: list[dict]) -> tuple[str | None, list | None]:
+                            tools: list[dict]) -> tuple[str | None, list | None, str | None]:
         """非流式带 tools 的对话补全（知识库管理模式工具调用循环用）。
 
-        返回 (content, tool_calls)：content=最终回答文本（无工具调用时）；tool_calls
-        = openai 格式调用列表（[{id, function:{name, arguments}}]，可能多条）。
+        返回 (content, tool_calls, reasoning)：content=最终回答文本（无工具调用时）；
+        tool_calls=openai 格式调用列表（[{id, function:{name, arguments}}]，可能多条）；
+        reasoning=思维链（思考型模型多轮工具调用**必须回传**，缺失会被 API 400 拒绝）。
         """
         if self.guard:
             input_chars = sum(len(m.get("content") or "") for m in messages)
@@ -649,6 +663,15 @@ class ChatCompleter:
                               "arguments": tc.function.arguments}}
                 for tc in msg.tool_calls]
         content = (msg.content or "").strip() or None
+        reasoning = getattr(msg, "reasoning_content", None)
+        if reasoning is None:
+            extra = getattr(msg, "model_extra", None)
+            if isinstance(extra, dict):
+                reasoning = extra.get("reasoning_content")
+        reasoning = (reasoning or "").strip() or None
+        if not content and not tool_calls and reasoning:
+            # 输出预算全被思维链吃掉（content 空）→ 用 reasoning 兜底，好过"（无回答）"
+            content = reasoning
         usage = getattr(resp, "usage", None)
         if usage is not None and self.guard:
             cache_hit = cache_hit_tokens(usage)
@@ -658,7 +681,7 @@ class ChatCompleter:
                 int(getattr(usage, "completion_tokens", 0) or 0),
                 provider=self.provider_id, model=self.model,
                 cache_hit_tokens=cache_hit)
-        return content, tool_calls
+        return content, tool_calls, reasoning
 
 
 # ---------------------------------------------------------------- 单例管理

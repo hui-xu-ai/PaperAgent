@@ -123,6 +123,26 @@ class ChatService:
         return (self.settings.manage_review_max_rounds if _is_report_task(question)
                 else self.settings.manage_tools_max_rounds)
 
+    def _final_answer_no_tools(self, session_id: int, messages: list[dict],
+                               max_rounds: int) -> str:
+        """工具轮次耗尽的兜底：去掉 tools 强制模型基于已检索内容给出终答。
+
+        旧行为是直接回"超限，请简化提问"——检索明明做了却拿不到任何答案
+        （token 已消耗，用户侧表现为白烧）。强制终答失败才回退超限提示。
+        """
+        try:
+            forced = messages + [{
+                "role": "user",
+                "content": (f"工具调用轮次已用尽（{max_rounds} 轮）。"
+                            "请基于以上已获得的结果直接给出最终回答；"
+                            "结果不足以完全回答时，说明已查到什么、缺什么。")}]
+            text = self.chat.complete(forced, f"session:{session_id}")
+            if (text or "").strip():
+                return text.strip()
+        except Exception:  # noqa: BLE001
+            logger.exception("工具轮次耗尽后强制终答失败")
+        return f"工具调用次数超限（{max_rounds} 轮），请简化操作或分步提问。"
+
     # ---------------------------------------------------------- 会话
     def create_session(self, paper_id: int | None = None, kind: str = "paper",
                        mode: str = "", title: str = "") -> int:
@@ -510,12 +530,18 @@ class ChatService:
         "3) `library/` = 解析库（document.json / en.md / images，PDF 解析产物）；"
         "`knowledge_base/` = 知识库（编译产物 `_note.md/_details.md/_wiki.md`、用户笔记、"
         "QA 卡片、综述报告 `_reports/`）。两者不是副本关系，内容层不要混引。\n"
-        "4) 找资料的工具选择：元数据/分类检索 → `kb_search_papers`（可用 kind / has_attachment "
+        "4) 引用：用 `[[DOI目录]]` 标注正文来源；引用附件内容时注明是「该文献的支撑信息/"
+        "审稿意见」。无编号资源用其 RID（`nd-…`/`book__…`）标注以免歧义。")
+
+    # 工具选择指引**只进 manage 模式**（带 tools 的请求）：qa 是不带 tools 的流式请求，
+    # 提示词里出现工具名会诱导 deepseek-flash 把工具调用以 DSML 标记当正文吐出来
+    # （2026-09-19 实测：qa 回答整段 `<｜｜DSML｜｜ invoke …>` 垃圾文本）。
+    _KB_TOOL_TREATY = (
+        "\n\n=== 找资料的工具选择 ===\n"
+        "元数据/分类检索 → `kb_search_papers`（可用 kind / has_attachment "
         "只找书或只找带 SI 的）；**问「某篇的支撑信息/审稿意见提了什么」→ 先 `kb_attachments(rid)` "
         "看清单，再 `kb_attachment_text(rid, path)` 读内容**；泛化内容检索 → `kb_recall`"
-        "（附件文本已按父资源入索引，命中条目的 file 以 `attachments/` 开头即为附件）。\n"
-        "5) 引用：用 `[[DOI目录]]` 标注正文来源；引用附件内容时注明是「该文献的支撑信息/"
-        "审稿意见」。无编号资源用其 RID（`nd-…`/`book__…`）标注以免歧义。")
+        "（附件文本已按父资源入索引，命中条目的 file 以 `attachments/` 开头即为附件）。")
 
     @staticmethod
     def _kb_system_prompt(mode: str = "qa") -> str:
@@ -525,6 +551,7 @@ class ChatService:
                 "检索片段已在下文提供，优先基于片段回答，可结合历史对话追问。")
         base += ChatService._KB_STORAGE_TREATY
         if mode == "manage":
+            base += ChatService._KB_TOOL_TREATY
             base += (
                 "\n\n=== 知识库管理能力 ===\n"
                 "你是知识库管理员，可调用工具完成管理操作：\n"
@@ -668,9 +695,11 @@ class ChatService:
             user_content = f"以下为知识库相关片段（标注来源）：\n{context}\n\n问题：{question}"
         messages.append({"role": "user", "content": user_content})
         parts: list[str] = []
+        reasoning_parts: list[str] = []
         try:
             for ev in self._llm_events(f"session:{session_id}", messages, effort):
                 if ev["type"] == "reasoning":
+                    reasoning_parts.append(ev["text"])
                     yield ev
                     continue
                 parts.append(ev["text"])
@@ -680,8 +709,10 @@ class ChatService:
             yield {"type": "error", "message": f"对话失败: {e}"}
             return
         answer = "".join(parts).strip()
+        reasoning_content = "".join(reasoning_parts).strip() if reasoning_parts else None
         mid = self.store.add_message(session_id, "assistant", answer,
-                                     tokens=self._estimate_tokens(answer))
+                                     tokens=self._estimate_tokens(answer),
+                                     reasoning_content=reasoning_content)
         self.store.set_cached_answer(key, question, answer)
         yield {"type": "done", "cached": False, "message_id": mid,
                "tokens": self._estimate_tokens(question) + self._estimate_tokens(answer)}
@@ -715,9 +746,10 @@ class ChatService:
         max_rounds = self._manage_round_limit(question)
         recall_budget = self.settings.manage_retrieval_budget_chars
         answer = ""
+        reasoning = None
         for _round in range(max_rounds):
             try:
-                content, tool_calls = self.chat.complete_with_tools(
+                content, tool_calls, reasoning = self.chat.complete_with_tools(
                     f"session:{session_id}", messages, tools)
             except Exception as e:  # noqa: BLE001
                 logger.exception("管理模式工具循环失败")
@@ -726,6 +758,17 @@ class ChatService:
             if not tool_calls:
                 answer = (content or "").strip()
                 break
+            # 同轮多个 tool_calls 的合法消息形状：**一条** assistant（带全部 tool_calls，
+            # 思考模式还必须带 reasoning_content，否则 API 400）+ 每调用一条 tool 消息。
+            # 旧实现按 tc 各挂一条 assistant → assistant/tool/assistant/tool 非法交错，
+            # 模型上下文错乱 → 持续调工具烧满轮次不给终答（2026-09-19 实测根因）。
+            asst: dict = {"role": "assistant", "content": content,
+                          "tool_calls": [{"id": tc["id"], "type": "function",
+                                          "function": tc["function"]}
+                                         for tc in tool_calls]}
+            if reasoning:
+                asst["reasoning_content"] = reasoning
+            messages.append(asst)
             for tc in tool_calls:
                 name = tc["function"]["name"]
                 try:
@@ -735,18 +778,15 @@ class ChatService:
                 result = run_tool(name, args, recall_budget=recall_budget)
                 yield {"type": "tool", "name": name, "args": args,
                        "summary": result["result"][:160], "ok": result["ok"]}
-                messages.append({
-                    "role": "assistant", "content": None,
-                    "tool_calls": [{"id": tc["id"], "type": "function",
-                                    "function": tc["function"]}]})
                 messages.append({"role": "tool", "tool_call_id": tc["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
         else:
-            answer = f"工具调用次数超限（{max_rounds} 轮），请简化操作或分步提问。"
+            answer = self._final_answer_no_tools(session_id, messages, max_rounds)
         if not answer:
             answer = "（无回答）"
         mid = self.store.add_message(session_id, "assistant", answer,
-                                     tokens=self._estimate_tokens(answer))
+                                     tokens=self._estimate_tokens(answer),
+                                     reasoning_content=reasoning)
         self.store.set_cached_answer(cache_key, question, answer)
         yield {"type": "delta", "text": answer}
         yield {"type": "done", "cached": False, "message_id": mid,
@@ -776,12 +816,18 @@ class ChatService:
                 msg["reasoning_content"] = m["reasoning_content"]
             messages.append(msg)
         messages.append({"role": "user", "content": question})
+        # lit 会话的用户消息同样必须落库：否则历史里只有 assistant 行，
+        # 多轮追问时模型看不到自己上一轮被问了什么（其余模式均有此步，lit 曾遗漏）。
+        self.store.add_message(session_id, "user", question,
+                               tokens=self._estimate_tokens(question))
+        yield {"type": "start", "cached": False, "retrieved": 0}
         tools = tool_specs()
         max_rounds = self._manage_round_limit(question)
         answer = ""
+        reasoning = None
         for _round in range(max_rounds):
             try:
-                content, tool_calls = self.chat.complete_with_tools(
+                content, tool_calls, reasoning = self.chat.complete_with_tools(
                     f"session:{session_id}", messages, tools)
             except Exception as e:  # noqa: BLE001
                 logger.exception("AI 检索模式工具循环失败")
@@ -790,6 +836,15 @@ class ChatService:
             if not tool_calls:
                 answer = (content or "").strip()
                 break
+            # 同轮多个 tool_calls：**一条** assistant（全部 tool_calls + reasoning_content）
+            # + 每调用一条 tool 消息（非法交错会让模型上下文错乱，见管理模式同款注释）。
+            asst: dict = {"role": "assistant", "content": content,
+                          "tool_calls": [{"id": tc["id"], "type": "function",
+                                          "function": tc["function"]}
+                                         for tc in tool_calls]}
+            if reasoning:
+                asst["reasoning_content"] = reasoning
+            messages.append(asst)
             for tc in tool_calls:
                 name = tc["function"]["name"]
                 try:
@@ -799,18 +854,15 @@ class ChatService:
                 result = run_tool(name, args)
                 yield {"type": "tool", "name": name, "args": args,
                        "summary": result["result"][:160], "ok": result["ok"]}
-                messages.append({
-                    "role": "assistant", "content": None,
-                    "tool_calls": [{"id": tc["id"], "type": "function",
-                                    "function": tc["function"]}]})
                 messages.append({"role": "tool", "tool_call_id": tc["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
         else:
-            answer = f"工具调用次数超限（{max_rounds} 轮），请简化操作或分步提问。"
+            answer = self._final_answer_no_tools(session_id, messages, max_rounds)
         if not answer:
             answer = "（无回答）"
         mid = self.store.add_message(session_id, "assistant", answer,
-                                     tokens=self._estimate_tokens(answer))
+                                     tokens=self._estimate_tokens(answer),
+                                     reasoning_content=reasoning)
         yield {"type": "delta", "text": answer}
         yield {"type": "done", "cached": False, "message_id": mid,
                "tokens": self._estimate_tokens(question) + self._estimate_tokens(answer)}
@@ -853,9 +905,11 @@ class ChatService:
                                tokens=self._estimate_tokens(question))
         yield {"type": "start", "cached": False, "retrieved": 0}
         parts: list[str] = []
+        reasoning_parts: list[str] = []
         try:
             for ev in self._llm_events(f"session:{session_id}", messages, effort):
                 if ev["type"] == "reasoning":
+                    reasoning_parts.append(ev["text"])
                     yield ev
                     continue
                 parts.append(ev["text"])
@@ -865,8 +919,10 @@ class ChatService:
             yield {"type": "error", "message": f"对话失败: {e}"}
             return
         answer = "".join(parts).strip()
+        reasoning_content = "".join(reasoning_parts).strip() if reasoning_parts else None
         mid = self.store.add_message(session_id, "assistant", answer,
-                                     tokens=self._estimate_tokens(answer))
+                                     tokens=self._estimate_tokens(answer),
+                                     reasoning_content=reasoning_content)
         self.store.set_cached_answer(key, question, answer)
         yield {"type": "done", "cached": False, "message_id": mid,
                "tokens": self._estimate_tokens(question) + self._estimate_tokens(answer)}
