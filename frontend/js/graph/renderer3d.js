@@ -76,7 +76,7 @@ export class Renderer3D {
       .nodeOpacity(0.92)
       .nodeLabel((d) => `<div style="font:12px system-ui;color:${initialTipColor}">${this._esc(d.label || d.title || d.id)}</div>`)
       .nodeResolution(24)
-      .linkColor(() => this._style.edgeColor)
+      .linkColor(() => this._style.edgeColor || '#8890a0')
       .linkOpacity(0.32)
       .linkWidth(() => this._style.edgeWidth || 1.2)
       .linkDirectionalArrowLength(() => (this._style.showEdgeDir ? 2.2 : 0))
@@ -182,10 +182,6 @@ export class Renderer3D {
     this._updateZRange();
     this._g.nodeColor(this._g.nodeColor());
     this._g.nodeOpacity(this._g.nodeOpacity());
-    // 自动适配相机视角到 FA2 坐标范围
-    setTimeout(() => {
-      if (this._g) this._g.zoomToFit(500, 60);
-    }, 100);
   }
 
   setStyle(style = {}) {

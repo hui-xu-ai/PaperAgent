@@ -144,12 +144,15 @@ export class Renderer2D {
       if (e.source === e.target) continue;
       if (!this._graph.hasNode(e.source) || !this._graph.hasNode(e.target)) continue;
       try {
-        this._graph.addEdge(e.source, e.target, {
-          size: this._style.edgeWidth || 1.2,
-          color: this._style.edgeColor,
+        const edgeId = this._graph.addEdge(e.source, e.target, {
+          size: Math.max(0.02, this._style.edgeWidth || 1.2),
+          color: this._style.edgeColor || '#8890a0',
           hidden: !this._style.showEdges,
           type: 'arrow',
         });
+        // 确保边线属性正确设置（sigma 可能覆盖）
+        this._graph.setEdgeAttribute(edgeId, 'size', Math.max(0.02, this._style.edgeWidth || 1.2));
+        this._graph.setEdgeAttribute(edgeId, 'color', this._style.edgeColor || '#8890a0');
       } catch (_) { /* 重复边忽略 */ }
     }
     this._renderer.refresh();
