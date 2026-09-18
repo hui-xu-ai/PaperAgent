@@ -37,13 +37,13 @@ export class Panel {
   renderLegend(palette = 'viridis', ifMax = 10) {
     if (!this.legend) return;
     this.legend.innerHTML = `
-      <div style="font-weight:700;margin-bottom:4px;color:#cfd6e0">图例</div>
+      <div style="font-weight:700;margin-bottom:4px;color:#3a3f48">图例</div>
       <div class="lg-gradient" style="background:${paletteGradient(palette)}"></div>
       <div class="lg-lg-row" style="justify-content:space-between">
         <span>影响因子 低</span><span>高 (${ifMax.toFixed(1)})</span>
       </div>
       <div class="lg-lg-row"><span class="lg-swatch" style="background:#9aa"></span>节点大小 ∝ 库内被引</div>
-      <div style="margin-top:5px;border-top:1px solid #2a323d;padding-top:4px;font-weight:600;color:#cfd6e0">长按高亮</div>
+      <div style="margin-top:5px;border-top:1px solid #d4d8e0;padding-top:4px;font-weight:600;color:#3a3f48">长按高亮</div>
       <div class="lg-lg-row"><span class="lg-swatch" style="background:${HL_CITING}"></span>引用了该文献</div>
       <div class="lg-lg-row"><span class="lg-swatch" style="background:${HL_CITED}"></span>该文献所引用</div>`;
   }
@@ -81,10 +81,15 @@ export class Panel {
 
     const kw = (d.keywords || []).slice(0, 12)
       .map((k) => `<span>${esc(k)}</span>`).join('');
-    const authors = (d.authors || []).slice(0, 8).join('、');
+    const allAuthors = (d.authors || []).join('、');
+    const affiliations = (d.affiliations || []);
+    const affHtml = affiliations.length
+      ? `<div class="lg-d-sec">研究单位</div><div class="lg-d-authors">${esc(affiliations.join('；'))}</div>`
+      : '';
 
     this.body.innerHTML = `
       <div class="lg-d-title">${esc(d.title || d.doi)}</div>
+      <div class="lg-d-doi" style="margin-top:0;margin-bottom:8px">DOI: <a href="https://doi.org/${esc(d.doi)}" target="_blank" rel="noopener">${esc(d.doi)}</a></div>
       <div class="lg-d-meta">${tags.join('')}</div>
       <div class="lg-d-stats">
         <div class="lg-d-stat"><div class="k">库内被引</div><div class="v">${d.library_citations || 0}</div></div>
@@ -93,10 +98,10 @@ export class Panel {
         <div class="lg-d-stat"><div class="k">它引用(出度)</div><div class="v">${d.out_degree || 0}</div></div>
       </div>
       ${d.journal ? `<div class="lg-d-sec">期刊</div><div class="lg-d-text">${esc(d.journal)}</div>` : ''}
-      ${authors ? `<div class="lg-d-sec">作者</div><div class="lg-d-authors">${esc(authors)}${(d.authors || []).length > 8 ? ' 等' : ''}</div>` : ''}
+      ${allAuthors ? `<div class="lg-d-sec">作者</div><div class="lg-d-authors">${esc(allAuthors)}</div>` : ''}
+      ${affHtml}
       ${kw ? `<div class="lg-d-sec">关键词</div><div class="lg-d-kw">${kw}</div>` : ''}
       ${d.abstract ? `<div class="lg-d-sec">摘要</div><div class="lg-d-text">${esc(d.abstract)}</div>` : ''}
-      ${d.research_areas && d.research_areas.length ? `<div class="lg-d-sec">研究方向</div><div class="lg-d-text">${esc(d.research_areas.join('、'))}</div>` : ''}
-      <div class="lg-d-doi">DOI: <a href="https://doi.org/${esc(d.doi)}" target="_blank" rel="noopener">${esc(d.doi)}</a></div>`;
+      ${d.research_areas && d.research_areas.length ? `<div class="lg-d-sec">研究方向</div><div class="lg-d-text">${esc(d.research_areas.join('、'))}</div>` : ''}`;
   }
 }
