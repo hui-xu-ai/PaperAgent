@@ -26,25 +26,26 @@ def _build_cocitation_matrix(store: LitStore, min_cocitations: int = 2
             SELECT citing_doi, cited_doi FROM citations
         """).fetchall()
 
-    cited_by: dict[str, set[str]] = defaultdict(set)
+    # refs_of[C] = C 这篇施引文献引用的所有参考文献
+    refs_of: dict[str, set[str]] = defaultdict(set)
     for row in rows:
-        cited_by[row["cited_doi"]].add(row["citing_doi"])
+        refs_of[row["citing_doi"]].add(row["cited_doi"])
 
-    dois = sorted(cited_by.keys())
+    # 节点 = 所有被引参考文献
+    cited: set[str] = set()
+    for refs in refs_of.values():
+        cited |= refs
+    dois = sorted(cited)
     doi_to_idx = {doi: i for i, doi in enumerate(dois)}
     n = len(dois)
 
+    # 共被引强度(A,B) = 同时引用 A 和 B 的施引文献数
     cocitation: dict[tuple[int, int], int] = defaultdict(int)
-
-    for citing_dois in cited_by.values():
-        citing_list = sorted(doi for doi in citing_dois if doi in doi_to_idx)
-        for i_idx in range(len(citing_list)):
-            for j_idx in range(i_idx + 1, len(citing_list)):
-                i = doi_to_idx[citing_list[i_idx]]
-                j = doi_to_idx[citing_list[j_idx]]
-                if i > j:
-                    i, j = j, i
-                cocitation[(i, j)] += 1
+    for refs in refs_of.values():
+        idxs = sorted(doi_to_idx[d] for d in refs)
+        for a in range(len(idxs)):
+            for b in range(a + 1, len(idxs)):
+                cocitation[(idxs[a], idxs[b])] += 1
 
     filtered = {k: v for k, v in cocitation.items() if v >= min_cocitations}
     logger.info("cocitation matrix: %d nodes, %d edges (min_cocitations=%d)",

@@ -121,7 +121,7 @@ class TestCocitationClusters:
         assert result["clusters"] == 0
 
     def test_two_separate_clusters(self, lit_store):
-        """两篇文献被不同的施引文献引用 → 两个聚类。"""
+        """A、B 被 C1、C2 共同引用 → 共被引强度 2 → 同一聚类。"""
         for doi in ["A", "B", "C1", "C2", "C3"]:
             _add_paper(lit_store, doi)
 
@@ -134,9 +134,38 @@ class TestCocitationClusters:
 
         result = compute_cocitation_clusters(lit_store, min_cocitations=2)
 
+        # 共被引边确实生成了（回归保护：曾因索引错配恒为空边）
+        assert result["method"] != "none"
+        assert result["clusters"] >= 1
         cluster_a = lit_store.get_paper("A").cocitation_cluster
         cluster_b = lit_store.get_paper("B").cocitation_cluster
         assert cluster_a == cluster_b
+
+    def test_disjoint_groups_separate(self, lit_store):
+        """两个互不重叠的共被引组 → 不同聚类。"""
+        for doi in ["A", "B", "D", "E", "C1", "C2", "C3", "C4"]:
+            _add_paper(lit_store, doi)
+
+        # 组1：A、B 被 C1、C2 共同引用
+        _add_citation(lit_store, "C1", "A")
+        _add_citation(lit_store, "C2", "A")
+        _add_citation(lit_store, "C1", "B")
+        _add_citation(lit_store, "C2", "B")
+        # 组2：D、E 被 C3、C4 共同引用
+        _add_citation(lit_store, "C3", "D")
+        _add_citation(lit_store, "C4", "D")
+        _add_citation(lit_store, "C3", "E")
+        _add_citation(lit_store, "C4", "E")
+
+        result = compute_cocitation_clusters(lit_store, min_cocitations=2)
+
+        assert result["method"] != "none"
+        assert result["clusters"] >= 2
+        ab = lit_store.get_paper("A").cocitation_cluster
+        de = lit_store.get_paper("D").cocitation_cluster
+        assert ab == lit_store.get_paper("B").cocitation_cluster
+        assert de == lit_store.get_paper("E").cocitation_cluster
+        assert ab != de
 
     def test_get_cluster_papers(self, lit_store):
         for doi in ["A", "B", "C"]:
