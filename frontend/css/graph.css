@@ -110,6 +110,8 @@
   text-transform: uppercase; letter-spacing: .04em; }
 .lg-d-text { font-size: 12px; line-height: 1.55; color: #3a3f48; }
 .lg-d-authors { font-size: 11.5px; color: var(--lg-muted); line-height: 1.5; }
+.lg-d-affs { display: flex; flex-direction: column; gap: 6px; }
+.lg-d-aff { font-size: 11.5px; color: var(--lg-muted); line-height: 1.5; background: var(--lg-panel2); border: 1px solid var(--lg-border); border-radius: 6px; padding: 5px 8px; }
 .lg-d-kw { display: flex; flex-wrap: wrap; gap: 4px; }
 .lg-d-kw span { font-size: 10.5px; background: var(--lg-panel2); border-radius: 9px; padding: 2px 8px; color: #4a5568; }
 .lg-d-doi { font-size: 11px; color: var(--lg-muted); word-break: break-all; margin-top: 4px; }

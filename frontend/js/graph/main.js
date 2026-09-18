@@ -192,20 +192,20 @@ class GraphController {
   // ── 布局计算 ──────────────────────────────────────
 
   /** 运行布局（根据算法选择FA2或几何布局）。 */
-  _runLayout(reinit) {
+  _runLayout(reinit, randomize = false) {
     if (!this._loaded || this.data.nodeCount === 0) return;
 
     this._stopLayout();
 
     if (this.layoutAlgorithm === 'fa2') {
-      this._startFA2(reinit);
+      this._startFA2(reinit, randomize);
     } else {
       this._runGeometricLayout();
     }
   }
 
   /** 启动FA2 worker。 */
-  _startFA2(reinit) {
+  _startFA2(reinit, randomize = false) {
     this._ensureWorker();
 
     if (reinit) {
@@ -218,6 +218,7 @@ class GraphController {
         edges: this.data.edges.map(e => ({ source: e.source, target: e.target })),
         clusters: this.data.clusters,
         settings: settings.layoutSettings(this.currentLayoutOpts),
+        randomize: !!randomize,
       });
     } else {
       this.worker.postMessage({
@@ -240,11 +241,11 @@ class GraphController {
     this.paused = true;
   }
 
-  /** 重跑布局（用户点击"重跑布局"按钮）。 */
+  /** 重跑布局（用户点击"重跑布局"按钮）：随机种子重播种，得到新布局。 */
   relayout() {
     this.currentStyle = settings.readStyle();
     this.currentLayoutOpts = settings.readLayout();
-    this._runLayout(true);
+    this._runLayout(true, true);
   }
 
   /** 设置布局算法。 */
@@ -431,6 +432,7 @@ function openGraph() {
 
   if (!app) {
     app = new GraphController();
+    window.__graphApp = app;   // 调试钩子：控制台可直接检查控制器/渲染器状态
     bindUI();
 
     try {

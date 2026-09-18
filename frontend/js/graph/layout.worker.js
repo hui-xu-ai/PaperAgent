@@ -23,19 +23,22 @@ let graph = null;
 let ids = [];
 let settings = null;
 
-function seedPositions(ids, clusters) {
+function seedPositions(ids, clusters, randomize) {
   const clusterIds = [...new Set(ids.map(id => clusters[id] || 0))];
   const clusterAngle = {};
-  clusterIds.forEach((c, i) => { clusterAngle[c] = (i / Math.max(1, clusterIds.length)) * Math.PI * 2; });
+  // randomize（用户点"重跑布局"）时加随机旋转，否则固定 0 保证可复现
+  const angleOffset = randomize ? Math.random() * Math.PI * 2 : 0;
+  clusterIds.forEach((c, i) => { clusterAngle[c] = (i / Math.max(1, clusterIds.length)) * Math.PI * 2 + angleOffset; });
   const R = Math.max(200, ids.length * 0.6);
   const pos = {};
   ids.forEach((id, i) => {
     const c = clusters[id] || 0;
     const a = clusterAngle[c];
     const cx = Math.cos(a) * R, cy = Math.sin(a) * R;
-    const jitter = ((i * 2654435761) % 1000) / 1000;
+    // 确定性种子用索引哈希（可复现）；randomize 用真随机（重跑得到新布局）
+    const jitter = randomize ? Math.random() : ((i * 2654435761) % 1000) / 1000;
     const jr = 40 + jitter * 120;
-    const ja = jitter * Math.PI * 2;
+    const ja = randomize ? Math.random() * Math.PI * 2 : jitter * Math.PI * 2;
     pos[id] = { x: cx + Math.cos(ja) * jr, y: cy + Math.sin(ja) * jr };
   });
   return pos;
@@ -48,7 +51,7 @@ self.onmessage = (e) => {
     ids = msg.ids;
     graph = new GraphCtor();
     const clusters = msg.clusters || {};
-    const seed = seedPositions(ids, clusters);
+    const seed = seedPositions(ids, clusters, !!msg.randomize);
     for (const id of ids) {
       graph.addNode(id, { x: seed[id].x, y: seed[id].y });
     }

@@ -949,21 +949,30 @@
                 </div>
               </div>
               <div id="lit-import-msg" class="kba-result"></div>
+              <div id="lit-import-progress" style="display:none;margin-top:8px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                  <div style="flex:1;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;border:1px solid var(--border)">
+                    <div id="lit-import-progress-bar" style="height:100%;width:0%;background:var(--primary,#4a90d9);border-radius:4px;transition:width 0.3s"></div>
+                  </div>
+                  <span id="lit-import-progress-text" class="muted" style="font-size:12px;min-width:80px;text-align:right">0%</span>
+                </div>
+                <div id="lit-import-progress-detail" class="muted" style="font-size:11px"></div>
+              </div>
             </section>
             <section class="scard wide">
               <h4>② 🧹 文献清洗</h4>
-              <p class="muted" style="margin:0 0 12px">基于年份、影响因子、分区、库内引用组合筛选，移除低价值文献（可选步骤）。先"关联期刊指标"再"计算预览"，确认后清洗。</p>
+              <p class="muted" style="margin:0 0 8px">作用范围：<b>仅参考文献记录</b>（主文献永久保护、绝不删除）。判定逻辑：命中下面<b>任意一条</b>已启用条件即待删除（条件之间是「或」）。先「计算预览」核对数量，再「确认清洗」。</p>
               <div class="lit-cleaning-rules">
                 <div class="lit-rule-row">
-                  <label><input type="checkbox" id="lit-clean-year-enable"> 年份 ≥</label>
+                  <label><input type="checkbox" id="lit-clean-year-enable"> 删除：年份 &lt;</label>
                   <input type="number" id="lit-clean-year-min" value="2015" min="1900" max="2030" style="width:70px" disabled>
                 </div>
                 <div class="lit-rule-row">
-                  <label><input type="checkbox" id="lit-clean-if-enable"> 影响因子 ≥</label>
+                  <label><input type="checkbox" id="lit-clean-if-enable"> 删除：影响因子 &lt;</label>
                   <input type="number" id="lit-clean-if-min" value="3.0" min="0" max="100" step="0.5" style="width:70px" disabled>
                 </div>
                 <div class="lit-rule-row">
-                  <label><input type="checkbox" id="lit-clean-quartile-enable"> 分区保留</label>
+                  <label><input type="checkbox" id="lit-clean-quartile-enable"> 删除：分区不在</label>
                   <select id="lit-clean-quartile-keep" multiple style="width:120px" disabled>
                     <option value="Q1" selected>Q1</option>
                     <option value="Q2" selected>Q2</option>
@@ -972,34 +981,65 @@
                   </select>
                 </div>
                 <div class="lit-rule-row">
-                  <label><input type="checkbox" id="lit-clean-citations-enable"> 库内引用 ≥</label>
+                  <label><input type="checkbox" id="lit-clean-citations-enable"> 删除：库内被引 &lt;</label>
                   <input type="number" id="lit-clean-citations-min" value="2" min="0" max="100" style="width:70px" disabled>
+                </div>
+                <div class="lit-rule-row">
+                  <label><input type="checkbox" id="lit-clean-nonwos-enable"> 删除：非 WoS 记录（来源非 WoS 或缺摘要，即 WoS 流程最终无法补全者）</label>
+                </div>
+                <div class="lit-rule-row" style="border-top:1px dashed var(--border);margin-top:6px;padding-top:6px">
+                  <label style="color:#c33"><input type="checkbox" id="lit-clean-include-mains"> 作用范围：含主文献（危险！默认仅参考文献；勾选后命中规则的主文献也会被删）</label>
                 </div>
               </div>
               <div class="form-actions" style="margin-top:12px">
                 <button class="btn small primary" id="lit-clean-preview">计算预览</button>
                 <button class="btn small danger" id="lit-clean-execute" disabled>确认清洗</button>
-                <button class="btn small" id="lit-clean-attach">关联期刊指标</button>
+                <button class="btn small" id="lit-clean-recalc">重算库内引用</button>
               </div>
               <div id="lit-clean-msg" class="kba-result"></div>
             </section>
             <section class="scard wide">
-              <h4>③ 🧬 补全元数据</h4>
+              <h4>③  补全元数据</h4>
               <p class="muted" style="margin:0 0 8px">通过 DOI 从 OpenAlex/Crossref 补全标题、摘要、作者、被引次数等（含参考文献）。补全后可用于清洗第二阶段（按被引次数筛经典文献）。</p>
               <div class="form-actions">
                 <button class="btn small primary" id="lit-enrich-pending">补全全部待补全元数据</button>
                 <span id="lit-unenriched-count" class="muted"></span>
               </div>
               <div id="lit-enrich-msg" class="kba-result"></div>
+              <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+                <p class="muted" style="margin:0 0 8px;font-size:12px"> <b>批量导出 WoS 检索式</b>：生成 Web of Science 检索式，手动在 WoS 检索后导出 bib 文件，再用「导入 bib 文献」功能补全（bib 来源数据信任级最高，可覆盖 OpenAlex/Crossref）。默认只导出<b>待补全</b>与<b>非 WoS 来源</b>的文献。</p>
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap">
+                  <label style="font-size:12px;color:var(--muted)">每批 DOI 数量（≤0 = 不分批）：<input type="number" id="lit-wos-batch-size" value="1000" style="width:80px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--panel);color:var(--text)"></label>
+                  <label style="font-size:12px;color:var(--muted)"><input type="checkbox" id="lit-wos-pending-only" checked style="margin-right:4px">仅待补全 + 非 WoS 来源</label>
+                </div>
+                <div class="form-actions">
+                  <button class="btn small" id="lit-export-wos-query">生成 WoS 检索式</button>
+                  <span id="lit-wos-count" class="muted" style="font-size:12px"></span>
+                </div>
+                <div id="lit-wos-batches"></div>
+              </div>
             </section>
             <section class="scard wide">
-              <h4>④ 📖 期刊名规范化</h4>
-              <p class="muted" style="margin:0 0 8px">将缩写期刊名（如 ADV MATER）统一为全称（如 Advanced Materials），经 OpenAlex 解析并写入映射表。已映射的期刊秒级命中，约需 2 分钟。</p>
+              <h4>④ 📖 期刊名规范化 → 期刊指标关联</h4>
+              <p class="muted" style="margin:0 0 6px">目标：把 JCR 影响因子/分区写入文献表（清洗与图谱按 IF/分区筛选的前提）。<b>共两步，按顺序执行：</b></p>
+              <ol style="margin:0 0 8px;padding-left:20px;font-size:12px;color:var(--muted);line-height:1.8">
+                <li><b>第 1 步「执行规范化」</b>：缩写→全称（OpenAlex 网络解析，<b>有实时进度</b>；已有映射的期刊自动跳过，中断后重跑可续）</li>
+                <li><b>第 2 步「关联期刊指标」</b>：纯本地 JCR 精确匹配，秒级；<b>每次导入新文献后需重跑</b></li>
+                <li>验证：检索结果卡的 IF/分区徽标、清洗预览样本的 IF 列</li>
+              </ol>
+              <div class="muted" style="font-size:12px;margin-bottom:8px">当前状态：已映射期刊 <b id="lit-stat-mapped">-</b> 种 · IF 已覆盖文献 <b id="lit-stat-ifcov">-</b> 篇</div>
               <div class="form-actions">
                 <button class="btn small primary" id="lit-normalize-run">执行规范化</button>
                 <button class="btn small" id="lit-normalize-preview">预览当前期刊</button>
               </div>
               <div id="lit-normalize-msg" class="kba-result"></div>
+              <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+                <div class="form-actions">
+                  <button class="btn small primary" id="lit-attach-metrics">关联期刊指标（写入 IF / 分区）</button>
+                  <span class="muted" style="font-size:12px">纯本地 JCR 匹配，秒级；导入新文献后需重跑</span>
+                </div>
+                <div id="lit-attach-msg" class="kba-result"></div>
+              </div>
             </section>
             <section class="scard wide">
               <h4>⑤ 🕸️ PaperRank 计算</h4>
@@ -1259,6 +1299,19 @@
       </div>
     </div>
   </div>
+  <div class="modal-mask" id="input-modal" style="display:none">
+    <div class="modal confirm-modal">
+      <div class="modal-header"><h3 id="input-title">输入</h3></div>
+      <div class="settings-body">
+        <p id="input-msg" class="confirm-msg"></p>
+        <input type="text" id="input-field" class="input-field" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;margin:12px 0;background:var(--panel);color:var(--text)">
+        <div class="confirm-actions">
+          <button class="btn" id="input-no">取消</button>
+          <button class="btn primary" id="input-yes">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="offline-bar" id="offline-bar" style="display:none"></div>
 
   <!-- ══════════ 文献计量图谱（最大化窗口 · 引用网络可视化）══════════ -->
@@ -1428,8 +1481,8 @@
                 <label class="lg-colorwrap">背景色<input type="color" id="lg-s-bgcolor" value="#f4f6fa"></label>
                 <label class="lg-colorwrap">边色<input type="color" id="lg-s-edgecolor" value="#8890a0"></label>
               </div>
-              <div class="lg-hint" style="margin-top:6px">边粗细<span class="lg-val" id="lg-s-edgewidth-val">1.2</span></div>
-              <input type="range" id="lg-s-edgewidth" min="0" max="1.5" value="1.2" step="0.1">
+              <div class="lg-hint" style="margin-top:6px">边粗细<span class="lg-val" id="lg-s-edgewidth-val">0.3</span></div>
+              <input type="range" id="lg-s-edgewidth" min="0" max="1.5" value="0.3" step="0.1">
             </div>
           </div>
         </aside>

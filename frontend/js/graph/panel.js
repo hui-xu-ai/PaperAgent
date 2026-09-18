@@ -10,6 +10,10 @@ const esc = (s) =>
   String(s == null ? '' : s).replace(/[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// WoS bib 单位串带 BibTeX 转义（\& \% \_ \#），展示前还原成可读字符
+const _bibUnescape = (s) =>
+  String(s == null ? '' : s).replace(/\\([&%_#])/g, '$1');
+
 export class Panel {
   constructor() {
     this.detail = $('lg-detail');
@@ -81,9 +85,12 @@ export class Panel {
     const kw = (d.keywords || []).slice(0, 12)
       .map((k) => `<span>${esc(k)}</span>`).join('');
     const allAuthors = (d.authors || []).join('、');
+    const corr = (d.corresponding || []).join('、');
     const affiliations = (d.affiliations || []);
     const affHtml = affiliations.length
-      ? `<div class="lg-d-sec">研究单位</div><div class="lg-d-authors">${esc(affiliations.join('；'))}</div>`
+      ? `<div class="lg-d-sec">研究单位</div><div class="lg-d-affs">${
+          affiliations.map((a) => `<div class="lg-d-aff">${esc(_bibUnescape(a))}</div>`).join('')
+        }</div>`
       : '';
 
     this.body.innerHTML = `
@@ -98,6 +105,7 @@ export class Panel {
       </div>
       ${d.journal ? `<div class="lg-d-sec">期刊</div><div class="lg-d-text">${esc(d.journal)}</div>` : ''}
       ${allAuthors ? `<div class="lg-d-sec">作者</div><div class="lg-d-authors">${esc(allAuthors)}</div>` : ''}
+      ${corr ? `<div class="lg-d-sec">通讯作者</div><div class="lg-d-authors">${esc(corr)}</div>` : ''}
       ${affHtml}
       ${kw ? `<div class="lg-d-sec">关键词</div><div class="lg-d-kw">${kw}</div>` : ''}
       ${d.abstract ? `<div class="lg-d-sec">摘要</div><div class="lg-d-text">${esc(d.abstract)}</div>` : ''}
