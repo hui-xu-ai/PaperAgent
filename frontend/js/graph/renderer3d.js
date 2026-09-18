@@ -85,19 +85,14 @@ export class Renderer3D {
       .onNodeClick((node) => { this._clearLongTimer(); if (this._clickCb) this._clickCb(node.id); })
       .onNodeHover((node) => { this._hoverNode = node ? node.id : null; });
 
-    // 极弱化 d3-force-3d，让 FA2 坐标主导
+    // 完全禁用 d3-force-3d 物理引擎，坐标完全由 FA2/几何布局决定
     const charge = this._g.d3Force('charge');
-    if (charge) charge.strength(-1);
+    if (charge) charge.strength(0);
     const link = this._g.d3Force('link');
     if (link) {
-      link.distance((l) => {
-        const srcSize = l.source.size || 2;
-        const tgtSize = l.target.size || 2;
-        return Math.max(18, ((srcSize + tgtSize) / 2) * 6);
-      });
-      link.strength(0.01);
+      link.strength(0);
     }
-    this._g.d3AlphaDecay(0.1);
+    this._g.d3AlphaDecay(1);  // 立即停止物理模拟
     this._wireLongPress();
 
     if (this._pendingData) {

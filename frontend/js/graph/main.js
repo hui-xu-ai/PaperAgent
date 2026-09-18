@@ -73,24 +73,24 @@ class GraphApp {
 
   setDisplayMode(mode) {
     if (mode === this.displayMode) return;
+    // 切离当前模式时保存 FA2 坐标（2D 和 3D 共享同一套位置）
     if (this.displayMode === '2d' && this.renderer && this.ids.length) {
       layoutManager.save2dPositions(this._capturePositions2d());
     }
     this.displayMode = mode;
     this.stopLayout();
     this.buildRenderer();
-    if (mode === '3d') {
-      setTimeout(() => {
-        if (this.renderer && this.renderer.fit) this.renderer.fit();
-      }, 500);
-    } else {
-      const saved = layoutManager.restore2dPositions();
-      if (saved) {
-        this.renderer.applyPositions(saved, this.ids);
-        this.paused = true;
-      } else if (this.layoutAlgorithm === 'fa2') {
-        this.startFA2(true);
-      }
+    // 无论 2D/3D，都恢复已计算的布局坐标
+    const saved = layoutManager.restore2dPositions();
+    if (saved) {
+      this.renderer.applyPositions(saved, this.ids);
+      this.paused = true;
+    } else if (this.layoutAlgorithm === 'fa2') {
+      // 无缓存且算法是 FA2 → 启动 FA2
+      this.startFA2(true);
+    } else if (this.layoutAlgorithm !== 'fa2') {
+      // 几何布局 → 重新计算
+      this.runGeometricLayout();
     }
     this._sync3dViews();
   }
@@ -152,13 +152,7 @@ class GraphApp {
         return;
       }
       this.paint();
-      if (this.displayMode === '2d') {
-        this.runLayout(true);
-      } else {
-        setTimeout(() => {
-          if (this.renderer && this.renderer.fit) this.renderer.fit();
-        }, 500);
-      }
+      this.runLayout(true);
     } catch (e) {
       this.panel.setMessage('图谱加载失败：' + e.message);
     } finally {
@@ -169,7 +163,6 @@ class GraphApp {
   // ── 布局调度 ───────────────────────────────────────
   runLayout(reinit) {
     if (!this._loaded || !this.nodes.length) return;
-    if (this.displayMode === '3d') return;
     this.stopLayout();
     if (this.layoutAlgorithm === 'fa2') {
       this.startFA2(reinit);
@@ -246,7 +239,7 @@ class GraphApp {
     this.worker.onmessage = (e) => {
       if (e.data.type === 'positions') {
         this._waiting = false;
-        if (this.renderer && this.displayMode === '2d') {
+        if (this.renderer) {
           const pos = new Float32Array(e.data.positions);
           this.renderer.applyPositions(pos, this.ids);
           layoutManager.save2dPositions(pos);
