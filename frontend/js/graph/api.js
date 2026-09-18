@@ -6,7 +6,10 @@
  *   GET /neighbors 长按高亮 → {doi, citing[], cited[]}
  *   GET /node      节点详情 → {title, abstract, authors, keywords, ...}
  */
-const BASE = '/api/lit/v1/graph';
+
+// API基础URL配置（开发环境可改为 http://localhost:8000）
+const API_BASE = window.GRAPH_API_BASE || '';
+const BASE = `${API_BASE}/api/lit/v1/graph`;
 
 async function _get(path, params = {}) {
   const qs = new URLSearchParams();
