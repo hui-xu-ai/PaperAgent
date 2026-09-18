@@ -19,6 +19,44 @@ from ..db import LitStore
 logger = logging.getLogger(__name__)
 
 
+def _rule_conditions(rules: dict[str, Any]) -> tuple[list[str], list]:
+    """把清洗规则翻译成 OR 连接的 SQL 条件 + 参数（命中任一即「待移除」）。
+
+    返回 ([], []) 表示无有效规则。条件**不含**主文献保护，由调用方包一层
+    ``is_reference=1 AND (...)``——主文献（用户导入的核心论文，is_reference=0）
+    在库内通常 library_citations=0，绝不可被清洗误删。
+    """
+    conditions: list[str] = []
+    params: list = []
+    if "year" in rules and "min" in rules["year"]:
+        conditions.append("CAST(year AS INTEGER) < ?")
+        params.append(rules["year"]["min"])
+    if "impact_factor" in rules and "min" in rules["impact_factor"]:
+        conditions.append("impact_factor < ?")
+        params.append(rules["impact_factor"]["min"])
+    if "quartile" in rules and "keep" in rules["quartile"]:
+        keep_list = rules["quartile"]["keep"]
+        placeholders = ",".join(["?"] * len(keep_list))
+        conditions.append(f"quartile NOT IN ({placeholders})")
+        params.extend(keep_list)
+    if "library_citations" in rules and "min" in rules["library_citations"]:
+        conditions.append("library_citations < ?")
+        params.append(rules["library_citations"]["min"])
+    return conditions, params
+
+
+def _guarded_where(rules: dict[str, Any]) -> tuple[str, list] | None:
+    """带主文献保护的完整 WHERE 子句；无有效规则返回 None。
+
+    形如 ``is_reference=1 AND (cond1 OR cond2 ...)``——只清洗参考文献，
+    主文献永远保留。
+    """
+    conditions, params = _rule_conditions(rules)
+    if not conditions:
+        return None
+    return "is_reference=1 AND (" + " OR ".join(conditions) + ")", params
+
+
 def attach_journal_metrics(store: LitStore, journals_db_path: Path | str) -> dict:
     """关联期刊指标（影响因子、分区）到 papers 表。
 
@@ -139,36 +177,11 @@ def preview_cleaning(store: LitStore, rules: dict[str, Any]) -> dict:
             "samples": [{"doi": str, "title": str, "year": str, ...}, ...]
         }
     """
+    guarded = _guarded_where(rules)
     with store._conn() as conn:
         total = conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
 
-        # 构建 WHERE 条件
-        conditions = []
-        params = []
-
-        # 年份过滤
-        if "year" in rules and "min" in rules["year"]:
-            conditions.append("CAST(year AS INTEGER) < ?")
-            params.append(rules["year"]["min"])
-
-        # 影响因子过滤
-        if "impact_factor" in rules and "min" in rules["impact_factor"]:
-            conditions.append("impact_factor < ?")
-            params.append(rules["impact_factor"]["min"])
-
-        # 分区过滤
-        if "quartile" in rules and "keep" in rules["quartile"]:
-            keep_list = rules["quartile"]["keep"]
-            placeholders = ",".join(["?"] * len(keep_list))
-            conditions.append(f"quartile NOT IN ({placeholders})")
-            params.extend(keep_list)
-
-        # 库内引用过滤
-        if "library_citations" in rules and "min" in rules["library_citations"]:
-            conditions.append("library_citations < ?")
-            params.append(rules["library_citations"]["min"])
-
-        if not conditions:
+        if guarded is None:
             return {
                 "total": total,
                 "to_remove": 0,
@@ -177,44 +190,36 @@ def preview_cleaning(store: LitStore, rules: dict[str, Any]) -> dict:
                 "samples": [],
             }
 
-        where_clause = " OR ".join(conditions)
-        query = f"SELECT * FROM papers WHERE {where_clause}"
-
-        to_remove_rows = conn.execute(query, params).fetchall()
+        where_clause, params = guarded
+        to_remove_rows = conn.execute(
+            f"SELECT * FROM papers WHERE {where_clause}", params).fetchall()
         to_remove = len(to_remove_rows)
         to_keep = total - to_remove
 
-        # 分项统计
+        # 分项统计（同样只数参考文献，主文献恒保留）
         breakdown = {}
         if "year" in rules and "min" in rules["year"]:
-            cnt = conn.execute(
-                "SELECT COUNT(*) FROM papers WHERE CAST(year AS INTEGER) < ?",
-                (rules["year"]["min"],),
-            ).fetchone()[0]
-            breakdown["year_filter"] = cnt
-
+            breakdown["year_filter"] = conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE is_reference=1 "
+                "AND CAST(year AS INTEGER) < ?",
+                (rules["year"]["min"],)).fetchone()[0]
         if "impact_factor" in rules and "min" in rules["impact_factor"]:
-            cnt = conn.execute(
-                "SELECT COUNT(*) FROM papers WHERE impact_factor < ?",
-                (rules["impact_factor"]["min"],),
-            ).fetchone()[0]
-            breakdown["if_filter"] = cnt
-
+            breakdown["if_filter"] = conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE is_reference=1 "
+                "AND impact_factor < ?",
+                (rules["impact_factor"]["min"],)).fetchone()[0]
         if "quartile" in rules and "keep" in rules["quartile"]:
             keep_list = rules["quartile"]["keep"]
             placeholders = ",".join(["?"] * len(keep_list))
-            cnt = conn.execute(
-                f"SELECT COUNT(*) FROM papers WHERE quartile NOT IN ({placeholders})",
-                keep_list,
-            ).fetchone()[0]
-            breakdown["quartile_filter"] = cnt
-
+            breakdown["quartile_filter"] = conn.execute(
+                f"SELECT COUNT(*) FROM papers WHERE is_reference=1 "
+                f"AND quartile NOT IN ({placeholders})",
+                keep_list).fetchone()[0]
         if "library_citations" in rules and "min" in rules["library_citations"]:
-            cnt = conn.execute(
-                "SELECT COUNT(*) FROM papers WHERE library_citations < ?",
-                (rules["library_citations"]["min"],),
-            ).fetchone()[0]
-            breakdown["citation_filter"] = cnt
+            breakdown["citation_filter"] = conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE is_reference=1 "
+                "AND library_citations < ?",
+                (rules["library_citations"]["min"],)).fetchone()[0]
 
         # 样本（前 20 条）
         samples = []
@@ -255,39 +260,20 @@ def execute_cleaning(store: LitStore, rules: dict[str, Any], mode: str = "delete
     if to_remove == 0:
         return {"removed": 0, "remaining": preview["total"], "mode": mode}
 
+    guarded = _guarded_where(rules)
+    if guarded is None:
+        return {"removed": 0, "remaining": preview["total"], "mode": mode}
+    where_clause, params = guarded
+
     with store._conn() as conn:
-        # 构建 WHERE 条件（同 preview）
-        conditions = []
-        params = []
-
-        if "year" in rules and "min" in rules["year"]:
-            conditions.append("CAST(year AS INTEGER) < ?")
-            params.append(rules["year"]["min"])
-
-        if "impact_factor" in rules and "min" in rules["impact_factor"]:
-            conditions.append("impact_factor < ?")
-            params.append(rules["impact_factor"]["min"])
-
-        if "quartile" in rules and "keep" in rules["quartile"]:
-            keep_list = rules["quartile"]["keep"]
-            placeholders = ",".join(["?"] * len(keep_list))
-            conditions.append(f"quartile NOT IN ({placeholders})")
-            params.extend(keep_list)
-
-        if "library_citations" in rules and "min" in rules["library_citations"]:
-            conditions.append("library_citations < ?")
-            params.append(rules["library_citations"]["min"])
-
-        where_clause = " OR ".join(conditions)
-
         if mode == "delete":
-            conn.execute(f"DELETE FROM papers WHERE {where_clause}", params)
-            # 同时删除 citations 表中的相关记录
+            # 先删引用边再删论文：否则 papers 已空，子查询匹配不到 → 残留孤立 citations。
             conn.execute(f"""
                 DELETE FROM citations
                 WHERE citing_doi IN (SELECT doi FROM papers WHERE {where_clause})
                    OR cited_doi IN (SELECT doi FROM papers WHERE {where_clause})
             """, params + params)
+            conn.execute(f"DELETE FROM papers WHERE {where_clause}", params)
         elif mode == "mark":
             # is_cleaned 列由 _SCHEMA 声明
             conn.execute(f"UPDATE papers SET is_cleaned = 1 WHERE {where_clause}", params)

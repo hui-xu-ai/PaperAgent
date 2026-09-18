@@ -189,8 +189,9 @@ class LitStore:
                  times_cited, wos_id, references_json,
                  source_main, source_file, source_abstract, source_authors,
                  is_reference, is_enriched, imported_at, enriched_at,
-                 paper_rank, cocitation_cluster)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 paper_rank, cocitation_cluster,
+                 impact_factor, quartile, library_citations)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 paper.doi, paper.title, paper.abstract,
                 json.dumps(paper.authors, ensure_ascii=False),
@@ -208,6 +209,7 @@ class LitStore:
                 int(paper.is_reference), int(paper.is_enriched),
                 paper.imported_at, paper.enriched_at,
                 paper.paper_rank, paper.cocitation_cluster,
+                paper.impact_factor, paper.quartile, paper.library_citations,
             ))
             self._sync_fts(conn, paper)
         return is_new
