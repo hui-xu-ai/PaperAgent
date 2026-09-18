@@ -55,6 +55,10 @@ class CleaningRulesRequest(BaseModel):
     impact_factor: dict | None = Field(None, description="影响因子规则，如 {'min': 3.0}")
     quartile: dict | None = Field(None, description="分区规则，如 {'keep': ['Q1', 'Q2']}")
     library_citations: dict | None = Field(None, description="库内引用规则，如 {'min': 2}")
+    non_wos_record: bool | None = Field(
+        None, description="非 WoS 记录（来源非 wos 或缺摘要，WoS 流程最终无法补全者）")
+    include_mains: bool | None = Field(
+        None, description="危险：作用范围含主文献（默认仅参考文献）")
     mode: str = Field("delete", description="清洗模式：delete 或 mark")
 
 
@@ -93,14 +97,15 @@ def lit_status() -> dict:
 
 @router.post("/ingest/bib")
 def ingest_bib(req: BibPathRequest) -> dict:
-    """导入单个 bib 文件。"""
+    """导入单个 bib 文件（异步，返回 task_id，用 /ingest/progress 查询进度）。"""
     try:
-        return container.get_lit().ingest_bib(
+        task_id = container.get_lit().ingest_bib_async(
             req.path,
             import_refs=req.import_refs,
             min_year=req.min_year,
             max_year=req.max_year,
         )
+        return {"task_id": task_id}
     except Exception as e:
         _handle_error(e, "ingest/bib")
 
@@ -121,16 +126,24 @@ def ingest_bib_dir(req: BibPathRequest) -> dict:
 
 @router.post("/ingest/upload")
 async def ingest_upload(file: UploadFile = File(...)) -> dict:
-    """上传 bib 文件导入。"""
+    """上传 bib 文件导入（异步，返回 task_id）。"""
     if not (file.filename or "").lower().endswith(".bib"):
         raise HTTPException(400, "仅支持 .bib 文件")
     data = await file.read()
     if not data:
         raise HTTPException(400, "空文件")
     try:
-        return container.get_lit().ingest_upload(file.filename or "upload.bib", data)
+        task_id = container.get_lit().ingest_upload_async(
+            file.filename or "upload.bib", data)
+        return {"task_id": task_id}
     except Exception as e:
         _handle_error(e, "ingest/upload")
+
+
+@router.get("/ingest/progress")
+def import_progress() -> dict:
+    """查询当前导入任务进度。"""
+    return container.get_lit().get_import_progress()
 
 
 # ================================================================ 文献浏览
@@ -150,6 +163,23 @@ def list_papers(offset: int = Query(0, ge=0),
 @router.get("/papers/count")
 def paper_count() -> dict:
     return {"count": container.get_lit().paper_count()}
+
+
+@router.get("/papers/dois")
+def papers_dois(mode: str = Query("pending", pattern="^(pending|all)$"),
+                include_non_wos: bool = Query(
+                    True, description="pending 模式下是否纳入非 WoS 来源的已补全文献")) -> dict:
+    """导出 DOI 列表（供 WoS 批量检索式生成）。
+
+    mode=pending：待补全，或（include_non_wos 时）来源非 WoS 的文献；mode=all：全部。
+    """
+    try:
+        lit = container.get_lit()
+        dois = (lit.pending_dois(include_non_wos=include_non_wos)
+                if mode == "pending" else lit.all_dois())
+        return {"dois": dois, "count": len(dois)}
+    except Exception as e:
+        _handle_error(e, "papers/dois")
 
 
 @router.get("/paper")
@@ -219,10 +249,17 @@ def journals_unique() -> list[dict]:
 
 @router.post("/journals/normalize")
 def journals_normalize() -> dict:
+    """启动后台规范化任务（进度用 /journals/normalize-progress 查询）。"""
     try:
-        return container.get_lit().normalize_journals()
+        return {"task_id": container.get_lit().normalize_journals_async()}
     except Exception as e:
         _handle_error(e, "journals/normalize")
+
+
+@router.get("/journals/normalize-progress")
+def journals_normalize_progress() -> dict:
+    """查询规范化任务进度。"""
+    return container.get_lit().get_normalize_progress()
 
 
 @router.get("/journals/mapper-stats")
@@ -359,6 +396,7 @@ def graph_network(
     in_kb_only: bool = Query(False),
     sort_by: str = Query("library_citations"),
     limit: int = Query(5000, ge=1, le=100000),
+    preview: bool = Query(False, description="仅返回匹配节点数，不构建完整网络"),
 ) -> dict:
     """引用网络（节点 + 边），服务端过滤。节点上限 limit（按 sort_by 取 Top-N）。"""
     try:
@@ -372,6 +410,7 @@ def graph_network(
             quartiles=qlist, cluster=cluster,
             exclude_references=exclude_references, in_kb_only=in_kb_only,
             sort_by=sort_by, limit=limit, kb_dois=_get_kb_dois(),
+            preview=preview,
         )
     except Exception as e:
         _handle_error(e, "graph/network")
@@ -523,6 +562,7 @@ def run_pipeline() -> dict:
 
     _run("enrich_pending", lit.enrich_pending)
     _run("normalize_journals", lit.normalize_journals)
+    _run("attach_journal_metrics", lit.attach_journal_metrics)
     _run("compute_paper_rank", lit.compute_paper_rank)
     _run("build_vector_index", lit.build_vector_index)
 

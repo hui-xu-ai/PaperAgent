@@ -10,11 +10,18 @@ paperlit 返回 Pydantic 模型（Paper / SearchResult），
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from pathlib import Path
 
 from paperlit.config import LitSettings, Roots
 
 logger = logging.getLogger(__name__)
+
+_import_progress: dict = {}
+_import_lock = threading.Lock()
+_normalize_progress: dict = {}
+_normalize_lock = threading.Lock()
 
 
 def _to_dict(obj) -> dict:
@@ -85,6 +92,7 @@ class LitService:
             "ranked_count": lit.ranked_count(),
             "topic_count": topic_count,
             "journal_mapping_count": journal_mapping_count,
+            "if_covered_count": lit.if_covered_count(),
         }
 
     # ---------------------------------------------------------- 导入
@@ -118,6 +126,104 @@ class LitService:
                 tmp.unlink(missing_ok=True)
             except OSError:
                 pass
+
+    # ---------------------------------------------------------- 异步导入 + 进度
+
+    def get_import_progress(self) -> dict:
+        with _import_lock:
+            return dict(_import_progress)
+
+    def ingest_bib_async(self, path: str, import_refs: bool = True,
+                         min_year: int | None = None,
+                         max_year: int | None = None) -> str:
+        self._ensure()
+        task_id = f"import_{int(time.time() * 1000)}"
+        with _import_lock:
+            _import_progress.clear()
+            _import_progress.update({
+                "task_id": task_id, "status": "running",
+                "current": 0, "total": 0, "phase": "解析文件",
+                "doi": "", "result": None, "error": None,
+            })
+
+        def _run():
+            try:
+                from paperlit import api as lit
+
+                def cb(current, total, doi, phase=None):
+                    with _import_lock:
+                        _import_progress["current"] = current
+                        _import_progress["total"] = total
+                        _import_progress["doi"] = doi
+                        if phase:
+                            _import_progress["phase"] = phase
+
+                with _import_lock:
+                    _import_progress["phase"] = "解析文件"
+                result = lit.ingest_bib(path, import_refs=import_refs,
+                                        min_year=min_year, max_year=max_year,
+                                        progress_cb=cb)
+                with _import_lock:
+                    _import_progress["status"] = "done"
+                    _import_progress["phase"] = "完成"
+                    _import_progress["result"] = result
+            except Exception as e:
+                logger.exception("异步导入失败")
+                with _import_lock:
+                    _import_progress["status"] = "error"
+                    _import_progress["error"] = str(e)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return task_id
+
+    def ingest_upload_async(self, filename: str, data: bytes) -> str:
+        import tempfile
+        self._ensure()
+        suffix = Path(filename).suffix or ".bib"
+        tmp = Path(tempfile.gettempdir()) / f"lit_{filename}{suffix}"
+        tmp.write_bytes(data)
+        task_id = f"upload_{int(time.time() * 1000)}"
+        with _import_lock:
+            _import_progress.clear()
+            _import_progress.update({
+                "task_id": task_id, "status": "running",
+                "current": 0, "total": 0, "phase": "解析文件",
+                "doi": "", "result": None, "error": None,
+            })
+
+        def _run():
+            try:
+                from paperlit import api as lit
+
+                def cb(current, total, doi, phase=None):
+                    with _import_lock:
+                        _import_progress["current"] = current
+                        _import_progress["total"] = total
+                        _import_progress["doi"] = doi
+                        if phase:
+                            _import_progress["phase"] = phase
+
+                result = lit.ingest_bib(str(tmp), source_file=filename,
+                                        progress_cb=cb)
+                with _import_lock:
+                    _import_progress["status"] = "done"
+                    _import_progress["phase"] = "完成"
+                    _import_progress["result"] = result
+            except Exception as e:
+                logger.exception("异步上传导入失败")
+                with _import_lock:
+                    _import_progress["status"] = "error"
+                    _import_progress["error"] = str(e)
+            finally:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return task_id
 
     # ---------------------------------------------------------- 文献浏览
 
@@ -178,12 +284,61 @@ class LitService:
         from paperlit import api as lit
         return lit.unenriched_count()
 
+    def pending_dois(self, include_non_wos: bool = True) -> list[str]:
+        self._ensure()
+        from paperlit import api as lit
+        return lit.pending_dois(include_non_wos=include_non_wos)
+
+    def all_dois(self) -> list[str]:
+        self._ensure()
+        from paperlit import api as lit
+        return lit.all_dois()
+
     # ---------------------------------------------------------- 期刊名规范化
 
     def normalize_journals(self) -> dict:
         self._ensure()
         from paperlit import api as lit
         return lit.normalize_journals()
+
+    def get_normalize_progress(self) -> dict:
+        with _normalize_lock:
+            return dict(_normalize_progress)
+
+    def normalize_journals_async(self) -> str:
+        """后台线程跑规范化，进度经 get_normalize_progress 查询。"""
+        self._ensure()
+        task_id = f"normalize_{int(time.time() * 1000)}"
+        with _normalize_lock:
+            _normalize_progress.clear()
+            _normalize_progress.update({
+                "task_id": task_id, "status": "running",
+                "current": 0, "total": 0, "journal": "",
+                "result": None, "error": None,
+            })
+
+        def _run():
+            try:
+                from paperlit import api as lit
+
+                def cb(current, total, journal):
+                    with _normalize_lock:
+                        _normalize_progress["current"] = current
+                        _normalize_progress["total"] = total
+                        _normalize_progress["journal"] = journal
+
+                result = lit.normalize_journals(progress_cb=cb)
+                with _normalize_lock:
+                    _normalize_progress["status"] = "done"
+                    _normalize_progress["result"] = result
+            except Exception as e:
+                logger.exception("异步规范化失败")
+                with _normalize_lock:
+                    _normalize_progress["status"] = "error"
+                    _normalize_progress["error"] = str(e)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return task_id
 
     def get_unique_journals(self) -> list[dict]:
         self._ensure()
@@ -247,11 +402,12 @@ class LitService:
 
     # ---------------------------------------------------------- 文献计量图谱
 
-    def graph_network(self, *, kb_dois: set[str] | None = None, **filters) -> dict:
+    def graph_network(self, *, kb_dois: set[str] | None = None,
+                      preview: bool = False, **filters) -> dict:
         """引用网络导出（服务端过滤）。kb_dois 由路由层注入（标记 in_kb）。"""
         self._ensure()
         from paperlit import api as lit
-        return lit.graph_network(kb_dois=kb_dois, **filters)
+        return lit.graph_network(kb_dois=kb_dois, preview=preview, **filters)
 
     def graph_filter_facets(self, *, kb_dois: set[str] | None = None) -> dict:
         self._ensure()
