@@ -70,7 +70,7 @@ export class Renderer3D {
       .nodeLabel((d) => `<div style="font:12px system-ui;color:#ffffff">${this._esc(d.label || d.title || d.id)}</div>`)
       .nodeResolution(24)
       .linkColor((d) => d.color || '#8890a0') // 实时读取边颜色
-      .linkOpacity(0.32)
+      .linkOpacity(0.7) // 太低会让用户设置的边色被背景稀释看不出
       .linkWidth((d) => d.width != null ? d.width : 1.2) // **无最小值限制！**
       .linkDirectionalArrowLength((d) => (d.showArrow ? 2.2 : 0))
       .linkDirectionalArrowRelPos(1)
@@ -141,16 +141,13 @@ export class Renderer3D {
       showArrow: false, // 默认不显示箭头，可通过setStyle启用
     }));
 
-    // 保存相机状态防止自动缩放
+    // 保存相机状态防止 graphData 重建导致视角跳变（3d-force-graph 无 zoom() API）
     const camPos = this._g.cameraPosition();
-    const zoom = this._g.zoom();
 
     this._g.graphData({ nodes: gnodes, links });
 
-    // 恢复相机位置
     if (camPos && camPos.x != null) {
       this._g.cameraPosition(camPos, undefined, 0);
-      this._g.zoom(zoom || 1, 0);
     }
 
     requestAnimationFrame(() => {
@@ -203,7 +200,6 @@ export class Renderer3D {
 
     // 保存相机状态
     const camPos = this._g.cameraPosition();
-    const zoom = this._g.zoom();
 
     const posMap = new Map();
     for (let i = 0; i < ids.length; i++) {
@@ -227,7 +223,6 @@ export class Renderer3D {
     // 恢复相机位置
     if (camPos && camPos.x != null) {
       this._g.cameraPosition(camPos, undefined, 0);
-      this._g.zoom(zoom || 1, 0);
     }
 
     this._g.nodeColor(this._g.nodeColor());
@@ -259,7 +254,8 @@ export class Renderer3D {
     this._container.style.backgroundSize = background === 'grid' ? '34px 34px' : '';
 
     // 更新边样式（可见性按每条 link.hidden 判定，宽度 0 = 隐藏）
-    this._g.linkColor(edgeColor)
+    // 注意：kapsule 的 accessor 属性传字符串会被当作"属性名"解析，必须传函数
+    this._g.linkColor(() => edgeColor)
       .linkWidth(edgeWidth)
       .linkVisibility((d) => !d.hidden)
       .linkDirectionalArrowLength(showEdgeDir ? 2.2 : 0);
@@ -302,8 +298,9 @@ export class Renderer3D {
     if (!this._g) return false;
     const node = this._byId.get(id);
     if (!node) return false;
-    this._g.centerAt(node.x || 0, node.y || 0, 500);
-    this._g.zoom(5, 500);
+    const x = node.x || 0;
+    const y = node.y || 0;
+    this._g.cameraPosition({ x, y, z: 300 }, { x, y, z: 0 }, 500);
     return true;
   }
 
