@@ -549,6 +549,12 @@ class SettingsService:
         # 迁移后清掉旧单条键（避免回读歧义）
         if self.store.get_setting(KEY_TRANSLATION_PROVIDER):
             self.store.set_setting(KEY_TRANSLATION_PROVIDER, "")
+        # .env 持久化（与主供应商/MinerU 一致）
+        if self.env_sync:
+            try:
+                self._sync_translate_env(cleaned)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("写翻译模型 .env 失败: %s", e)
 
     # 兼容旧调用点（单数语义 = 第一个启用的）
     def get_translation_provider(self, masked: bool = True) -> dict | None:
@@ -569,6 +575,62 @@ class SettingsService:
         """清除翻译供应商池（回落主模型）。"""
         self.store.set_setting(KEY_TRANSLATION_PROVIDERS, "")
         self.store.set_setting(KEY_TRANSLATION_PROVIDER, "")
+        if self.env_sync:
+            try:
+                self._clear_translate_env()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("清理翻译模型 .env 失败: %s", e)
+
+    def _sync_translate_env(self, providers: list[dict]) -> None:
+        """把翻译模型池写入 .env（TRANSLATE_<idx>_* 键），同时清理多余旧键。"""
+        import re as _re
+        env_path = Path(self.env_path)
+        if not env_path.exists():
+            return
+        text = env_path.read_text(encoding="utf-8-sig")
+        lines = text.splitlines()
+        # 移除所有 TRANSLATE_<idx>_ 旧键
+        lines = [ln for ln in lines
+                 if not _re.match(r'\s*TRANSLATE_\d+_', ln.lstrip())]
+        for idx, p in enumerate(providers):
+            base_url = (p.get("base_url") or "").strip()
+            model = (p.get("model") or "").strip()
+            api_key = (p.get("api_key") or "").strip()
+            max_tokens = str(p.get("max_tokens") or "")
+            enabled = "1" if p.get("enabled") else "0"
+            if base_url:
+                lines.append(f"TRANSLATE_{idx}_BASE_URL={base_url}")
+            if model:
+                lines.append(f"TRANSLATE_{idx}_MODEL={model}")
+            if api_key:
+                lines.append(f"TRANSLATE_{idx}_API_KEY={api_key}")
+            if max_tokens:
+                lines.append(f"TRANSLATE_{idx}_MAX_TOKENS={max_tokens}")
+            lines.append(f"TRANSLATE_{idx}_ENABLED={enabled}")
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # 运行中进程即时生效
+        for idx, p in enumerate(providers):
+            for field, suffix in (("base_url", "BASE_URL"), ("model", "MODEL"),
+                                  ("api_key", "API_KEY"), ("max_tokens", "MAX_TOKENS")):
+                val = (p.get(field) or "").strip()
+                if val:
+                    os.environ[f"TRANSLATE_{idx}_{suffix}"] = val
+            os.environ[f"TRANSLATE_{idx}_ENABLED"] = "1" if p.get("enabled") else "0"
+
+    def _clear_translate_env(self) -> None:
+        """清除 .env 中所有 TRANSLATE_<idx>_ 键。"""
+        import re as _re
+        env_path = Path(self.env_path)
+        if not env_path.exists():
+            return
+        text = env_path.read_text(encoding="utf-8-sig")
+        lines = [ln for ln in text.splitlines()
+                 if not _re.match(r'\s*TRANSLATE_\d+_', ln.lstrip())]
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # 清理 os.environ 中的残留
+        for key in list(os.environ):
+            if _re.match(r'TRANSLATE_\d+_', key):
+                del os.environ[key]
 
     # ---------------------------------------------------------- 供应商并发能力（T）
     def provider_supports_concurrency(self, provider_id: str) -> bool:
