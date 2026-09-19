@@ -612,3 +612,4 @@ async function boot() {
   window.addEventListener('resize', () => { applyDeskWeights(); });
 }
 
+boot();
