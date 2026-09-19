@@ -11,12 +11,32 @@
 |---|---|---|
 | **统一算法包 paperparse** | `packages/paperparse/`（pip install -e；import paperparse） | PDF 解析 + HTML 识别 + 自我训练，唯一算法来源 |
 | **主 agent 应用** | `backend/`（FastAPI：`app/services/` 容器 DI、`app/api/`、`app/plugins/`、`engine_assets/`、`tests/`） | 文献管理系统，只经 `paperparse.api` 调用算法 |
-| **前端** | `frontend/` | 静态页（index.html + app.js + style.css） |
+| **前端** | `frontend/` | 静态页（index.html + 10 个 JS 模块 + style.css；2026-09-19 从单文件 app.js 拆分为模块化结构） |
 | **运维/学习脚本** | `tools/`（scorecard/parse_offline/rules_cli/parse_batch 等，import paperparse） | 评分/离线解析/规则管理 |
 | **学习数据** | `learning_workspace/`（独立 git：corpus/feedback/review/rules_learned/train_pdfs） | 语料/反馈/规则学习 |
 | **规则外部根** | `rules/`（learned/user 可写；builtin 单一来源在包内） | 外部规则 |
 | **HTML 遗留** | `Web2MD/` | 能力已并入 `paperparse/html/`，待退役 |
 | **记忆** | `.dsh-memory/`（独立 git） | 会话记忆/方案/教训 |
+
+### 1.1 前端模块结构（2026-09-19 拆分）
+
+`frontend/` 为单页应用，所有 JS 通过 `<script>` 标签加载（非 ES module），跨文件调用均为运行时函数调用。
+加载顺序在 `index.html` 底部定义：
+
+| 文件 | 行数 | 职责 |
+|---|---|---|
+| `js/utils.js` | ~100 | api() fetch 封装、DOM 辅助（$/$$）、格式化（日期/文件大小） |
+| `js/ui.js` | ~300 | 模态框、菜单、拖拽分隔条、面板停靠/弹出、确认/输入对话框 |
+| `js/sessions.js` | ~400 | 会话列表渲染、新建/归档/批量删除、日期过滤 |
+| `js/papers.js` | ~760 | 文献库列表/搜索/类型芯片/日期分组/导入、状态常量（STATUS_MAP/KIND_META 等） |
+| `js/diary.js` | ~170 | 阅读日记：日历视图、日志视图、心得笔记 |
+| `js/settings.js` | ~1100 | 设置中心 6 tab（模型/解析/知识库/界面/插件/关于）、翻译模型、外观/字体、lightbox |
+| `js/reader.js` | ~1100 | 阅读器：附件管理、知识库面板/标签、Markdown 渲染、PDF 预览、frontmatter 属性 |
+| `js/kb.js` | ~880 | 知识库管理：列表/目录树、编译进度、磁盘同步、回收站、元数据管理 |
+| `js/chat.js` | ~540 | 对话：消息渲染/发送、等待反馈、回收站、输入上下文 |
+| `js/lit-admin.js` | ~200 | AI 文献检索管理界面（6 tab） |
+| `js/graph/` | 13 文件 | 文献计量图谱：Three.js 3D + 2D 可视化（dataModel/layoutEngine/rendererThree/panel 等） |
+| `app.js` | ~614 | 启动入口 boot()、复核门控、token 统计、事件面板、图片 lightbox 绑定 |
 
 ## 2. 算法包 paperparse 结构
 

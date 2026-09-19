@@ -31,7 +31,21 @@
   - `assets`：rules（builtin 单一来源）/templates/prompts/tools/memory/SKILL*
   - **已退役归档**（archive/paperparse-core-20260826/）：dual_pipeline/dual_fuse/dual_align/self_learn/sf_ocr_client（P12 双通道与规则学习）；backend 解析仅走 process_pdf_v2（P14），PAPERPARSE_PIPELINE=p12 已冻结回落 p14
 - `backend/` FastAPI 应用：`app/services/`（container 依赖注入：engine/task/kb/chat/llm/settings/usage/event_bus/plugin_registry）、`app/api/`（10 路由统一 /api/*）、`app/plugins/`、`app/engine_assets/`（打包快照）、`tests/`
-- `frontend/` 静态界面（index.html + app.js + style.css；单页无模块化，前后端经 fetch /api/* 分离）
+- `frontend/` 静态界面（单页，前后端经 fetch /api/* 分离；2026-09-19 拆分为模块化多文件）
+  - `index.html` + `style.css` + `css/graph.css`（界面骨架与样式）
+  - `app.js`（~614 行：boot 启动、复核门控、token 统计、事件面板、图片 lightbox）
+  - `js/utils.js`（通用工具：api fetch 封装、DOM 辅助、格式化）
+  - `js/ui.js`（UI 组件：模态/菜单/拖拽/面板停靠弹出）
+  - `js/sessions.js`（会话管理：列表/新建/归档/批量操作）
+  - `js/papers.js`（文献库：列表渲染/搜索/类型芯片/日期分组/导入）
+  - `js/diary.js`（阅读日记：日历/日志/心得笔记）
+  - `js/settings.js`（设置中心：模型/解析/知识库/界面/插件/关于 + 翻译模型/外观）
+  - `js/reader.js`（阅读器：附件/知识库面板/标签管理/Markdown 渲染/PDF 预览/frontmatter）
+  - `js/kb.js`（知识库管理：列表/目录树/编译进度/磁盘同步/回收站/元数据管理）
+  - `js/chat.js`（对话：消息/发送/等待反馈/回收站/输入上下文）
+  - `js/lit-admin.js`（AI 文献检索管理界面）
+  - `js/graph/`（文献计量图谱：Three.js 3D + 2D 可视化）
+  - 加载顺序在 `index.html` 底部 `<script>` 标签定义，跨文件调用均为运行时引用
 - `tools/` 运维/脚本（scorecard/parse_offline/rules_cli/**parse_regression**（P14 产物指纹回归闸门：`python tools/parse_regression.py --check`，0 API 缓存件复算，已接入 `build_release.ps1` [5/5] 与 `docs/RELEASE-CHECKLIST.md`；用例+基线在 `tools/parse_regression/`）等，import paperparse）
 - `archive/` 剥离归档（html-20260826/ learning_workspace-20260826/ paperparse-core-20260826/——用户可单独拷贝备份）
 - `rules/` 外部规则根（learned/user 可写；builtin 在包内；挖掘规则已归档 archive，规则引擎不应用）
