@@ -85,6 +85,13 @@ class Settings:
     llm_timeout_sec: int = int(os.getenv("LLM_TIMEOUT_SEC", "600"))
     llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "1"))
 
+    # --- Qwen 翻译模型（可选；设置页也可配，缺失则不出现在翻译模型列表）---
+    # 2026-09-19：Qwen2.5-7B-Instruct 预置为翻译默认模型（8K 输出，用户只需填 API key）
+    qwen_api_key: str = os.getenv("QWEN_API_KEY", "").strip()
+    qwen_base_url: str = os.getenv("QWEN_BASE_URL",
+                                    "https://dashscope.aliyuncs.com/compatible-mode/v1").strip()
+    qwen_model: str = os.getenv("QWEN_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip()
+
     # --- 引擎（paper-reader-skill v2.3.0）---
     mineru_api_key: str = os.getenv("MINERU_API_KEY", "").strip()
     # auto: 有 key → mineru-v4 精准；无 key → mineru v1 免费通道（无需密钥，限流）

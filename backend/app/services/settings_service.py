@@ -193,12 +193,32 @@ class SettingsService:
                                    "deepseek-ai/DeepSeek-V4-Flash").strip(),
                 "api_key": sf_key, "enabled": True, "env": "SILICONFLOW",
                 "max_tokens": sf_max, "reasoning_effort": None})
+        # 2026-09-19：Qwen2.5-7B-Instruct 预置翻译模型（8K 输出，用户只需填 QWEN_API_KEY）
+        qwen_key = os.getenv("QWEN_API_KEY", "").strip()
+        qwen_max = int(os.getenv("QWEN_MAX_TOKENS") or "8192")
+        if qwen_key or self._db_has_translation_providers():
+            presets.append({
+                "id": "qwen-translate", "name": "通义千问 Qwen2.5-7B（翻译）",
+                "base_url": os.getenv("QWEN_BASE_URL",
+                                      "https://dashscope.aliyuncs.com/compatible-mode/v1").strip(),
+                "model": os.getenv("QWEN_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip(),
+                "api_key": qwen_key, "enabled": True, "env": "QWEN",
+                "max_tokens": qwen_max, "reasoning_effort": None})
         # P5 点1：.env 中自定义供应商（CUSTOM_PROVIDER_*）还原，跨 DB 重置仍存活
         presets.extend(self._custom_presets_from_env())
         return presets
 
     def _db_has_providers(self) -> bool:
         raw = self.store.get_setting(KEY_PROVIDERS)
+        if not raw:
+            return False
+        try:
+            return bool(json.loads(raw))
+        except json.JSONDecodeError:
+            return False
+
+    def _db_has_translation_providers(self) -> bool:
+        raw = self.store.get_setting(KEY_TRANSLATION_PROVIDERS)
         if not raw:
             return False
         try:
@@ -305,6 +325,7 @@ class SettingsService:
     _ENV_KEYS = {
         "DEEPSEEK": ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"),
         "SILICONFLOW": ("SILICONFLOW_API_KEY", "SILICONFLOW_BASE_URL", "SILICONFLOW_MODEL"),
+        "QWEN": ("QWEN_API_KEY", "QWEN_BASE_URL", "QWEN_MODEL"),
     }
 
     def _sync_env_file(self, env_prefix: str, provider: dict) -> None:
@@ -552,7 +573,14 @@ class SettingsService:
         # .env 持久化（与主供应商/MinerU 一致）
         if self.env_sync:
             try:
-                self._sync_translate_env(cleaned)
+                # QWEN 预置供应商走 _sync_env_file（QWEN_API_KEY 等标准键）
+                qwen_p = next((p for p in cleaned if p.get("env") == "QWEN"), None)
+                if qwen_p:
+                    self._sync_env_file("QWEN", qwen_p)
+                # 其余翻译供应商走 TRANSLATE_<idx>_ 键
+                non_qwen = [p for p in cleaned if p.get("env") != "QWEN"]
+                if non_qwen:
+                    self._sync_translate_env(non_qwen)
             except Exception as e:  # noqa: BLE001
                 logger.warning("写翻译模型 .env 失败: %s", e)
 

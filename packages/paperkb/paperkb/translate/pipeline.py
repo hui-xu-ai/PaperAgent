@@ -38,18 +38,20 @@ MAX_TOTAL_INPUT_CHARS = 300000
 # 输入字符红线（llm_service.MAX_INPUT_CHARS_PER_CALL = 400_000），否则整篇 prompt 会触发防护。
 MAX_WHOLE_CHARS = 400000
 
-# 紧凑模式（小上下文翻译专用模型，如 Hunyuan-MT-7B 32K）：
+# 紧凑模式（小上下文翻译专用模型）：
 # 跳过共享全文前缀（专用模型无需提示词缓存共享），段落内联到 prompt，分块更小。
 # 2026-09-19 实测（混元 MT-7B via 硅基流动）：**输出侧才是真正的瓶颈**——每批输出 ~1900 token
 # 即截断（服务端/模型硬上限，max_tokens 请求参数无法覆盖），并非 32K 上下文装不下输入。
-# 译文 token ≈ 英文源字符数（1:1），因此单批英文正文 ≤1200 → 输出 ~1200 token，留 ~700 余量。
-# 段数 ≤6。超长段落（>COMPACT_UNIT_MAX）由 _split_sentences 切块后逐块翻译拼接。
-COMPACT_MAX_BODY_CHARS = 1200
-COMPACT_MAX_BATCH_PARAS = 6
-COMPACT_MAX_CALLS = 600
-COMPACT_MAX_WHOLE_CHARS = 1200
+# 2026-09-19 优化（Qwen2.5-7B-Instruct 8K 输出）：
+# 译文 token ≈ 英文源字符数（1:1），JSON 开销 ~200 token。
+# 8192 - 200(JSON) - 500(余量) ≈ 7500 → 取 5000 保守值（降低截断风险）。
+# 段数 ≤15。超长段落（>COMPACT_UNIT_MAX）由 _split_sentences 切块后逐块翻译拼接。
+COMPACT_MAX_BODY_CHARS = 5000
+COMPACT_MAX_BATCH_PARAS = 15
+COMPACT_MAX_CALLS = 200
+COMPACT_MAX_WHOLE_CHARS = 5000
 # 单翻译单元（整段或长段的句子块）英文上限——超过则触发句子级切块。
-COMPACT_UNIT_MAX = 1200
+COMPACT_UNIT_MAX = 5000
 
 # 翻译源跳过 References（用户反馈：参考文献无需翻译，浪费 token/请求）。
 # **2026-09-12 批4 修正（单一判据）**：跳过的判据不再自己写一套，而是**直接复用共享上下文的
