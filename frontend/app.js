@@ -612,4 +612,487 @@ async function boot() {
   window.addEventListener('resize', () => { applyDeskWeights(); });
 }
 
+const FLOAT_MAX = 4;   // 阅读面板总数上限 4（+默认阅读器 = 5，P2 审计 1.5）
+const floatWins = [];  // 统一管理（docked=桌面面板 / float=浮动窗）
+let zTop = 100;
+
+function readerWinHTML() {
+  return `
+    <div class="float-head">
+      <select class="fw-paper" title="论文"></select>
+      <span class="fw-src">
+        <button class="src-btn active" data-src="kb">知识库</button>
+        <button class="src-btn" data-src="lib">解析库</button>
+      </span>
+      <span class="fw-title">阅读</span>
+      <span class="fw-btns">
+        <button class="fw-dock" title="弹出为浮动窗口">⧉ 弹出</button>
+        <button class="fw-min" title="最小化">—</button>
+        <button class="fw-close" title="关闭">✕</button>
+      </span>
+    </div>
+    <div class="fw-tabs"></div>
+    <div class="fw-body"><div class="empty">选择论文后加载</div></div>`;
+}
+
+function openReaderWindow(force) {
+  if (floatWins.length >= FLOAT_MAX && !force) { alert('最多 5 个阅读区（含默认阅读器）'); return; }
+  const id = 'fw-' + Date.now();
+  const el = document.createElement('div');
+  el.className = 'desk-panel desk-reader';   // G15：新建阅读窗默认贴合桌面（并排）
+  el.id = id;                                // P2-9 修复：必须设 id（isReaderWin 依赖它）
+  el.dataset.id = id;
+  el.innerHTML = readerWinHTML();
+  document.querySelector('#desk').appendChild(el);
+  const win = { id, el, paperId: null, source: 'kb', file: null, kbDir: null, min: false, docked: true };
+  floatWins.push(win);
+  bindReaderWin(win);
+  loadFloatContent(win);
+  persistFloats();
+  resetReaderWeights();  // P2-13：新窗加入 → 阅读器均分（前面窗口自动缩小）
+  applyDeskWeights();    // 右缘恒贴右
+}
+
+/* ══════════ P2-13：桌面宽度统一约束（底层机制）══════════
+   所有可见停靠面板的宽度由 flex-grow **权重**决定，任何变更（拖动/新建/关闭/
+   弹出放回/阅读模式/窗口缩放）都只调权重再走 applyDeskWeights() 重算——
+   权重总和恒定 → 面板宽度总和恒 = 桌面宽 → 右缘永远贴齐桌面右侧，
+   从根上杜绝"拖宽飞出/右侧空白"，无需在每处事件点单独打补丁。
+   语义：对话区 1 权重单位（默认 50%）；所有阅读器合计 1 单位、按各自权重均分。 */
+function applyDeskWeights() {
+  const desk = $('desk');
+  const chat = $('chat-panel');
+  if (!desk || !chat) return;
+  const visible = [...desk.children].filter(e => e.style.display !== 'none');
+  if (!visible.length) return;
+  const chatVisible = chat.style.display !== 'none';
+  const readers = visible.filter(e => e !== chat);
+  // 对话权重：默认 1（50%）；阅读模式 0.25（20%）
+  const chatGrow = chatVisible ? (parseFloat(chat.dataset.grow) || 1) : 0;
+  // 阅读器权重归一化：合计恒为 1 单位
+  const rSum = readers.reduce((s, r) => s + (parseFloat(r.dataset.grow) || 0), 0);
+  const rBase = rSum > 0 ? rSum : Math.max(1, readers.length);
+  const total = chatGrow + 1;
+  visible.forEach(e => {
+    if (e === chat) {
+      e.style.setProperty('flex', `${chatGrow} 1 0`, 'important');
+    } else {
+      const g = (parseFloat(e.dataset.grow) || 0) / rBase;
+      e.style.setProperty('flex', `${g} 1 0`, 'important');
+    }
+  });
+}
+
+/* 阅读器权重重置为均分（新建/关闭/放回后调用）：可见阅读器各占 1/n */
+function resetReaderWeights() {
+  const desk = $('desk');
+  const chat = $('chat-panel');
+  if (!desk || !chat) return;
+  const readers = [...desk.children].filter(e =>
+    e !== chat && e.style.display !== 'none' &&
+    (e.classList.contains('reader-panel') || e.classList.contains('desk-reader')));
+  if (readers.length) {
+    const w = 1 / readers.length;
+    readers.forEach(r => { r.dataset.grow = String(w); });
+  }
+}
+
+function bindReaderWin(win) {
+  const el = win.el;
+  const sel = el.querySelector('.fw-paper');
+  // E3：下拉列出"已见页"论文（最新在前；5000 篇不可能全量列出，随翻页扩充）
+  const seenPapers = Object.values(state.paperById).sort((a, b) => b.id - a.id);
+  sel.innerHTML = `<option value="">— 请选择论文 —</option>` + seenPapers.map(p =>
+    `<option value="${p.id}">${escapeHtml(shortTitle(p.filename || p.title, 26))}</option>`).join('');
+  if (win.paperId) sel.value = String(win.paperId);
+  win.paperId = sel.value ? Number(sel.value) : null;
+  sel.addEventListener('change', () => { win.paperId = Number(sel.value); win.file = null; win.kbDir = null; loadFloatContent(win); persistFloats(); });
+
+  el.querySelectorAll('.fw-src .src-btn').forEach(b => b.addEventListener('click', () => {
+    win.source = b.dataset.src;
+    el.querySelectorAll('.fw-src .src-btn').forEach(x => x.classList.toggle('active', x === b));
+    win.file = null; win.kbDir = null;
+    loadFloatContent(win);
+    persistFloats();
+  }));
+  el.querySelector('.fw-close').addEventListener('click', () => closeFloatWin(win));
+  el.querySelector('.fw-min').addEventListener('click', () => toggleFloatMin(win));
+  el.querySelector('.fw-dock').addEventListener('click', () => {
+    if (win.docked) popReaderPanel(win); else dockFloatToDesk(win);
+  });
+  if (win.docked) bindDeskResize(win);
+}
+
+/* 桌面面板 → 浮动窗（P2-5：统一外壳，仅切 class + 迁父节点，宽度记忆） */
+function popReaderPanel(win) {
+  const el = win.el;
+  el.classList.remove('desk-panel', 'desk-reader');
+  el.classList.add('float-win');
+  win.docked = false;
+  try { localStorage.setItem('panel-w-' + win.id, String(Math.round(el.getBoundingClientRect().width))); } catch (e) { /* 忽略 */ }
+  const btn = el.querySelector('.fw-dock') || $('reader-pop');
+  if (btn) { btn.textContent = '⤓ 放回'; btn.title = '放回桌面贴合'; }
+  el.style.left = '80px'; el.style.top = '50px';
+  el.style.width = '560px'; el.style.height = '480px';
+  document.body.appendChild(el);
+  bindFloatDrag(el);
+  bindFloatResize(el);
+  bringToFront(el);
+  persistFloats();
+  resetReaderWeights();  // P2-13：弹出后剩余阅读器重新均分贴右
+  applyDeskWeights();
+}
+
+/* 浮动窗 → 桌面面板（贴合并排；清除浮窗定位，恢复停靠宽度 → 不错位） */
+function dockFloatToDesk(win) {
+  const el = win.el;
+  el.classList.remove('float-win');
+  el.classList.add('desk-panel', 'desk-reader');
+  win.docked = true;
+  const btn = el.querySelector('.fw-dock') || $('reader-pop');
+  if (btn) { btn.textContent = '⧉ 弹出'; btn.title = '弹出为浮动窗口'; }
+  el.style.left = ''; el.style.top = ''; el.style.width = ''; el.style.height = '';
+  document.querySelector('#desk').appendChild(el);
+  bindDeskResize(win);
+  persistFloats();
+  resetReaderWeights();  // P2-13：放回后阅读器均分贴右（权重模型接管宽度）
+  applyDeskWeights();
+}
+
+/* 桌面面板：右缘拖拽调宽（对话/阅读通用，宽度持久化） */
+function bindDeskResize(win) {
+  const el = win.el;
+  let rz = el.querySelector('.desk-rz');
+  if (!rz) {
+    rz = document.createElement('div');
+    rz.className = 'desk-rz';
+    rz.title = '拖拽调整宽度';
+    el.appendChild(rz);
+  }
+  rz.onmousedown = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const startX = e.clientX;
+    const startW = el.getBoundingClientRect().width;
+    const move = (ev) => {
+      // P2-13 权重模型：拖宽上限 = 桌面宽 - 其他面板最小宽之和（右缘永不飞出）；
+      // 拖动只改本面板权重，其他面板由 flex 自动让位（总和恒 = 桌面宽）
+      const deskEl = document.querySelector('#desk');
+      const deskW = deskEl ? deskEl.getBoundingClientRect().width : window.innerWidth;
+      let othersMin = 0;
+      if (deskEl) {
+        [...deskEl.children].forEach(o => {
+          if (o === el || o.style.display === 'none') return;
+          const mw = parseFloat(getComputedStyle(o).minWidth) || 0;
+          othersMin += mw;
+        });
+      }
+      const maxW = Math.max(240, deskW - othersMin - 4);
+      const nw = Math.max(240, Math.min(maxW, startW + (ev.clientX - startX)));
+      const chat = $('chat-panel');
+      const chatGrow = (chat && chat.style.display !== 'none')
+        ? (parseFloat(chat.dataset.grow) || 1) : 0;
+      const total = chatGrow + 1;  // 总权重单位
+      const newUnit = Math.max(0.05, (nw / deskW) * total);
+      el.dataset.grow = String(newUnit);
+      applyDeskWeights();
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      try { localStorage.setItem('panel-w-' + win.id, String(Math.round(el.getBoundingClientRect().width))); } catch (e) { /* 忽略 */ }
+      persistFloats();
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  };
+}
+
+function closeFloatWin(win) {
+  win.el.remove();
+  const i = floatWins.indexOf(win);
+  if (i >= 0) floatWins.splice(i, 1);
+  persistFloats();
+  resetReaderWeights();  // P2-13：关闭后剩余窗口重新均分贴右
+  applyDeskWeights();
+}
+
+function toggleFloatMin(win) {
+  win.min = !win.min;
+  win.el.classList.toggle('min', win.min);
+  persistFloats();
+}
+
+function bringToFront(el) {
+  el.style.zIndex = ++zTop;
+}
+
+function bindFloatDrag(el) {
+  const head = el.querySelector('.float-head');
+  head.addEventListener('mousedown', (e) => {
+    if (e.target.closest('select, button')) return;
+    bringToFront(el);
+    const startX = e.clientX, startY = e.clientY;
+    const l = el.offsetLeft, t = el.offsetTop;
+    const move = (ev) => {
+      // P2-5：win10 式边缘吸附——贴近视口左/右缘 12px 内自动贴边
+      let x = l + ev.clientX - startX;
+      const w = el.offsetWidth;
+      if (x < 12) x = 0;
+      else if (x + w > window.innerWidth - 12) x = window.innerWidth - w;
+      el.style.left = Math.max(0, Math.min(window.innerWidth - 60, x)) + 'px';
+      el.style.top = Math.max(0, Math.min(window.innerHeight - 40, t + ev.clientY - startY)) + 'px';
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      // G15 磁吸停靠：阅读窗拖回桌面区域 → 贴合并排；对话窗不放回（走按钮）
+      if (el.id === 'chat-float') { persistFloats(); return; }
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+      const deskEl = document.querySelector('#desk');
+      const dr = deskEl ? deskEl.getBoundingClientRect() : null;
+      if (dr && cx >= dr.left && cx <= dr.right && cy >= dr.top && cy <= dr.bottom) {
+        const win = floatWins.find(w => w.el === el);
+        if (win) { dockFloatToDesk(win); return; }
+      }
+      persistFloats();
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    e.preventDefault();
+  });
+}
+
+/* G8：四边/四角缩放柄（注入 .rz-n/.rz-s/.rz-e/.rz-w/.rz-ne/.rz-nw/.rz-se/.rz-sw） */
+const RZ_DIRS = {
+  'rz-n': ['t'], 'rz-s': ['b'], 'rz-e': ['r'], 'rz-w': ['l'],
+  'rz-ne': ['r', 't'], 'rz-nw': ['l', 't'], 'rz-se': ['r', 'b'], 'rz-sw': ['l', 'b'],
+};
+const RZ_MIN_W = 220, RZ_MIN_H = 140;
+
+function bindFloatResize(el) {
+  if (!el.querySelector('.rz')) {
+    Object.keys(RZ_DIRS).forEach(p => {
+      const d = document.createElement('div');
+      d.className = 'rz ' + p;
+      el.appendChild(d);
+    });
+  }
+  el.querySelectorAll('.rz').forEach(h => {
+    h.addEventListener('mousedown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      bringToFront(el);
+      const dir = RZ_DIRS[h.className.split(' ')[1]] || ['r', 'b'];
+      const sx = e.clientX, sy = e.clientY;
+      const rect = el.getBoundingClientRect();
+      const start = { l: rect.left, t: rect.top, w: rect.width, h: rect.height };
+      const move = (ev) => {
+        const dx = ev.clientX - sx, dy = ev.clientY - sy;
+        let { l, t, w, h } = start;
+        if (dir.includes('r')) w = Math.max(RZ_MIN_W, start.w + dx);
+        if (dir.includes('b')) h = Math.max(RZ_MIN_H, start.h + dy);
+        if (dir.includes('l')) { const nw = Math.max(RZ_MIN_W, start.w - dx); l = start.l + (start.w - nw); w = nw; }
+        if (dir.includes('t')) { const nh = Math.max(RZ_MIN_H, start.h - dy); t = start.t + (start.h - nh); h = nh; }
+        el.style.left = l + 'px'; el.style.top = t + 'px';
+        el.style.width = w + 'px'; el.style.height = h + 'px';
+      };
+      const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); persistFloats(); };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+  });
+}
+
+async function loadFloatContent(win) {
+  const tabs = win.el.querySelector('.fw-tabs');
+  const body = win.el.querySelector('.fw-body');
+  if (!win.paperId) { tabs.style.display = 'none'; body.innerHTML = '<div class="empty">请选择论文</div>'; return; }
+  if (win.source === 'lib') { await loadFloatLib(win, tabs, body); return; }
+  try {
+    const r = await api(`/api/kb/paper/${win.paperId}/folder`);
+    if (!r.doi_dir) {
+      tabs.style.display = 'none';
+      body.innerHTML = '<div class="empty">知识库未生成，可切「解析库」浏览原文</div>';
+      return;
+    }
+    win.kbDir = r.doi_dir;
+    const tree = await api('/api/kb/tree');
+    const folder = (tree.folders || []).find(f => f.doi_dir === r.doi_dir);
+    const files = (folder && folder.files) || [];
+    tabs.style.display = 'flex';
+    tabs.innerHTML = KB_FILES.map(k => {
+      if (k.name === '__images__') {
+        return `<button class="kb-tab ${win.file === '__images__' ? 'active' : ''}" data-wf="__images__">${k.label}</button>`;
+      }
+      const exists = files.some(f => f.name === k.name);
+      return exists
+        ? `<button class="kb-tab ${win.file === k.name ? 'active' : ''}" data-wf="${k.name}">${k.label}</button>`
+        : '';
+    }).join('');
+    tabs.querySelectorAll('button[data-wf]').forEach(b => b.addEventListener('click', () => { win.file = b.dataset.wf; loadFloatKbFile(win); persistFloats(); }));
+    win.file = (win.file === '__images__' || (win.file && files.some(f => f.name === win.file))) ? win.file : '_note.md';
+    loadFloatKbFile(win);
+  } catch (e) { body.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + '</div>'; }
+}
+
+async function loadFloatKbFile(win) {
+  const body = win.el.querySelector('.fw-body');
+  body.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    if (win.file === '__images__') {
+      const r = await api(`/api/kb/images?dir=${encodeURIComponent(win.kbDir)}`);
+      body.innerHTML = r.images.length
+        ? `<div class="img-grid">` + r.images.map(im =>
+            `<figure class="img-cell"><img src="/api/kb/image?path=${encodeURIComponent(win.kbDir + '/images/' + im.name)}" alt="" loading="lazy"><figcaption>${escapeHtml(im.name)}</figcaption></figure>`).join('') + `</div>`
+        : '<div class="empty">无图片</div>';
+      bindLightbox();
+      return;
+    }
+    if (win.file === 'source.pdf') {
+      const p = getPaper(win.paperId);
+      if (!p || !p.doi) { body.innerHTML = '<div class="empty">未找到该文献 DOI，无法读 PDF</div>'; return; }
+      renderPdfViewer(body, p.doi);
+      return;
+    }
+    const r = await api(`/api/kb/file?path=${encodeURIComponent(win.kbDir + '/' + win.file)}`);
+    body.innerHTML = renderMarkdown(r.content, win.kbDir, 'kb');
+  } catch (e) {
+    body.innerHTML = `<div class="empty">${escapeHtml(win.file)} 不可用：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function loadFloatLib(win, tabs, body) {
+  try {
+    const r = await api(`/api/papers/${win.paperId}/files`);
+    const files = r.files || [];
+    if (!files.length) { tabs.style.display = 'none'; body.innerHTML = '<div class="empty">解析库为空</div>'; return; }
+    // G6：顶层文件 + 图片集中标签
+    const top = files.filter(f => f.path.split('/').length === 2);
+    const images = files.filter(f => isLibImage(f.path));
+    if (!top.length) {
+      if (images.length) {
+        tabs.style.display = 'flex';
+        tabs.innerHTML = `<button class="kb-tab ${win.file === '__images__' ? 'active' : ''}" data-wf="__images__">🖼 图片 (${images.length})</button>`;
+        tabs.querySelector('button[data-wf]').addEventListener('click', () => { win.file = '__images__'; loadFloatLibFile(win); persistFloats(); });
+        win.file = '__images__';
+        loadFloatLibFile(win);
+        return;
+      }
+      tabs.style.display = 'none';
+      body.innerHTML = '<div class="empty">解析库为空</div>';
+      return;
+    }
+    const entries = [...top];
+    if (images.length) entries.push({ path: '__images__', name: '图片' });
+    tabs.style.display = 'flex';
+    tabs.innerHTML = entries.map(f => {
+      const isImgTab = f.path === '__images__';
+      return `<button class="kb-tab ${f.path === win.file ? 'active' : ''}" data-wf="${isImgTab ? '__images__' : escapeHtml(f.path)}" title="${isImgTab ? '' : escapeHtml(f.path)}">${isImgTab ? '🖼 图片 (' + images.length + ')' : escapeHtml(shortTitle(f.path.split('/')[1] || f.name, 16))}</button>`;
+    }).join('');
+    tabs.querySelectorAll('button[data-wf]').forEach(b => b.addEventListener('click', () => { win.file = b.dataset.wf; loadFloatLibFile(win); persistFloats(); }));
+    const first = top.find(f => /\.md$/i.test(f.path)) || top[0];
+    win.file = (win.file === '__images__' || (win.file && top.some(f => f.path === win.file))) ? win.file : first.path;
+    loadFloatLibFile(win);
+  } catch (e) { body.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + '</div>'; }
+}
+
+async function loadFloatLibFile(win) {
+  const body = win.el.querySelector('.fw-body');
+  const path = win.file;
+  body.innerHTML = '<div class="empty">加载中…</div>';
+  if (path === '__images__') {
+    try {
+      const r = await api(`/api/papers/${win.paperId}/files`);
+      const imgs = (r.files || []).filter(f => isLibImage(f.path));
+      body.innerHTML = imgs.length
+        ? `<div class="img-grid">` + imgs.map(im =>
+            `<figure class="img-cell"><img src="/api/library/image?path=${encodeURIComponent(im.path)}" alt="" loading="lazy"><figcaption>${escapeHtml(im.name)}</figcaption></figure>`).join('') + `</div>`
+        : '<div class="empty">该文献没有图片</div>';
+      bindLightbox();
+      return;
+    } catch (e) { body.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + '</div>'; return; }
+  }
+  const isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(path);
+  try {
+    if (isImg) {
+      body.innerHTML = `<div class="img-grid"><figure class="img-cell"><img src="/api/library/image?path=${encodeURIComponent(path)}" alt="" loading="lazy"><figcaption>${escapeHtml(path.split('/').pop())}</figcaption></figure></div>`;
+      bindLightbox();
+      return;
+    }
+    const r = await api(`/api/library/file?path=${encodeURIComponent(path)}`);
+    body.innerHTML = renderMarkdown(r.content, path.split('/')[0], 'lib');
+  } catch (e) {
+    body.innerHTML = `<div class="empty">${escapeHtml(path)} 不可用：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function persistFloats() {
+  // P2-5：默认阅读器（#reader）始终存在，不持久化（避免刷新后重复创建）
+  const data = floatWins.filter(w => w.el.id !== 'reader').map(w => {
+    const r = w.el.getBoundingClientRect();
+    return { paperId: w.paperId, source: w.source, file: w.file, min: w.min, docked: !!w.docked,
+             x: r.left, y: r.top, w: r.width, h: r.height };
+  });
+  localStorage.setItem('reader-floats-v1', JSON.stringify(data));
+}
+
+function restoreFloats() {
+  let data = [];
+  try { data = JSON.parse(localStorage.getItem('reader-floats-v1') || '[]'); } catch (e) { data = []; }
+  data.forEach(d => {
+    if (floatWins.length >= FLOAT_MAX) return;
+    openReaderWindow();
+    const win = floatWins[floatWins.length - 1];
+    if (d.paperId && getPaper(d.paperId)) {
+      win.paperId = d.paperId;
+      win.el.querySelector('.fw-paper').value = String(d.paperId);
+    }
+    win.source = (d.source === 'lib') ? 'lib' : 'kb';
+    win.el.querySelectorAll('.fw-src .src-btn').forEach(b => b.classList.toggle('active', b.dataset.src === win.source));
+    win.file = d.file || null;
+    if (d.min) toggleFloatMin(win);
+    if (d.docked === false) { popReaderPanel(win); if (d.x) { win.el.style.left = d.x + 'px'; win.el.style.top = d.y + 'px'; win.el.style.width = (d.w || 560) + 'px'; win.el.style.height = (d.h || 480) + 'px'; } }
+    loadFloatContent(win);
+  });
+}
+
+/* ══════════ G15：对话面板 弹出（紧凑悬浮问答助手）/ 放回 ══════════ */
+let chatFloated = false;
+
+function popChat() {
+  if (chatFloated) return;
+  const main = $('main');
+  const w = document.createElement('div');
+  w.id = 'chat-float';
+  w.className = 'float-win chat-float';
+  w.innerHTML = `<div class="float-head"><span class="fw-title">💬 问答助手</span><span class="fw-btns"><button class="fw-min" title="最小化">—</button><button class="fw-dockchat" title="放回桌面">⤓ 放回</button></span></div>`;
+  document.body.appendChild(w);
+  w.querySelector('.float-head').insertAdjacentElement('afterend', main); // 移动 #main（事件绑定随元素迁移）
+  w.querySelector('.fw-min').addEventListener('click', () => w.classList.toggle('min'));
+  w.querySelector('.fw-dockchat').addEventListener('click', () => dockChat());
+  // P2-5：弹出后桌面彻底不占位（隐藏对话面板，阅读区获得全部空间）
+  $('chat-panel').style.display = 'none';
+  applyDeskWeights();  // P2-13：对话隐藏 → 阅读器自动铺满贴右
+  w.style.left = '110px'; w.style.top = '70px';  w.style.width = '460px'; w.style.height = '520px';
+  bindFloatDrag(w);
+  bindFloatResize(w);
+  bringToFront(w);
+  $('chat-pop').textContent = '⤓ 放回';
+  chatFloated = true;
+}
+
+function dockChat() {
+  const w = $('chat-float');
+  if (!w) return;
+  const main = $('main');
+  $('chat-panel').appendChild(main); // 放回桌面对话面板
+  $('chat-panel').style.display = ''; // 恢复占位
+  applyDeskWeights();  // P2-13：对话恢复 → 阅读器自动让出宽度
+  w.remove();
+  $('chat-pop').textContent = '⧉ 弹出';
+  chatFloated = false;
+}
+
+/* ══════════ AI 检索分级（T05）══════════ */
+
 boot();
