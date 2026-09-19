@@ -241,11 +241,13 @@ def _translate_task(para_ids: list[str]) -> str:
     )
 
 
-def _translate_task_compact(paras: list[dict], batch_indices: list[int]) -> str:
+def _translate_task_compact(paras: list[dict], batch_indices: list[int],
+                            prev_context: str = "") -> str:
     """紧凑模式翻译任务（自包含：段落文本内联，无共享前缀）。
 
     用于小上下文翻译专用模型（如 Hunyuan-MT-7B 32K）。段落文本直接嵌入 prompt，
     模型无需"看全文"——只看本批待译段落。输出格式同样要求 JSON，但解析失败时有纯文本后备。
+    2026-09-19：增加 prev_context（前一批译文末尾）改善跨批术语/指代一致性。
     """
     parts = []
     for idx in batch_indices:
@@ -255,14 +257,19 @@ def _translate_task_compact(paras: list[dict], batch_indices: list[int]) -> str:
         if pid and text:
             parts.append(f"[{pid}] {text}")
     paras_text = "\n\n".join(parts)
+    ctx_line = ""
+    if prev_context:
+        ctx_line = f"前文参考（仅供理解上下文，不要翻译）：\n{prev_context}\n\n"
     return (
         "请将以下学术论文段落翻译为中文。\n"
         "规则：\n"
         "1. 保留 [[MATHn]] 公式标签原样，不展开不改写\n"
         "2. 图/表题注按「图 N.」「表 N.」格式翻译\n"
-        "3. 输出严格 JSON 格式：\n"
+        "3. 术语与前文保持一致\n"
+        "4. 输出严格 JSON 格式：\n"
         '{"translations": [{"para_id": "P001", "zh": "译文"}, ...]}\n\n'
-        "待翻译段落：\n\n"
+        + ctx_line
+        + "待翻译段落：\n\n"
         f"{paras_text}"
     )
 
@@ -300,7 +307,8 @@ def _apply_translations(data_out: dict, paras: list[dict],
 
 def _do_batch(llm, shared: str, paras: list[dict], batch: list[int],
               para_id_to_idx: dict[str, int], math_list: list[str], context: str,
-              calls: list[int], *, compact: bool = False) -> tuple[dict, int]:
+              calls: list[int], *, compact: bool = False,
+              prev_context: str = "") -> tuple[dict, int]:
     """翻译单个批次：单次 LLM + **同 prompt 最多重试一次（不递归拆批）**，失败上抛。
 
     旧实现（上一轮）在 JSON 解析失败时把批切成两半递归重试（级联重复调用/token 浪费）。
@@ -308,10 +316,11 @@ def _do_batch(llm, shared: str, paras: list[dict], batch: list[int],
     缩小批。返回的 zh 已 reassemble + KNOWN_FIXES + 清洗（空串丢弃计 rejected）。
 
     compact=True：紧凑模式（小上下文模型），段落内联、无共享前缀、JSON 失败→纯文本后备。
+    2026-09-19：prev_context 传入前一批译文末尾，改善跨批连续性。
     """
     para_ids = [paras[i].get("para_id") for i in batch]
     if compact:
-        prompt = _translate_task_compact(paras, batch)
+        prompt = _translate_task_compact(paras, batch, prev_context=prev_context)
     else:
         prompt = with_task(shared, _translate_task(para_ids))
     data_out: dict | None = None
@@ -384,6 +393,7 @@ def _split_sentences(text: str, max_chars: int) -> list[str]:
 
     用于紧凑模式超大段落：模型输出上限 ~1900 token，单段英文 >COMPACT_UNIT_MAX 时整段必被
     截断，只能句子级切块逐块翻译再拼接。单句仍超限时硬切（极端罕见）。
+    2026-09-19：末尾句不切分，归入下一块作为连续性上下文（翻译时跳过）。
     """
     parts = re.split(r'(?<=[。！？；.!?;])\s+|(?<=\n)', text)
     chunks: list[str] = []
@@ -406,16 +416,27 @@ def _split_sentences(text: str, max_chars: int) -> list[str]:
     return chunks or [text[:max_chars]]
 
 
-def _chunks_task(chunk_ids: list[str], chunks: list[str]) -> str:
-    """句子块翻译任务（紧凑模式超大段落专用，自包含，输出 JSON 或纯文本标记）。"""
+def _chunks_task(chunk_ids: list[str], chunks: list[str],
+                 prev_context: str = "") -> str:
+    """句子块翻译任务（紧凑模式超大段落专用，自包含，输出 JSON 或纯文本标记）。
+
+    2026-09-19：增加 prev_context（前一块末尾句）作为连续性参考，改善跨块指代/术语一致性。
+    """
     body = "\n\n".join(f"[{cid}] {ct}" for cid, ct in zip(chunk_ids, chunks))
+    ctx_line = ""
+    if prev_context:
+        ctx_line = (
+            f"\n前文参考（仅供理解上下文，不要翻译）：\n{prev_context}\n\n"
+        )
     return (
         "请将以下学术论文句子块翻译为中文（按标记一一对应，不要合并、不要遗漏）。\n"
         "规则：\n"
         "1. 保留 [[MATHn]] 公式标签原样，不展开不改写\n"
-        "2. 输出严格 JSON：\n"
+        "2. 术语与前文保持一致\n"
+        "3. 输出严格 JSON：\n"
         '{"translations": [{"para_id": "标记", "zh": "译文"}, ...]}\n\n'
-        "待翻译句子块：\n\n"
+        + ctx_line
+        + "待翻译句子块：\n\n"
         f"{body}"
     )
 
@@ -454,8 +475,9 @@ def _translate_oversized(llm, paras: list[dict], targets: list[int],
 
         zh_parts: list[str] = []
         failed = False
+        prev_zh_tail = ""  # 前一批译文末尾，作为下一批连续性上下文
         for cb_ids, cb_texts in cb_batches:
-            prompt = _chunks_task(cb_ids, cb_texts)
+            prompt = _chunks_task(cb_ids, cb_texts, prev_context=prev_zh_tail)
             data_out: dict | None = None
             for attempt in (0, 1):
                 try:
@@ -477,7 +499,10 @@ def _translate_oversized(llm, paras: list[dict], targets: list[int],
                 break
             got = {t["para_id"]: t["zh"] for t in (data_out or {}).get("translations", []) or []}
             # 按批内块顺序拼接（缺块留空，保证顺序）
-            zh_parts.extend(got.get(cid, "") for cid in cb_ids)
+            batch_zh = "".join(got.get(cid, "") for cid in cb_ids)
+            zh_parts.append(batch_zh)
+            # 取本批译文末尾 ~200 字作为下一批连续性上下文
+            prev_zh_tail = batch_zh[-200:] if len(batch_zh) > 200 else batch_zh
         if failed:
             rejected += 1
             continue
@@ -512,13 +537,19 @@ def _run_batches(llm, shared: str, paras: list[dict], targets: list[int],
         oversized = []
     batches, truncated = _make_batches(paras, normal, compact=compact)
     translated = rejected = 0
+    prev_zh_tail = ""  # 前一批译文末尾，作为下一批连续性上下文
     for batch in batches:
         tr_map, rej = _do_batch(llm, shared, paras, batch, para_id_to_idx,
-                                math_list, context, calls, compact=compact)
+                                math_list, context, calls, compact=compact,
+                                prev_context=prev_zh_tail)
         rejected += rej
+        batch_zh = ""
         for idx, zh in tr_map.items():
             paras[idx]["text_zh"] = zh
             translated += 1
+            batch_zh += zh
+        # 取本批译文末尾 ~200 字作为下一批连续性上下文
+        prev_zh_tail = batch_zh[-200:] if len(batch_zh) > 200 else batch_zh
         # 截断补跑（仅紧凑模式）：本批应译未译的段落单独成批重译
         if compact:
             missing = [i for i in batch if i not in tr_map]

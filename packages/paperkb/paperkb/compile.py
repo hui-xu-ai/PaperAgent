@@ -65,8 +65,8 @@ tags: [paper{concepts}]
 - 深度编译：[[_wiki|深度编译]]（高价值文献）
 """
 
-# L1 压缩版字数（下级注入省 token）
-_CTX_LIMIT = 300
+# L1/L2 压缩版字数（下级注入省 token；L3 需要更多上下文避免重复）
+_CTX_LIMIT = 1000
 
 
 class CompileError(Exception):
@@ -720,21 +720,26 @@ def _prompt_l2(meta: dict, doc: PaperDoc, l1_ctx: str) -> str:
 
 
 def _prompt_l3(meta: dict, doc: PaperDoc, l1_ctx: str, l2_ctx: str) -> str:
-    """L3 深度编译：共享全文前缀在前（与 L1/翻译同前缀，缓存友好），任务/摘要在后。"""
-    from .frontmatter import meta_block
+    """L3 深度编译：共享全文前缀在前（与 L1/翻译同前缀，缓存友好），任务/摘要在后。
 
+    2026-09-19 修复：wiki 章节改为与 L1 六维不重复的分析维度（方法论批判/领域对比/
+    可复现性/转化路径），去掉冗余 meta_block（摘要已在 shared_ctx 中），加大 L1/L2
+    上下文到 1000 字让模型知道哪些内容已覆盖。
+    """
     shared = shared_ctx(doc)
     task = (
         "你是科研深度编译专家。基于论文产出深度知识卡（Markdown 结构 + JSON 概念列表）。\n"
+        "⚠️ L1 已覆盖六维摘要（背景/方法/结果/结论/创新/局限），L2 已覆盖章节细节。\n"
+        "你的 wiki **禁止重复**上述内容，只写 L1/L2 未涉及的深度分析。\n"
         "输出严格 JSON：\n"
-        '{"summary": "全文 200 字摘要", "wiki": "深度编译 Markdown：## 研究设计 / ## 关键方法 '
-        '/ ## 核心结论 / ## 创新点 / ## 局限与批判性分析（方法局限、证据强度）/ ## 开放问题'
+        '{"summary": "全文 200 字摘要", "wiki": "深度编译 Markdown：## 方法论批判'
+        '（设计缺陷/统计效力/内外部效度）/ ## 与同领域对比（与 3-5 篇同类工作的异同）'
+        '/ ## 可复现性分析（数据/代码/实验条件）/ ## 潜在应用与转化路径'
         '（正文每条引用段落 ID [P001]）", "concepts": [{"name": "概念名(英文)", "definition": "定义"}], '
         '"cross_refs": ["同主题相关文献建议"]}\n'
         "不要输出 JSON 以外的内容。\n\n"
-        + meta_block(meta, doc, abstract_chars=3000)
-        + f"\n\n## L1 摘要（已有，勿重复全景）\n{l1_ctx or '(无)'}\n"
-        f"## L2 摘要（已有，勿重复）\n{l2_ctx or '(无)'}"
+        + f"## L1 摘要（已覆盖，勿重复）\n{l1_ctx or '(无)'}\n"
+        f"## L2 摘要（已覆盖，勿重复）\n{l2_ctx or '(无)'}"
     )
     return with_task(shared, task)
 

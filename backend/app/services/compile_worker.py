@@ -129,6 +129,7 @@ class CompileWorker:
     def _maybe_upgrade(self, r: dict) -> None:
         """自动升级链：L1 完成且价值分 ≥L2 → 入队 L2；L2 完成且价值分 L3 → 入队 L3。
 
+        2026-09-19 修复：L1+L2 合并编译时 `l2_written=True`，跳过 L2 入队避免冗余。
         失败项（含 "error"）不升级——paperkb 已置 failed，此处只记日志，
         不无限重试；升级失败（如 value 查不到）只告警不阻塞。
         """
@@ -143,8 +144,11 @@ class CompileWorker:
             value = self._value_fn(doi) or {}
             vlevel = str(value.get("level") or "L1")
             if level == "L1" and vlevel in ("L2", "L3"):
-                self._queue_fn(doi, "L2")
-                logger.info("编译自动升级: %s L1→L2（价值分=%s）", doi, vlevel)
+                if r.get("l2_written"):
+                    logger.info("编译自动升级: %s L1 已含 L2（合并编译），跳过 L2 入队", doi)
+                else:
+                    self._queue_fn(doi, "L2")
+                    logger.info("编译自动升级: %s L1→L2（价值分=%s）", doi, vlevel)
             elif level == "L2" and vlevel == "L3":
                 self._queue_fn(doi, "L3")
                 logger.info("编译自动升级: %s L2→L3（价值分=%s）", doi, vlevel)
