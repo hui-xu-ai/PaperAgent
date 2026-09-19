@@ -108,7 +108,7 @@ export function applyStyles(dataModel, styleOpts) {
     labelMode = 'year_cited',
     showEdges = true,
     edgeColor = '#8890a0',
-    edgeWidth = 1.2,
+    edgeWidth = 0.3,
   } = styleOpts;
 
   // 计算 IF 最大值（用于颜色归一化，如果需要）
@@ -143,6 +143,6 @@ export function toRendererStyle(styleOpts) {
     background: styleOpts.background || 'light',
     bgColor: styleOpts.bgColor || null,
     edgeColor: styleOpts.edgeColor || '#8890a0',
-    edgeWidth: styleOpts.edgeWidth != null ? styleOpts.edgeWidth : 1.2,
+    edgeWidth: styleOpts.edgeWidth != null ? styleOpts.edgeWidth : 0.3,
   };
 }

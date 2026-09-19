@@ -135,8 +135,11 @@ class TokenGuard:
         "engine":  {"max_calls": 12, "max_total_input_chars": 800_000},
         "arbitration": {"max_calls": 8, "max_total_input_chars": 600_000},
         # M3b：paperkb 全文翻译（分批译文可达数十次；用户主动任务，任务粒度由
-        # translate_now 前置 reset_context("translate") 控制）
-        "translate": {"max_calls": 80, "max_total_input_chars": 3_000_000},
+        # translate_now / task_service._translate_and_export 前置 reset_context("translate") 控制）
+        # 2026-09-19：compact 翻译（专用小上下文模型）把整篇拆成 ≤1200 字符小批次，单篇实测
+        # 40-45 次（含 JSON 重试），长文可破 80 → 上限提到 300（按篇重置后单篇粒度）；
+        # 真正的死循环仍由"累计输入 3M 字符上限"兜底拦截。
+        "translate": {"max_calls": 300, "max_total_input_chars": 3_000_000},
         # M4：paperkb 问答（用户高频交互；独立组防与后台任务互挤）
         "ask": {"max_calls": 200, "max_total_input_chars": 5_000_000},
         # 交互会话（chat/lit/manage/paper，context=session:<id>）：与 ask 同级——
@@ -166,6 +169,48 @@ class TokenGuard:
         避免跨论文累计导致第二篇论文翻译被误拦——engine 计数原为服务进程
         生命周期全局累计）。"""
         self._calls.pop(context, None)
+
+    def get_usage(self, context: str) -> dict:
+        """返回某 context 的当前用量统计（不触发任何检查）。"""
+        rec = self._calls.get(context)
+        if not rec:
+            return {"count": 0, "prompt_chars": 0}
+        limits = self._limits_for(context)
+        return {
+            "count": rec["count"],
+            "prompt_chars": rec["prompt_chars"],
+            "max_calls": limits["max_calls"],
+            "max_total_input_chars": limits["max_total_input_chars"],
+            "call_pct": rec["count"] / limits["max_calls"] if limits["max_calls"] else 0,
+            "char_pct": rec["prompt_chars"] / limits["max_total_input_chars"]
+                         if limits["max_total_input_chars"] else 0,
+        }
+
+    def check_soft_limit(self, context: str, threshold: float = 0.8) -> dict | None:
+        """软限制检查：当调用次数或累计输入达到上限的 threshold 比例时返回用量信息。
+
+        用于写作等长任务在接近红线前主动反思/请求用户确认，避免硬拦截。
+        未达阈值返回 None。
+        """
+        rec = self._calls.get(context)
+        if not rec:
+            return None
+        limits = self._limits_for(context)
+        call_pct = rec["count"] / limits["max_calls"] if limits["max_calls"] else 0
+        char_pct = (rec["prompt_chars"] / limits["max_total_input_chars"]
+                    if limits["max_total_input_chars"] else 0)
+        if call_pct >= threshold or char_pct >= threshold:
+            return {
+                "context": context,
+                "count": rec["count"],
+                "max_calls": limits["max_calls"],
+                "call_pct": round(call_pct * 100),
+                "prompt_chars": rec["prompt_chars"],
+                "max_total_input_chars": limits["max_total_input_chars"],
+                "char_pct": round(char_pct * 100),
+                "threshold": threshold,
+            }
+        return None
 
     # ---------------------------------------------------------- 调用前
     def begin_call(self, context: str, input_chars: int) -> None:
@@ -688,22 +733,36 @@ class ChatCompleter:
 
 _ai: DeepSeekAI | None = None
 _chat: ChatCompleter | None = None
+_translate_ai: DeepSeekAI | None = None  # T1：翻译专用 AI（可选，None=用主模型）
+# 2026-09-19 翻译模型池：多个已启用的翻译 AI，轮询分发批次（并行提速）。
+_translate_ais: list[DeepSeekAI] = []
+_translate_rr: int = 0  # round-robin 游标（线程不安全但翻译批分发可容忍）
+
+# 专用翻译模型：compact 小批次（≤1200 字符、正常 2-6s 返回）→ 短超时快速失败重试，
+# 绕过硅基流动免费端点偶发的静默挂起（详见 build_ai docstring，2026-09-19 实测）。
+_TRANSLATE_TIMEOUT_SEC = 90
+_TRANSLATE_MAX_RETRIES = 2
 
 
-def build_ai(provider: dict, guard: TokenGuard | None = None) -> DeepSeekAI:
+def build_ai(provider: dict, guard: TokenGuard | None = None,
+             timeout_sec: int = 600, max_retries: int = 1) -> DeepSeekAI:
     """按供应商配置构建引擎 AI provider（V03：多供应商通用）。
 
     P12F：输入规模在翻译/引擎链路限制（≤10k/请求 分批；整篇一次受 TokenGuard 红线约束），
-    正常响应 10-40s。**超时 600s**：翻译/编译输出为长文（几千 token 逐字生成），180s 不够，
+    正常响应 10-40s。**默认超时 600s**：翻译/编译输出为长文（几千 token 逐字生成），180s 不够，
     会误报 read timeout；600s 覆盖长译文/总结生成，输入超限仍由 TokenGuard/分批预检拦截快速失败。
     P（翻译截断）：透传供应商 max_tokens（翻译/总结共用该上限；默认 DEFAULT_MAX_OUTPUT_TOKENS）。
+
+    timeout_sec/max_retries 可覆写：**专用翻译模型**跑 compact 小批次（≤1200 字符、正常 2-6s 返回），
+    用短超时（90s）+ 多一次重试——2026-09-19 实测硅基流动免费端点偶发**挂起连接**（不 429 而是
+    静默 hold），600s 超时会让每次挂起白等 10 分钟；短超时快速失败重试即可绕过。
     """
     return DeepSeekAI(
         api_key=provider["api_key"],
         base_url=provider["base_url"],
         model=provider["model"],
-        timeout_sec=600,
-        max_retries=1,
+        timeout_sec=timeout_sec,
+        max_retries=max_retries,
         max_tokens=provider.get("max_tokens") or DEFAULT_MAX_OUTPUT_TOKENS,
         guard=guard,
         provider_id=provider.get("id", "deepseek"),
@@ -763,3 +822,64 @@ def get_chat() -> ChatCompleter:
     if _chat is None:
         raise DeepSeekError("LLM 未初始化：请先调用 init_llm()")
     return _chat
+
+
+# ---------------------------------------------------------------- T1：翻译专用 AI（池 + 轮询）
+def init_translation_ai(provider: dict, guard: TokenGuard | None = None) -> DeepSeekAI:
+    """初始化翻译专用 AI（单条，兼容旧调用；会重建为单元素池）。"""
+    ai = build_ai(provider, guard, timeout_sec=_TRANSLATE_TIMEOUT_SEC,
+                  max_retries=_TRANSLATE_MAX_RETRIES)
+    global _translate_ai, _translate_ais, _translate_rr
+    _translate_ai = ai
+    _translate_ais = [ai]
+    _translate_rr = 0
+    logger.info("翻译 AI 已初始化: provider=%s model=%s",
+                provider.get("id"), ai.model)
+    return ai
+
+
+def init_translation_ais(providers: list[dict],
+                         guard: TokenGuard | None = None) -> list[DeepSeekAI]:
+    """初始化翻译 AI 池（多模型并行/切换）。空列表 = 清除（回落主模型）。"""
+    global _translate_ai, _translate_ais, _translate_rr
+    if not providers:
+        _translate_ai = None
+        _translate_ais = []
+        _translate_rr = 0
+        logger.info("翻译 AI 池已清空（回落主模型）")
+        return []
+    _translate_ais = [build_ai(p, guard, timeout_sec=_TRANSLATE_TIMEOUT_SEC,
+                               max_retries=_TRANSLATE_MAX_RETRIES) for p in providers]
+    _translate_ai = _translate_ais[0]
+    _translate_rr = 0
+    logger.info("翻译 AI 池已初始化: %d 个模型 (%s)",
+                len(_translate_ais),
+                ", ".join(a.model for a in _translate_ais))
+    return _translate_ais
+
+
+def get_translation_ai() -> DeepSeekAI | None:
+    """获取翻译专用 AI（单数语义 = 池里第一个；None=未配置，应回落主模型）。"""
+    return _translate_ai
+
+
+def next_translation_ai() -> DeepSeekAI | None:
+    """轮询取下一个翻译 AI（多模型并行时分发批次；单模型恒返回它；空池返回 None）。
+
+    每次 complete() 调用取一个 → 各批次自然分散到池内各模型，实现并行提速。
+    """
+    if not _translate_ais:
+        return None
+    global _translate_rr
+    ai = _translate_ais[_translate_rr % len(_translate_ais)]
+    _translate_rr += 1
+    return ai
+
+
+def clear_translation_ai() -> None:
+    """清除翻译专用 AI（单条+池，回落主模型）。"""
+    global _translate_ai, _translate_ais, _translate_rr
+    _translate_ai = None
+    _translate_ais = []
+    _translate_rr = 0
+    logger.info("翻译 AI 已清除（回落主模型）")

@@ -463,6 +463,26 @@ def kbmeta_trash_list() -> dict:
     return container.get_kbapi().kb_trash_list()
 
 
+@router.post("/kb/trash/delete")
+def kbmeta_trash_delete(req: TrashRequest) -> dict:
+    """彻底删除回收站里的**单篇**资源（不可恢复；仅删 .trash 目录，不动文献库/解析产物）。"""
+    try:
+        return container.get_kbapi().kb_trash_delete(req.key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"彻底删除失败: {e}")
+
+
+@router.post("/kb/trash/empty")
+def kbmeta_trash_empty() -> dict:
+    """清空回收站（彻底删除全部，不可恢复；仅作用于 knowledge_base/.trash/）。"""
+    try:
+        return container.get_kbapi().kb_trash_empty()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"清空回收站失败: {e}")
+
+
 @router.get("/source/status")
 def kbmeta_source_status(doi: str = Query(...)) -> dict:
     return container.get_kbapi().source_status(doi)

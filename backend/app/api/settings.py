@@ -127,6 +127,93 @@ def activate_provider(provider_id: str) -> dict:
     return {"ok": True, "active_provider": provider_id, "llm_ready": ready}
 
 
+# ---------------------------------------------------------------- T1：翻译模型池（多模型：切换/并行）
+class TranslationProviderModel(BaseModel):
+    """翻译专用供应商配置（可选）。enabled=是否启用（启用多个=并行轮询）。"""
+    id: str = ""
+    name: str = ""
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    reasoning_effort: str | None = None
+    enabled: bool = True
+
+
+@router.get("/translation-providers")
+def get_translation_providers() -> dict:
+    """获取翻译供应商池（全部，含未启用的）。[] = 未配置（用主模型）。"""
+    svc = container.get_settings_service()
+    return {"translation_providers": svc.get_translation_providers(masked=True)}
+
+
+@router.post("/translation-providers")
+def save_translation_providers(providers: list[TranslationProviderModel]) -> dict:
+    """保存翻译供应商池（整体替换；空列表=清除回落主模型）。热切换立即生效。"""
+    svc = container.get_settings_service()
+    payload = [p.model_dump() for p in providers]
+    # 过滤空配置（无 base_url/model/api_key 的条目）
+    payload = [p for p in payload
+               if p.get("base_url") and p.get("model") and p.get("api_key")]
+    if not payload:
+        svc.clear_translation_provider()
+        container.apply_translation_providers(None)
+        return {"ok": True, "translation_providers": [], "cleared": True}
+    svc.save_translation_providers(payload)
+    enabled = svc.get_enabled_translation_providers(masked=False)
+    ready = container.apply_translation_providers(enabled)
+    return {"ok": True,
+            "translation_providers": svc.get_translation_providers(masked=True),
+            "llm_ready": ready}
+
+
+@router.delete("/translation-providers")
+def clear_translation_providers() -> dict:
+    """清除翻译供应商池（回落主模型）。"""
+    svc = container.get_settings_service()
+    svc.clear_translation_provider()
+    container.apply_translation_providers(None)
+    return {"ok": True, "cleared": True}
+
+
+# ---- 兼容旧单条端点（委托池实现） ----
+@router.get("/translation-provider")
+def get_translation_provider() -> dict:
+    """兼容：返回第一个启用的翻译供应商。"""
+    svc = container.get_settings_service()
+    return {"translation_provider": svc.get_translation_provider(masked=True)}
+
+
+@router.post("/translation-provider")
+def save_translation_provider(body: TranslationProviderModel) -> dict:
+    """兼容：保存单个翻译供应商（视为单元素池；空=清除）。"""
+    svc = container.get_settings_service()
+    payload = body.model_dump()
+    current = svc.get_translation_provider(masked=False)
+    if current:
+        from app.services.settings_service import _is_masked_key
+        if _is_masked_key(payload.get("api_key", ""), current.get("api_key", "")):
+            payload["api_key"] = current.get("api_key", "")
+    if not payload.get("base_url") or not payload.get("model") or not payload.get("api_key"):
+        svc.clear_translation_provider()
+        container.apply_translation_providers(None)
+        return {"ok": True, "translation_provider": None, "cleared": True}
+    svc.save_translation_provider(payload)
+    enabled = svc.get_enabled_translation_providers(masked=False)
+    ready = container.apply_translation_providers(enabled)
+    return {"ok": True, "translation_provider": svc.get_translation_provider(masked=True),
+            "llm_ready": ready}
+
+
+@router.delete("/translation-provider")
+def clear_translation_provider() -> dict:
+    """兼容：清除翻译供应商池。"""
+    svc = container.get_settings_service()
+    svc.clear_translation_provider()
+    container.apply_translation_providers(None)
+    return {"ok": True, "cleared": True}
+
+
 class TestProviderModel(ProviderModel):
     pass
 

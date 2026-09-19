@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -75,10 +76,21 @@ def _to_int(v) -> int:
 
 
 class JournalsDB:
-    """独立期刊库访问（数据层）。"""
+    """独立期刊库访问（数据层）。
+
+    2026-09-19 性能修复：jcr 表 22k+ 行，旧 `lookup`/`lookup_issn` 每次
+    `SELECT * FROM jcr ORDER BY year DESC` 把全表拉进 Python 逐行 `norm_journal_name`
+    （0.12-0.2s/次、每次新建连接、`_with_cas` 再开一条）；`kb/list` 对每篇做 ≤3 次
+    期刊匹配 ⇒ 知识库列表请求被拖到分钟级（用户报"切知识库 Tab 卡 2 分钟"）。
+    改为**进程内缓存 + 预建索引**（norm_name / issn / eissn / cas_by_name），
+    单例 `_journals` 生命周期内只全表加载一次，之后每次查询 O(1) 字典命中；
+    upsert（用户更新 JCR/CAS 表）时失效缓存。多线程惰性加载用锁保护。
+    """
 
     def __init__(self, roots: Roots):
         self.db_path = roots.journals_db
+        self._cache: dict | None = None
+        self._cache_lock = threading.Lock()
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -90,6 +102,47 @@ class JournalsDB:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
+
+    # ---------------------------------------------------------- 缓存
+    def invalidate_cache(self) -> None:
+        """失效内存缓存（upsert 更新 JCR/CAS 表后调用）。"""
+        with self._cache_lock:
+            self._cache = None
+
+    def _ensure_cache(self) -> dict:
+        """惰性加载 jcr/cas 全表 → 预建索引（进程内仅一次；线程安全）。"""
+        with self._cache_lock:
+            if self._cache is not None:
+                return self._cache
+            jcr_by_name: dict[str, list[dict]] = {}
+            jcr_by_issn: dict[str, dict] = {}
+            jcr_by_eissn: dict[str, dict] = {}
+            cas_by_name: dict[str, list[dict]] = {}
+            try:
+                with self._conn() as conn:
+                    jcr_rows = conn.execute(
+                        "SELECT * FROM jcr ORDER BY year DESC").fetchall()
+                    cas_rows = conn.execute(
+                        "SELECT * FROM cas ORDER BY year DESC").fetchall()
+            except sqlite3.Error:
+                jcr_rows, cas_rows = [], []
+            for r in jcr_rows:
+                d = dict(r)
+                nm = norm_journal_name(d.get("journal_name", ""))
+                if nm:
+                    jcr_by_name.setdefault(nm, []).append(d)   # 已按 year DESC 排序
+                issn = str(d.get("issn") or "").strip().upper()
+                eissn = str(d.get("eissn") or "").strip().upper()
+                if issn:
+                    jcr_by_issn.setdefault(issn, d)            # 首条=最新年
+                if eissn:
+                    jcr_by_eissn.setdefault(eissn, d)
+            for r in cas_rows:
+                d = dict(r)
+                cas_by_name.setdefault(d.get("journal_name", ""), []).append(d)
+            self._cache = {"jcr_by_name": jcr_by_name, "jcr_by_issn": jcr_by_issn,
+                           "jcr_by_eissn": jcr_by_eissn, "cas_by_name": cas_by_name}
+            return self._cache
 
     # ---------------------------------------------------------- upsert
     def upsert_jcr(self, rows: list[dict]) -> int:
@@ -106,6 +159,7 @@ class JournalsDB:
                      r.get("zone_2023", ""), _to_int(r.get("total_citation")),
                      r.get("category", ""), r.get("issn", ""), r.get("eissn", ""),
                      _to_int(r.get("year")), now))
+        self.invalidate_cache()
         return len(rows)
 
     def upsert_cas(self, rows: list[dict]) -> int:
@@ -119,6 +173,7 @@ class JournalsDB:
                     (r.get("journal_name", ""), _to_int(r.get("zone")),
                      r.get("is_top", ""), r.get("is_oa", ""),
                      _to_int(r.get("year")), now))
+        self.invalidate_cache()
         return len(rows)
 
     # ---------------------------------------------------------- 查询
@@ -128,35 +183,24 @@ class JournalsDB:
         eissn = (eissn or "").strip().upper()
         if not issn and not eissn:
             return None
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM jcr ORDER BY year DESC").fetchall()
-        for r in rows:
-            if issn and str(r["issn"] or "").strip().upper() == issn:
-                return self._with_cas(dict(r))
-            if eissn and str(r["eissn"] or "").strip().upper() == eissn:
-                return self._with_cas(dict(r))
-        return None
+        c = self._ensure_cache()
+        row = (issn and c["jcr_by_issn"].get(issn)) or \
+              (eissn and c["jcr_by_eissn"].get(eissn))
+        return self._with_cas(dict(row)) if row else None
 
     def lookup(self, journal_name: str, year: int | None = None) -> dict | None:
         """按期刊名（规范化匹配）查最新年份指标：{jcr: {...}|None, cas: {...}|None}。"""
         norm = norm_journal_name(journal_name)
         if not norm:
             return None
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM jcr ORDER BY year DESC").fetchall()
-        jcr_rows = [r for r in rows if norm_journal_name(r["journal_name"]) == norm]
-        if not jcr_rows:
+        rows = self._ensure_cache()["jcr_by_name"].get(norm)
+        if not rows:
             return None
-        return self._with_cas(dict(jcr_rows[0]), year=year)
+        return self._with_cas(dict(rows[0]), year=year)   # rows 已按 year DESC
 
     def _with_cas(self, jcr_row: dict, year: int | None = None) -> dict:
         """jcr 行 + 关联 cas 行 → 结果 dict（year 指定则取对应年份）。"""
-        with self._conn() as conn:
-            cas_rows = conn.execute(
-                "SELECT * FROM cas WHERE journal_name=? ORDER BY year DESC",
-                (jcr_row["journal_name"],)).fetchall()
+        cas_rows = self._ensure_cache()["cas_by_name"].get(jcr_row["journal_name"], [])
         result: dict = {"jcr": jcr_row, "cas": None}
         for r in cas_rows:
             if year is None or r["year"] == year:

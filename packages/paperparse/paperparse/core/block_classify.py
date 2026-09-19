@@ -47,21 +47,105 @@ _DECOR_HEADINGS = frozenset({
 # 版权行（© 20xx）→ meta
 _COPYRIGHT_RE = re.compile(r"©\s*\d{4}|rights\s+are\s+reserved", re.IGNORECASE)
 # 图注首行：编号后跟 "." / ":" / "|"（Nature "Figure 1 |"）或无标点但下一词大写
-# （s40820 "Fig. 1 Schematic"）；编号后直接小写字母（"Figure 4g"、"Fig. 2 h"）是正文
-# 子图引用，不误判（R10 放宽）
+# （s40820 "Fig. 1 Schematic"）；编号后直接跟**单个字母**（"Figure 4g"、"Fig. 2A illustrates"）
+# 是正文子图引用，不误判（R10 放宽；2026-09-19 补：PNAS 用**大写**子图字母 A/B/C，
+# 旧判据只挡小写，"Fig. 2A illustrates" 漏网被当成 Fig.2 题注 → 与真题注同图号 key，
+# 渲染时 F002 被插两次）
 CAPTION_RE = re.compile(r"^(Fig(ure)?|Table|Scheme)\.?\s*\d+\s*[.:|]", re.IGNORECASE)
 _CAP_NEXT_RE = re.compile(r"^(fig(?:ure)?|table|scheme)\.?\s*\d+\s*(.)", re.IGNORECASE)
+# 编号后（可含空格）紧跟**单个字母 + 空白/行尾** = 子图标签引用（"Fig. 2A illustrates"、
+# "Fig. 2 A shows"、"Figure 4g"）→ 正文，非题注。真题注的编号后是标点（CAPTION_RE）
+# 或空格+多字母大写词（"Fig. 1 Schematic"，单字母规则不匹配 → 落到 _CAP_NEXT_RE 判大写）。
+_CAP_SUBFIG_RE = re.compile(
+    r"^(?:fig(?:ure)?|table|scheme)\.?\s*\d+\s*[A-Za-z](?=\s|$)", re.IGNORECASE)
+# 正文图引用（用户规律 2026-09-19）：图号（可带子图字母）后紧跟**指代动词**
+# （shows/illustrates/presents/...）= 正文描述句（"Fig. 2A illustrates the evolution…"、
+# "Figure 3 shows…"），非题注。真题注以名词短语开头（"Fig. 1. Bioinspiration…"、
+# "Figure 2 | Construction…"），不会以这些第三人称动词开头。仅列**动词变位**，
+# 避开 illustration/comparison/presentation/description 等题注名词（前缀不同 + \b 不误伤）。
+_CAP_REF_VERB_RE = re.compile(
+    r"^(?:fig(?:ure)?|table|scheme)s?\.?\s*\d+[A-Za-z]?\s+"
+    r"(?:(?:is|are|was|were|be|been)\s+)?"
+    r"(?:shows?|illustrates?|illustrated|illustrating|depicts?|depicted|depicting|"
+    r"presents?|presented|presenting|demonstrates?|demonstrated|demonstrating|"
+    r"reveals?|revealed|revealing|summarizes?|summarized|summarizing|"
+    r"highlights?|highlighted|highlighting|indicates?|indicated|indicating|"
+    r"displays?|displayed|displaying|reports?|reported|reporting|"
+    r"describes?|described|describing|compares?|compared|comparing|"
+    r"plots?|plotted|plotting|provides?|provided|providing|"
+    r"appears?|appeared|appearing|shown|seen)\b",
+    re.IGNORECASE)
 
 
 def _is_caption_line(text: str) -> bool:
-    """[局部] 图注行判定（R10）：编号后标点/竖线/大写首词；小写字母=子图引用"""
+    """[局部] 图注行判定（R10）：编号后标点/竖线/大写词首；
+    子图字母紧贴编号 或 编号后紧跟指代动词 = 正文图引用（非题注）"""
     t = text.strip()
     if CAPTION_RE.match(t):
         return True
+    if _CAP_SUBFIG_RE.match(t):     # 子图字母引用（"Fig. 2A …"）→ 正文
+        return False
+    if _CAP_REF_VERB_RE.match(t):   # 指代动词引用（"Figure 3 shows …"）→ 正文
+        return False
     m = _CAP_NEXT_RE.match(t)
     if m:
         return m.group(2).isupper()
     return False
+
+
+# ---------------------------------------------------------------------------
+# 尾部杂项（结尾声明）判据 —— en.md 干净版 / 双语主产物 / AI 全文上下文**单一来源**。
+# 用户 2026-09-19 要求：供翻译/编译/问答的干净全文不含 "Declaration of Competing
+# Interest"、"CRediT authorship contribution statement"、"Acknowledgements"、
+# "Data availability"、"Supporting Information" 等尾部声明段。命中即从该段起截断其后全部。
+# 注：paperkb.context 因两包独立另有一份同口径实现（改动需同步）。
+_TAIL_NOISE_RE = re.compile(
+    r"^\s*(references|bibliography|literature cited|works cited|"
+    r"acknowledg(e)?ments?|conflict of interest|declarations? of (competing|conflicting) interest|"
+    r"competing interests?|author contributions?|authors'? contributions?|credit authorship|"
+    r"data availability|data statement|code availability|"
+    r"supporting information(?!\s*(fig|figure|table|appendix|section|movie|note|scheme|"
+    r"dataset|data set|ref)\b)|"
+    r"supplementary (material|information|data)(?!\s*(fig|figure|table|appendix|section|movie)\b)|"
+    r"associated content|additional information|author information|"
+    r"ethics statement|funding|notes\b|this article references|orcid)",
+    re.IGNORECASE)
+# 强模式：即使出现在前半篇、只要是**短段**也认作尾部杂项（Wiley "Supporting Information"
+# 声明可能排在 40% 位置）；负向前瞻排除正文交叉引用 "Supporting Information Figure S1 shows"。
+_TAIL_STRONG_RE = re.compile(
+    r"^\s*(references|bibliography|literature cited|works cited|"
+    r"acknowledg(e)?ments?|conflict of interest|declarations? of (competing|conflicting) interest|"
+    r"competing interests?|author contributions?|authors'? contributions?|credit authorship|"
+    r"data availability|code availability|"
+    r"supporting information(?!\s*(fig|figure|table|appendix|section|movie|note|scheme|"
+    r"dataset|data set|ref)\b)|"
+    r"supplementary (material|information|data)(?!\s*(fig|figure|table|appendix|section|movie)\b)|"
+    r"associated content|author information|ethics statement|this article references)",
+    re.IGNORECASE)
+_TAIL_START_FRAC = 0.5       # 后半篇：命中原样截断
+_TAIL_SHORT_CHARS = 200      # 前半篇时只有"短声明段"才认作尾部杂项
+
+
+def is_tail_noise(text: str, idx: int, total: int, *,
+                  is_heading: bool = False, section: str = "") -> bool:
+    """[全局] 该段是否"结尾杂项"（致谢/利益冲突/作者贡献/数据可用性/支撑信息/参考文献…）。
+
+    判据（与 paperkb.context._is_tail_noise 同口径）：
+      · 先剥 markdown "## " 前缀再匹配 text，并**同时匹配 section 字段**（节名干净）；
+      · **标题段无歧义**：is_heading 命中即截断（不受位置门限约束）；
+      · 正文段：位于后半篇（idx ≥ 50%）命中即截断；位于前半篇时仅"短段 + 强模式"才截断
+        （防正文内联引用 "Supporting Information Figure S1 shows…" 误截）。
+    """
+    t = re.sub(r"^#+\s*", "", (text or "")).strip()
+    sec = (section or "").strip()
+    if not (_TAIL_NOISE_RE.match(t) or _TAIL_NOISE_RE.match(sec)):
+        return False
+    if is_heading:
+        return True
+    if total > 4 and idx >= total * _TAIL_START_FRAC:
+        return True
+    return len(t) <= _TAIL_SHORT_CHARS and bool(
+        _TAIL_STRONG_RE.match(t) or _TAIL_STRONG_RE.match(sec))
 
 
 # R10 出版信息行（Elsevier 页眉/首页头部，首页豁免导致混入正文）→ meta

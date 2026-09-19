@@ -205,6 +205,9 @@ class Compiler:
             （2026-09-15 实测事故）；L2 队列项此后会命中幂等跳过（`_compile_l2` 开头）。
           · L3 保持原样：价值分 ≥4.0 时由升级链单独入队、单独一轮请求。
         失败语义：组合请求失败 → 只落 L1（保持与旧行为一致），L2 由后续队列项单独重试。
+
+        2026-09-19 新增：L1+L2 编译时 AI 顺手评分（ai_value + topic_score），
+        评分写入 papers_meta 后自动重算价值分，达标则自动入队 L3（零额外 API 成本）。
         """
         doc = self._doc(doi)
         meta = self._resolve_meta(doi, doc)
@@ -215,7 +218,8 @@ class Compiler:
         if note.exists() and not force:
             return {"status": "skipped_existing", "doi": doi, "level": "L1"}
         llm = get_llm()
-        prompt = _prompt_l1_l2(meta_json, doc, journal_meta)
+        topics = self._get_preferred_topics()
+        prompt = _prompt_l1_l2(meta_json, doc, journal_meta, topics=topics)
         raw = llm.complete(prompt, context="compile")
         # 两段式解析：L1 段 → JSON；分隔符之后 → L2 Markdown 纯文本。
         # ⚠️ 关键：**L1 解析失败也不能丢 L1**——若整段 JSON 不合法，退回 L1 单发（与旧行为等价），
@@ -244,9 +248,19 @@ class Compiler:
         else:
             logger.warning("编译合并：本次输出缺 L2（%s）→ 留给 L2 队列项单独编译", doi)
         self._index_paper_notes(doi)
+        # ---- AI 评分保存 + L3 自动升级（2026-09-19）----
+        ai_value = data.get("ai_value")
+        topic_score = data.get("topic_score")
+        l3_queued = False
+        if ai_value is not None or topic_score is not None:
+            self._save_ai_scores_and_maybe_l3(
+                doi, ai_value, topic_score if topics else None)
+            l3_queued = True
         return {"status": "done", "doi": doi, "level": "L1",
                 "l2_written": bool(l2_md),
-                "concepts": data.get("concepts", [])}
+                "concepts": data.get("concepts", []),
+                "ai_value": ai_value, "topic_score": topic_score,
+                "l3_auto_queued": l3_queued}
 
     # ---------------------------------------------------------- L2
     def _compile_l2(self, doi: str, force: bool) -> dict:
@@ -492,6 +506,41 @@ class Compiler:
         self.store.upsert_job(doi, level, status="done",
                               done_at=datetime.now().isoformat(timespec="seconds"))
 
+    def _get_preferred_topics(self) -> list[str]:
+        """从全局设置读取用户配置的主题表（导入界面设置）。"""
+        try:
+            from . import _settings
+            return list(getattr(_settings, "preferred_topics", None) or [])
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _save_ai_scores_and_maybe_l3(self, doi: str,
+                                      ai_value: float | None,
+                                      topic_score: float | None) -> None:
+        """保存 AI 评分到 papers_meta，重算价值分，达标则自动入队 L3。
+
+        设计思路（2026-09-19 用户决策）：
+        - L1+L2 编译时 AI 已读全文，顺手打分零额外成本
+        - 客观分(IF+被引+年份)决定初始 L1/L2 入队
+        - L1+L2 完成后加入 AI 评分，重算总分
+        - 总分 ≥ L3_THRESHOLD → 自动入队 L3（L3 复用缓存的全文，缓存命中率高）
+        - L1+L2 都没过的文献不值得打附加分，也就不进 L3
+        """
+        try:
+            self.store.update_ai_scores(doi, ai_value_score=ai_value,
+                                        topic_score=topic_score)
+            from .api import value_score_for
+            from .score import L3_THRESHOLD
+            new_score = value_score_for(doi)
+            if new_score and new_score.get("score", 0) >= L3_THRESHOLD:
+                l3_job = self.store.get_job(doi, "L3")
+                if l3_job is None or l3_job.get("status") != "done":
+                    self.queue(doi, "L3", value_score=new_score["score"])
+                    logger.info("AI 评分触发 L3 自动升级: %s score=%.2f",
+                                doi, new_score["score"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("AI 评分保存/L3 升级失败（不阻断编译）: doi=%s err=%s", doi, e)
+
 
 # ---------------------------------------------------------------- 提示词
 
@@ -514,14 +563,17 @@ def _split_l1_l2(raw: str) -> tuple[str, str]:
     return text[:idx], text[idx + len(_L2_SEP):].strip()
 
 
-def _prompt_l1_l2(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
-    """L1+L2 合并提示词：**一次请求**产出 L1 六维笔记（JSON）+ L2 详细笔记（Markdown）。
+def _prompt_l1_l2(meta: dict, doc: PaperDoc, journal_meta: str,
+                    topics: list[str] | None = None) -> str:
+    """L1+L2 合并提示词：**一次请求**产出 L1 六维笔记（JSON）+ L2 详细笔记（Markdown）+ AI 评分。
 
     用户决策 2026-09-16：编译 L1/L2 合并，**对所有供应商一致生效**（不再按 provider 分叉）。
     为什么能省：两级共用同一段共享全文前缀（`shared_ctx(doc)`，~19k token）⇒ 每篇少发一次全文。
 
+    2026-09-19 新增：AI 顺手评分（零额外成本）——JSON 增加 ai_value(0-5) 和 topic_score(0-1)。
+
     输出形状（严格 JSON，L2 正文放字符串里）：
-        {"one_liner": "...", ..., "concepts": [...], "l2_md": "# 详细笔记\\n..."}
+        {"one_liner": "...", ..., "concepts": [...], "ai_value": 3.5, "topic_score": 0.8, "l2_md": "# 详细笔记\\n..."}
     拼装方式保持"与既有两个构造点同源"：L1 任务文本取自 `_prompt_l1`，L2 任务文本取自 `_prompt_l2`
     （在 `TASK_MARK` 处取任务部分），**不新造第二套任务描述**。
     """
@@ -529,13 +581,31 @@ def _prompt_l1_l2(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
 
     l1_task = split_task(_prompt_l1(meta, doc, journal_meta))[1]
     l2_task = split_task(_prompt_l2(meta, doc, "(同一次调用内，请以上面 ① 的输出为准)"))[1]
+    topic_instruction = ""
+    if topics:
+        topic_list = "、".join(topics)
+        topic_instruction = (
+            "\n\n### ③ 主题相关度评分\n"
+            f"用户当前研究方向的主题表：{topic_list}\n"
+            "请评估该论文与这些主题的相关度，输出 topic_score（0-1，0=完全无关，1=高度相关）。\n"
+        )
     task = (
-        "## 本次任务：论文知识编译（严格按顺序，两部分输出）\n"
-        "先完成 ①，再**基于 ① 的输出**完成 ②（不要重复全景，只补充章节级细节）。\n\n"
+        "## 本次任务：论文知识编译（严格按顺序，三部分输出）\n"
+        "先完成 ①，再**基于 ① 的输出**完成 ②（不要重复全景，只补充章节级细节），最后完成 ③。\n\n"
         "### ① L1 核心笔记\n" + l1_task + "\n\n"
         "### ② L2 详细笔记（Markdown）\n" + l2_task + "\n\n"
-        "## 输出格式（**两段式，务必遵守**）\n"
-        "第一段：① 的 JSON 对象（含 one_liner / concepts 等全部字段），不要代码围栏。\n"
+        "### ③ AI 价值评分\n"
+        "基于你对论文全文阅读，评估其研究价值（0-5 分）：\n"
+        "- 5分：开创性工作，方法/结论有重大突破\n"
+        "- 4分：高质量研究，创新性强，实验充分\n"
+        "- 3分：扎实研究，有一定创新，方法可靠\n"
+        "- 2分：常规研究，创新性有限但方法正确\n"
+        "- 1分：质量较低，方法或结论有明显缺陷\n"
+        "- 0分：无学术价值\n"
+        "输出 ai_value（0-5 的浮点数）。\n"
+        + topic_instruction +
+        "\n## 输出格式（**两段式，务必遵守**）\n"
+        "第一段：①+③ 的 JSON 对象（含 one_liner / concepts / ai_value / topic_score 等全部字段），不要代码围栏。\n"
         f"然后单独一行输出分隔符：{_L2_SEP}\n"
         "分隔符之后：② 的 Markdown 正文，**直接写 Markdown，不要放进 JSON、不要转义换行**。\n"
         f"（分隔符必须是独立一行、内容就是 {_L2_SEP}；Markdown 正文直到结尾都算 ②。）"

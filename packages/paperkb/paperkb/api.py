@@ -373,23 +373,21 @@ def journals_stats() -> dict:
 
 # ---------------------------------------------------------------- 价值评分（M2）
 
-def value_score_for(doi: str, preferred_topics: list | None = None,
-                    starred: list | None = None) -> dict | None:
-    """单篇价值评分（IF 档来自 journals.db；无 bib 自动缺失归一化）。"""
+def value_score_for(doi: str) -> dict | None:
+    """单篇价值评分（IF 档来自 journals.db；AI 评分来自 papers_meta 编译产出）。"""
     store = _need_store()
     meta = store.get_meta(normalize_doi(doi))
     if meta is None:
         return None
-    return _score_meta(meta, preferred_topics, starred)
+    return _score_meta(meta)
 
 
-def list_scores(preferred_topics: list | None = None,
-                starred: list | None = None) -> list[dict]:
+def list_scores() -> list[dict]:
     """全部文献评分（含等级）——编译队列排序依据。"""
     store = _need_store()
     out = []
     for meta in store.list_meta(limit=2000):
-        s = _score_meta(meta, preferred_topics, starred)
+        s = _score_meta(meta)
         s["doi"] = meta.doi
         s["title"] = meta.title
         s["journal"] = meta.journal
@@ -399,8 +397,7 @@ def list_scores(preferred_topics: list | None = None,
     return out
 
 
-def _score_meta(meta: PaperMeta, preferred_topics: list | None,
-                starred: list | None) -> dict:
+def _score_meta(meta: PaperMeta) -> dict:
     from .score import value_score
 
     journal_info = None
@@ -414,9 +411,7 @@ def _score_meta(meta: PaperMeta, preferred_topics: list | None,
         if journal_info is None and meta.journal:
             journal_info = _journals.lookup(meta.journal)
     has_bib = bool(meta.source_file)
-    return value_score(meta, journal_info=journal_info,
-                       preferred_topics=preferred_topics,
-                       starred=starred, has_bib=has_bib)
+    return value_score(meta, journal_info=journal_info, has_bib=has_bib)
 
 
 def set_journal_override(doi: str, journal_name: str) -> dict:
@@ -429,7 +424,7 @@ def set_journal_override(doi: str, journal_name: str) -> dict:
     meta.journal_override = journal_name.strip()
     store.upsert_meta(meta)
     return {"doi": doi, "journal_override": meta.journal_override,
-            "score": _score_meta(meta, None, None)}
+            "score": _score_meta(meta)}
 
 
 # ---------------------------------------------------------------- 编译（M3）
@@ -629,7 +624,7 @@ def card_read_for_compile(doi: str, types: list[str] | None = None,
 
 # ---------------------------------------------------------------- 翻译（M3b）
 
-def translate_paper(doc_json: str | Path) -> dict:
+def translate_paper(doc_json: str | Path, *, compact: bool = False) -> dict:
     """翻译 document.json（共享全文前缀 + 译文任务；写回 text_zh，供双语/中文版本）。
 
     **批4（2026-09-12 用户要求"编译与翻译的全文必须一样"）**：构造全文前缀的那份 document.json
@@ -638,25 +633,25 @@ def translate_paper(doc_json: str | Path) -> dict:
     三者前缀逐字节一致 ⇒ 提示词缓存互相继承（整篇一次请求 ≈17k token 前缀否则每次全价）。
     译文仍**写回传入的 `doc_json`**（翻译真相源在 library，P0-B）。
 
+    compact=True：紧凑模式（小上下文翻译专用模型），段落内联、无共享前缀、更小分批。
+
     产物落盘，不进入用户后续提问上下文（问答检索只读编译产物，D20）。
     不做「独立 summary 步骤」（D16：六维总结合成到 L1 编译 _note.md，含在 _note 内）。
     """
     from .llm import get_llm
     from .translate import run_translate
 
-    # 2026-09-16（方案 A）：**读写同一份定版**。此前"上下文取 kb、译文写回传入的 library"
-    # ⇒ 复核改 library、编译读 kb，两侧分叉（审计 C2/C3）。现在统一：定版 = kb（未纳入时=library），
-    # 上下文与写回都指向它。
     target = translation_target(doc_json)
     ctx_path = ""
     try:
         key = Path(target).parent.name
         if key:
             ctx_path = canonical_doc_json(key)
-    except Exception as e:  # noqa: BLE001 - kb 未初始化/定位失败 → 退回"同一份"（旧行为）
+    except Exception as e:  # noqa: BLE001
         logger.warning("翻译上下文同源定位失败（退回传入路径）: %s", e)
         ctx_path = ""
-    return run_translate(target, get_llm(), context_path=(ctx_path or target))
+    return run_translate(target, get_llm(), context_path=(ctx_path or target),
+                         compact=compact)
 
 
 # ---------------------------------------------------------------- 检索/问答（M4）
@@ -1505,9 +1500,14 @@ def kb_trash_restore(key: str) -> dict:
     if dirname:
         trash_root = store.roots.kb_dir / ".trash"
         dest = store.roots.kb_dir / dirname
-        if dest.exists():
-            raise ValueError(f"知识库已存在同名目录，无法恢复：{dest}")
         cands = sorted(trash_root.glob(dirname + "*")) if trash_root.is_dir() else []
+        if dest.exists():
+            # 设计口径（2026-09-19 用户确认）：知识库**已有**同名文献则不恢复——
+            # 回收站并非为恢复而设，冲突时由用户自行到回收站文件夹手动挑选要覆盖的文件。
+            trash_dir = str(cands[0]) if cands else str(trash_root / dirname)
+            return {"status": "conflict", "key": k, "dirname": dirname,
+                    "kb_dir": str(dest), "trash_dir": trash_dir,
+                    "message": f"知识库已存在同名文献，未执行恢复。如需合并请手动选择要覆盖的文件：{trash_dir}"}
         if not cands:
             raise ValueError(f"回收站里找不到目录 {dirname}（可能被手工删除）")
         shutil.move(str(cands[0]), str(dest))
@@ -1546,6 +1546,59 @@ def kb_trash_list() -> dict:
             pass
         out.append(item)
     return {"items": out, "total": len(out)}
+
+
+def kb_trash_delete(key: str) -> dict:
+    """彻底删除回收站里的**单篇**资源（不可恢复）：删 .trash 目录 + 移除 kb_trash 登记。
+
+    2026-09-19（用户需求：回收站管理操作缺失）补全。**仅**作用于 knowledge_base/.trash/
+    下该资源的目录，绝不触碰主知识库/library/papers_meta（文献库记录与解析产物保留）。
+    """
+    store = _need_store()
+    from .resource import resource_key
+
+    k = resource_key(store, key) or (key or "").strip()
+    row = next((r for r in store.trash_list() if r["key"] == k), None)
+    if row is None:
+        raise ValueError(f"该资源不在回收站: {k}")
+    dirname = (row.get("dirname") or "").strip()
+    removed_dirs: list[str] = []
+    if dirname:
+        trash_root = store.roots.kb_dir / ".trash"
+        if trash_root.is_dir():
+            # 移入时可能加了 "__时间戳" 后缀（同名冲突），glob 前缀全覆盖
+            for d in sorted(trash_root.glob(dirname + "*")):
+                if d.is_dir():
+                    shutil.rmtree(str(d), ignore_errors=True)
+                    removed_dirs.append(d.name)
+    store.trash_remove(k)
+    logger.info("彻底删除回收站资源: key=%s dirs=%s", k, removed_dirs)
+    return {"status": "deleted", "key": k, "removed_dirs": removed_dirs}
+
+
+def kb_trash_empty() -> dict:
+    """清空回收站（彻底删除全部，不可恢复）：删 .trash 下所有目录 + 清空 kb_trash 登记。
+
+    仅作用于 knowledge_base/.trash/；主知识库/library/papers_meta 不受影响。
+    """
+    store = _need_store()
+    keys = [r["key"] for r in store.trash_list()]
+    trash_root = store.roots.kb_dir / ".trash"
+    removed_dirs = 0
+    if trash_root.is_dir():
+        for d in list(trash_root.iterdir()):
+            if d.is_dir():
+                shutil.rmtree(str(d), ignore_errors=True)
+                removed_dirs += 1
+            elif d.is_file():
+                try:
+                    d.unlink()
+                except OSError:
+                    pass
+    for k in keys:
+        store.trash_remove(k)
+    logger.info("清空回收站: 登记 %d 项, 目录 %d 个", len(keys), removed_dirs)
+    return {"status": "emptied", "removed_keys": len(keys), "removed_dirs": removed_dirs}
 
 
 def regenerate_index() -> dict:

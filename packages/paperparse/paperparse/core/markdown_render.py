@@ -38,6 +38,27 @@ EXCLUDE_SECTIONS = {
     "author contributions", "funding",
 }
 
+# ---------------------------------------------------------------------------
+# 尾部杂项截断（en.md 干净版 / 双语主产物）——判据单一来源在 block_classify.is_tail_noise
+# （与 paperkb.context.tail_cut_index 同口径）。en.md 既是阅读区原文，又被 chat L2
+# 授权全文问答直接注入 AI，故与翻译/编译上下文同样剔除致谢/利益冲突/作者贡献/数据
+# 可用性/支撑信息等尾部声明（2026-09-19 用户要求补全这部分清洗规则）。
+def _is_tail_noise_para(p, idx: int, total: int) -> bool:
+    """[局部] 段落是否"结尾杂项"（委托 block_classify.is_tail_noise）。"""
+    from paperparse.core.block_classify import is_tail_noise
+    return is_tail_noise(getattr(p, "text_en", "") or "", idx, total,
+                         is_heading=bool(getattr(p, "is_heading", False)),
+                         section=getattr(p, "section", "") or "")
+
+
+def _tail_cut_index(paragraphs) -> int:
+    """[局部] 第一个"结尾杂项"段落下标；无则返回总数（render_clean/_build_items 共用）。"""
+    total = len(paragraphs)
+    for i, p in enumerate(paragraphs):
+        if _is_tail_noise_para(p, i, total):
+            return i
+    return total
+
 
 def _tag(keyword: str) -> str:
     """[局部] 关键词 → Obsidian 标签（空格/特殊字符 → 下划线）"""
@@ -141,7 +162,9 @@ def _build_items(doc: ArticleDocument) -> list[dict]:
     items: list[dict] = []
     has_abstract_heading = False
 
-    for p in doc.paragraphs:
+    # 尾部杂项截断（与 render_clean / AI 上下文同口径）：双语主产物同样不含致谢/声明等
+    _cut = _tail_cut_index(doc.paragraphs)
+    for p in doc.paragraphs[:_cut]:
         if p.is_heading:
             t = p.text_en.strip()
             # P15：p14 的 heading 段 text 保留 md 的 "## " 前缀，模板输出会再
@@ -327,10 +350,13 @@ def render_clean(doc: ArticleDocument, *, include_references: bool = False) -> s
         if key:
             fig_by_key[key] = f.file
     out: list[str] = []
+    seen_fig: set[str] = set()   # 同一图文件只 emit 一次（防误判段与真题注段共享图号 key 致重复插图）
     if title:
         out.append("# " + title)
     in_refs = False
-    for p in doc.paragraphs:
+    # 尾部杂项截断（致谢/利益冲突/作者贡献/数据可用性/支撑信息…）——与 AI 上下文同口径
+    _cut = _tail_cut_index(doc.paragraphs)
+    for p in doc.paragraphs[:_cut]:
         t = (p.text_en or "").strip()
         if not t:
             continue
@@ -348,7 +374,10 @@ def render_clean(doc: ArticleDocument, *, include_references: bool = False) -> s
         if p.is_caption:
             key = _fig_key(t)
             if key and key in fig_by_key:
-                out.append("![](%s)" % fig_by_key[key])
+                _f = fig_by_key[key]
+                if _f not in seen_fig:
+                    out.append("![](%s)" % _f)
+                    seen_fig.add(_f)
             out.append(t)
             continue
         if not p.is_heading:

@@ -49,12 +49,13 @@ export class RendererThree {
     this._byId = new Map();
     this._nodes = [];       // renderData.nodes（含 x/y/size/color/label）
     this._edges = [];       // renderData.edges
-    this._style = { showEdges: true, showEdgeDir: false, edgeColor: '#8890a0', edgeWidth: 1.2, background: 'light', bgColor: null };
+    this._style = { showEdges: true, showEdgeDir: false, edgeColor: '#8890a0', edgeWidth: 0.3, background: 'light', bgColor: null };
     this._mode = '2d';
     this._hl = null;
     this._clickCb = null;
     this._longCb = null;
     this._k = 1;            // 渲染属性 → 世界单位 换算系数（setData 按 bbox 标定）
+    this._userMoved = false;  // 用户是否已接管视角（接管后停止自动适配）
     this._rafId = null;
     this._hoverId = null;
     this._longTimer = null;
@@ -99,8 +100,7 @@ export class RendererThree {
 
   _initDom() {
     this._container.innerHTML = '';
-    this._container.style.position = 'relative';
-    this._container.style.cursor = 'grab';
+    this._container.style.cursor = 'grab';   // 定位由 CSS（.lg-canvas absolute inset:0）负责，勿覆盖
 
     const canvas = this._gl.domElement;
     canvas.style.display = 'block';
@@ -147,10 +147,12 @@ export class RendererThree {
 
     el.addEventListener('mousedown', (e) => {
       this._clearLongTimer();
+      // 先检测是否点在节点上（避免小节点被平移覆盖）
+      const picked = this._pick(e.clientX, e.clientY);
       const pan = this._mode === '2d' ? e.button === 0 : (e.button === 1 || (e.button === 0 && e.shiftKey));
       this._drag = {
         mode: pan ? 'pan' : (e.button === 0 ? 'rotate' : null),
-        x: e.clientX, y: e.clientY, moved: false, button: e.button,
+        x: e.clientX, y: e.clientY, moved: false, button: e.button, picked,
       };
       if (this._drag.mode) el.style.cursor = 'grabbing';
       if (this._hoverId && this._longCb) {
@@ -176,9 +178,14 @@ export class RendererThree {
 
     window.addEventListener('mouseup', (e) => {
       if (this._drag && !this._drag.moved && this._drag.button === 0) {
-        const id = this._pick(e.clientX, e.clientY);
-        if (id && this._clickCb) this._clickCb(id);
-        if (!id) this._stageClick();
+        // 如果 mousedown 时已点在节点上，直接触发点击（不依赖 _pick）
+        if (this._drag.picked && this._clickCb) {
+          this._clickCb(this._drag.picked);
+        } else {
+          const id = this._pick(e.clientX, e.clientY);
+          if (id && this._clickCb) this._clickCb(id);
+          if (!id) this._stageClick();
+        }
       }
       this._drag = null;
       this._clearLongTimer();
@@ -210,6 +217,7 @@ export class RendererThree {
 
     el.addEventListener('wheel', (e) => {
       e.preventDefault();
+      this._userMoved = true;
       const f = Math.pow(1.0015, -e.deltaY);
       if (this._mode === '2d') {
         this._orthoHalf = Math.min(200000, Math.max(5, this._orthoHalf / f));
@@ -226,6 +234,7 @@ export class RendererThree {
   }
 
   _pan(dx, dy) {
+    this._userMoved = true;
     const w = this._container.offsetWidth || 800;
     const h = this._container.offsetHeight || 600;
     const worldPerPx = this._mode === '2d'
@@ -239,6 +248,7 @@ export class RendererThree {
   }
 
   _rotate(dx, dy) {
+    this._userMoved = true;
     this._sph.theta -= dx * 0.005;
     this._sph.phi = Math.min(Math.PI - 0.05, Math.max(0.05, this._sph.phi - dy * 0.005));
   }
@@ -275,6 +285,7 @@ export class RendererThree {
     this._byId.clear();
     for (const n of this._nodes) this._byId.set(n.id, n._raw || n);
 
+    this._userMoved = false;   // 新数据：恢复自动适配，直到用户接管视角
     this._computeScale();
     this._rebuildMeshes();
     this._writeNodeTransforms();
@@ -333,8 +344,11 @@ export class RendererThree {
       const p = map.get(n.id);
       if (p) { n.x = p[0]; n.y = p[1]; }
     }
+    // 坐标到达后重标单位换算（setData 时 bbox 可能还是退化的），并在用户接管视角前自动适配
+    this._computeScale();
     this._writeNodeTransforms();
     this._writeEdgeTransforms();
+    if (!this._userMoved) this.fit();
   }
 
   updateNodeAttrs(nodes) {
@@ -382,7 +396,9 @@ export class RendererThree {
     this._edges.forEach((e, i) => {
       const s = posById.get(e.source);
       const t = posById.get(e.target);
-      const hidden = !st.showEdges || st.edgeWidth <= 0 || e.hidden || !s || !t || e.source === e.target;
+      const hyp = s && t ? Math.hypot((t.x || 0) - (s.x || 0), (t.y || 0) - (s.y || 0)) : 0;
+      // 退化边（端点重合）方向向量为零 → 四元数 NaN → GPU 画破面，必须隐藏
+      const hidden = !st.showEdges || st.edgeWidth <= 0 || e.hidden || !s || !t || e.source === e.target || hyp < 1e-4;
       if (hidden) {
         m.makeScale(0, 0, 0);
         this._edgesMesh.setMatrixAt(i, m);
@@ -398,7 +414,8 @@ export class RendererThree {
       m.compose(new THREE.Vector3((sx + tx) / 2, (sy + ty) / 2, 0), q, new THREE.Vector3(widthWorld, len, widthWorld));
       this._edgesMesh.setMatrixAt(i, m);
 
-      let color = e.color || st.edgeColor;
+      // 边色唯一来源是样式面板（数据层的 per-edge color 会过期）
+      let color = st.edgeColor;
       if (this._hl) color = this._hlEdgeColor(e, color);
       this._edgesMesh.setColorAt(i, c.set(color));
 
@@ -527,6 +544,39 @@ export class RendererThree {
     this._sph.radius = this._orthoHalf / Math.tan((this._camPersp.fov * Math.PI) / 360);
   }
 
+  // ── 3D 预设视角（球坐标：theta=绕 Y 方位角，phi=从 +Y 起的极角）──
+  //   position = target + R·(sinφ·sinθ, cosφ, sinφ·cosθ)
+  //   图谱本身在 XY 平面（z=0），因此"前视"（相机在 +Z）= 平铺视图；"顶视"是边沿视角。
+
+  _setSph(theta, phi) {
+    this._sph.theta = theta;
+    this._sph.phi = Math.min(Math.PI - 0.05, Math.max(0.05, phi));
+    this._userMoved = true;   // 阻止自动 fit 覆盖用户选择的视角
+  }
+
+  /** 前视：相机在 +Z，正对图谱平面（XY）。 */
+  viewFront() { this._setSph(0, Math.PI / 2); }
+
+  /** 顶视：相机在 +Y，沿 -Y 俯视 XZ（z=0 时为边沿视角，可看到图谱厚度为 0）。 */
+  viewTop() { this._setSph(0, 0.05); }
+
+  /** 侧视：相机在 +X，沿 -X 看向 YZ。 */
+  viewSide() { this._setSph(Math.PI / 2, Math.PI / 2); }
+
+  /** 等轴测：相机在 (1,1,1)/√3 方向（经典 iso，三轴倾角相等）。 */
+  viewIsometric() {
+    const phi = Math.acos(1 / Math.sqrt(3));   // ≈ 54.7356°
+    this._setSph(Math.PI / 4, phi);
+  }
+
+  /** 复位：等轴 + 适配视图。 */
+  viewReset() {
+    this._setSph(Math.PI / 4, Math.acos(1 / Math.sqrt(3)));
+    this.fit();
+    // fit() 内不设 userMoved，这里保持 true
+    this._userMoved = true;
+  }
+
   // ── 渲染循环 + 标签覆盖层 ──────────────────────────
 
   _loop() {
@@ -555,7 +605,7 @@ export class RendererThree {
     for (const n of this._nodes) {
       if (!n.label || drawn > 500) continue;
       const screenR = ((n.size || 2) * this._k) / (2 * this._orthoHalf) * h;
-      if (screenR < 2.2) continue;   // 太小不画标签（同 sigma labelRenderedSizeThreshold 语义）
+      if (screenR < 4.5) continue;   // 太小不画标签（同 sigma labelRenderedSizeThreshold 语义）
       v.set(n.x || 0, n.y || 0, 0).project(this._camera);
       const px = (v.x * 0.5 + 0.5) * w;
       const py = (-v.y * 0.5 + 0.5) * h;

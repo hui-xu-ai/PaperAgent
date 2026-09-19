@@ -21,7 +21,7 @@ from pathlib import Path
 
 from ..config import Settings
 from .engine_service import EngineService
-from .llm_service import ChatCompleter
+from .llm_service import ChatCompleter, TokenBudgetExceeded
 from .store import Store
 
 logger = logging.getLogger(__name__)
@@ -143,6 +143,48 @@ class ChatService:
             logger.exception("工具轮次耗尽后强制终答失败")
         return f"工具调用次数超限（{max_rounds} 轮），请简化操作或分步提问。"
 
+    @staticmethod
+    def _reflect_on_limit(context: str, messages: list[dict],
+                          exc: TokenBudgetExceeded) -> str:
+        """触及 TokenGuard 硬限制时的自我反思：分析工具调用历史，总结进度和问题。
+
+        不调用 LLM（已超限），纯从 messages 历史提取工具调用统计。
+        """
+        tool_counts: dict[str, int] = {}
+        tool_failures: list[str] = []
+        for m in messages:
+            if m.get("role") == "tool":
+                try:
+                    data = json.loads(m.get("content") or "{}")
+                    ok = data.get("ok", True)
+                    if not ok:
+                        err = data.get("error", "") or str(data.get("result", ""))[:80]
+                        tool_failures.append(err)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            for tc in (m.get("tool_calls") or []):
+                fn = tc.get("function", {})
+                name = fn.get("name", "unknown")
+                tool_counts[name] = tool_counts.get(name, 0) + 1
+        parts = ["\u26d4 **已达调用限制，任务暂停**\n"]
+        parts.append(f"原因：{exc}\n")
+        if tool_counts:
+            parts.append("**已执行的工具调用：**")
+            for name, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
+                parts.append(f"- {name}：{count} 次")
+        if tool_failures:
+            parts.append(f"\n**失败记录（{len(tool_failures)} 条）：**")
+            for f in tool_failures[:5]:
+                parts.append(f"- {f}")
+        parts.append("\n**建议：**")
+        if any("search" in n or "retrieve" in n for n in tool_counts):
+            parts.append("- 检索次数较多，可能查询词不够精准，建议缩小范围或换关键词")
+        if any("draft" in n or "revise" in n for n in tool_counts):
+            parts.append("- 写作/修订次数较多，建议降低字数要求或简化章节结构")
+        parts.append("- 可在新消息中回复「继续」以重置限制并继续任务")
+        parts.append("- 或简化任务要求（如减少字数、缩减章节）后重新提问")
+        return "\n".join(parts)
+
     # ---------------------------------------------------------- 会话
     def create_session(self, paper_id: int | None = None, kind: str = "paper",
                        mode: str = "", title: str = "") -> int:
@@ -157,18 +199,24 @@ class ChatService:
         if kind == "global":
             if mode == "manage":
                 note = ("⚙️ 知识库管理模式：可自然语言完成知识库操作"
-                        "（如“编译 cej”、“列出库内文献价值评分”、“纠正某篇期刊名”、"
-                        "“扫描缺失 DOI”），也支持知识库问答。")
+                        "（如\u201c编译 cej\u201d、\u201c列出库内文献价值评分\u201d、\u201c纠正某篇期刊名\u201d、"
+                        "\u201c扫描缺失 DOI\u201d），也支持知识库问答。")
             else:
                 note = ("📚 知识库精简问答模式：询问知识库任意文献内容"
                         "（基于编译产物与元数据，不读全文），如"
-                        "“知识库里有哪些关于人工肌肉的文献？”")
+                        "\u201c知识库里有哪些关于人工肌肉的文献？\u201d")
             self.store.add_message(session_id, "assistant", note, tokens=0)
             return session_id
         if kind == "lit":
             note = ("🔍 AI 文献检索模式：可自然语言完成文献检索与管理操作"
-                    "（如“检索钙钛矿太阳能电池”、“补全元数据”、“计算 PaperRank”、"
-                    "“构建向量索引”、“编译主题”），也支持文献库问答。")
+                    "（如\u201c检索钙钛矿太阳能电池\u201d、\u201c补全元数据\u201d、\u201c计算 PaperRank\u201d、"
+                    "\u201c构建向量索引\u201d、\u201c编译主题\u201d），也支持文献库问答。")
+            self.store.add_message(session_id, "assistant", note, tokens=0)
+            return session_id
+        if kind == "writing":
+            note = ("✍️ AI 写作模式：自动完成计划→检索→写作→验证→迭代→保存的完整写作流程。"
+                    "支持 essay/review/report/summary 等文体，可指定目标字数。"
+                    "例如：\u201c写一篇 600 字关于人工智能的综述\u201d、\u201c生成一份实验报告\u201d。")
             self.store.add_message(session_id, "assistant", note, tokens=0)
             return session_id
         paper = self.store.get_paper(paper_id) if paper_id else None
@@ -592,6 +640,65 @@ class ChatService:
                 "② 写操作（导入/补全/计算/构建/编译/清空缓存）必须用户明确意图；"
                 "③ 信息不足先问用户或调用查询工具。")
 
+    @staticmethod
+    def _writing_system_prompt() -> str:
+        return ("你是一名 AI 写作助手，擅长自动计划→检索→写作→验证→迭代的完整写作流程。\n"
+                "可用工具：\n"
+                "- writing_plan：生成写作大纲（章节标题 + 要点 + 字数分配）。\n"
+                "- writing_retrieve：从知识库检索相关内容（自然语言查询）。\n"
+                "- writing_draft：撰写章节草稿（根据大纲要点和检索内容）。\n"
+                "- writing_validate：自我验证草稿质量（字数/连贯性/完整性评分 + 修改建议）。\n"
+                "- writing_revise：根据验证反馈修订草稿。\n"
+                "- writing_save：保存最终报告到 .md 文件（存储到 knowledge_base/_reports/）。\n"
+                "工作流程：\n"
+                "1. **计划**：调用 writing_plan 生成结构化大纲。\n"
+                "2. **检索**：对每个章节调用 writing_retrieve 获取相关素材。\n"
+                "3. **写作**：调用 writing_draft 逐章撰写草稿。\n"
+                "4. **验证**：调用 writing_validate 检查质量（字数/连贯性/完整性）。\n"
+                "5. **迭代**：若验证不通过，调用 writing_revise 修订，重复步骤 4。\n"
+                "6. **保存**：验证通过后调用 writing_save 保存最终报告。\n"
+                "规则：① 必须按流程顺序执行，不可跳过验证步骤；"
+                "② 每章写作前必须先检索相关素材；"
+                "③ 验证评分<8 分必须修订；"
+                "④ 最终保存前确保总字数达标（±20%）。")
+
+    @staticmethod
+    def _hybrid_system_prompt() -> str:
+        """混合模式系统提示：AI检索 + 写作 + 知识库能力（lit 会话检测到写作意图时启用）。"""
+        return ("你是一名 AI 文献检索与写作助手，同时具备文献检索、知识库检索和结构化写作能力。\n\n"
+                "=== AI检索库工具（lit_*）—— 文献元数据/聚类/统计 ===\n"
+                "- lit_search：三层漏斗检索（标题/摘要/关键词）\n"
+                "- lit_vector_search：向量语义检索\n"
+                "- lit_list_papers：分页列表\n"
+                "- lit_get_paper：按 DOI 查详情（含全文段落）\n"
+                "- lit_top_papers / lit_compute_rank：PaperRank 排名\n"
+                "- lit_compute_clusters / lit_cluster_papers：共被引聚类\n"
+                "- lit_status：文献库总览\n\n"
+                "=== 知识库工具（kb_*）—— 编译产物/深度笔记/引用关系 ===\n"
+                "- kb_recall：知识库语义检索，召回编译产物和元数据片段（含 [[DOI目录]] 引用）\n"
+                "- kb_search_papers：按标题/作者/期刊搜索库内文献元数据\n"
+                "- kb_paper_detail：单篇详情（元数据 + 引用/被引关系 + 编译状态）\n\n"
+                "=== 写作工具（writing_*）===\n"
+                "- writing_plan：生成写作大纲（章节标题 + 要点 + 字数分配）\n"
+                "- writing_draft：撰写章节草稿\n"
+                "- writing_validate：自我验证草稿质量（字数/连贯性/完整性评分）\n"
+                "- writing_revise：根据验证反馈修订草稿\n"
+                "- writing_save：保存最终报告到 .md 文件\n\n"
+                "=== 写作工作流程 ===\n"
+                "1. 计划：调用 writing_plan 生成大纲\n"
+                "2. 检索：对每个章节**同时**使用两个数据源检索文献证据：\n"
+                "   - lit_search / lit_vector_search → AI检索库（文献元数据+摘要）\n"
+                "   - kb_recall → 知识库（编译笔记、深度摘要、引用关系）\n"
+                "   综合两个来源的信息作为写作素材\n"
+                "3. 写作：调用 writing_draft 逐章撰写，引用文献用 [[DOI目录]] 标注\n"
+                "4. 验证：调用 writing_validate 检查质量\n"
+                "5. 迭代：验证评分<8 分则 writing_revise 修订\n"
+                "6. 保存：验证通过后 writing_save 保存\n\n"
+                "规则：① 涉及库内数据必须调用工具获取，禁止编造；"
+                "② 写作必须按流程执行，不可跳过验证；"
+                "③ 每章写作前必须先从两个数据源检索证据；"
+                "④ 接近调用限制时主动总结进度并告知用户。")
+
     # ---------------------------------------------------------- 检索分级（T05）
     def _retrieval_mode(self) -> str:
         try:
@@ -796,12 +903,28 @@ class ChatService:
                        effort: str | None = None) -> Iterator[dict]:
         """AI 文献检索模式：工具调用循环（complete_with_tools → 执行 → 回填 → 再请求）。
 
-        工具调用中间消息不入库（messages 只存最终问答，历史精简）；
-        每轮结果截断回填；轮次上限取自 config。
+        写作混合模式：检测到写作意图时自动合并 writing_tools，启用混合系统提示，
+        并提高轮次上限。接近 TokenGuard 软限制时发预警事件，硬限制触发时
+        生成反思摘要并停止。
         """
-        from .lit_tools import run_tool, tool_specs
+        from .lit_tools import run_tool as lit_run_tool, tool_specs as lit_tool_specs
+        hybrid = _is_report_task(question)
+        if hybrid:
+            from .writing_tools import run_tool as writing_run_tool, tool_specs as writing_tool_specs
+            from .kb_tools import run_tool as kb_run_tool, TOOL_SPECS as _KB_ALL_SPECS
+            # 写作混合模式只挂载只读检索工具，避免 LLM 误调用写操作
+            _kb_read_names = {"kb_recall", "kb_search_papers", "kb_paper_detail"}
+            kb_tool_specs = [s for s in _KB_ALL_SPECS
+                             if s["function"]["name"] in _kb_read_names]
 
-        system = self._lit_system_prompt()
+        def _run_tool(name: str, args: dict) -> dict:
+            if name.startswith("writing_") and hybrid:
+                return writing_run_tool(name, args)
+            if name.startswith("kb_") and hybrid:
+                return kb_run_tool(name, args)
+            return lit_run_tool(name, args)
+
+        system = self._hybrid_system_prompt() if hybrid else self._lit_system_prompt()
         extra = self._system_extra()
         if extra:
             system += "\n\n=== 用户附加指令 ===\n" + extra
@@ -811,24 +934,51 @@ class ChatService:
         messages: list[dict] = [{"role": "system", "content": system}]
         for m in history:
             msg = {"role": m["role"], "content": m["content"]}
-            # 思考模式：历史 assistant 消息的 reasoning_content 必须回传 API
             if m["role"] == "assistant" and m.get("reasoning_content"):
                 msg["reasoning_content"] = m["reasoning_content"]
             messages.append(msg)
         messages.append({"role": "user", "content": question})
-        # lit 会话的用户消息同样必须落库：否则历史里只有 assistant 行，
-        # 多轮追问时模型看不到自己上一轮被问了什么（其余模式均有此步，lit 曾遗漏）。
         self.store.add_message(session_id, "user", question,
                                tokens=self._estimate_tokens(question))
         yield {"type": "start", "cached": False, "retrieved": 0}
-        tools = tool_specs()
-        max_rounds = self._manage_round_limit(question)
+        if hybrid:
+            tools = lit_tool_specs() + writing_tool_specs() + kb_tool_specs
+            max_rounds = max(self._manage_round_limit(question), 20)
+        else:
+            tools = lit_tool_specs()
+            max_rounds = self._manage_round_limit(question)
+        ctx = f"session:{session_id}"
+        # 用户回复「继续」→ 重置 TokenGuard 计数，允许写作任务续写
+        _q = (question or "").strip().lower()
+        if _q in ("继续", "continue", "请继续", "继续写", "接着写"):
+            guard = getattr(self.chat, "guard", None)
+            if guard:
+                guard.reset_context(ctx)
+                logger.info("用户请求继续，已重置 %s 的 TokenGuard 计数", ctx)
         answer = ""
         reasoning = None
+        soft_limit_warned = False
         for _round in range(max_rounds):
+            # 软限制预警：接近 TokenGuard 红线时通知前端
+            guard = getattr(self.chat, "guard", None)
+            if guard and not soft_limit_warned:
+                soft = guard.check_soft_limit(ctx, threshold=0.8)
+                if soft:
+                    soft_limit_warned = True
+                    yield {"type": "limit_warning",
+                           "message": f"⚠ 接近调用限制（{soft['call_pct']}% 次数 / "
+                                      f"{soft['char_pct']}% 输入），将尽快完成剩余工作",
+                           "usage": soft}
             try:
                 content, tool_calls, reasoning = self.chat.complete_with_tools(
-                    f"session:{session_id}", messages, tools)
+                    ctx, messages, tools)
+            except TokenBudgetExceeded as e:
+                logger.warning("lit 工具循环触及 TokenGuard 硬限制：%s", e)
+                answer = self._reflect_on_limit(ctx, messages, e)
+                yield {"type": "limit_reached",
+                       "message": answer,
+                       "reason": str(e)}
+                break
             except Exception as e:  # noqa: BLE001
                 logger.exception("AI 检索模式工具循环失败")
                 yield {"type": "error", "message": f"对话失败: {e}"}
@@ -836,8 +986,85 @@ class ChatService:
             if not tool_calls:
                 answer = (content or "").strip()
                 break
-            # 同轮多个 tool_calls：**一条** assistant（全部 tool_calls + reasoning_content）
-            # + 每调用一条 tool 消息（非法交错会让模型上下文错乱，见管理模式同款注释）。
+            asst: dict = {"role": "assistant", "content": content,
+                          "tool_calls": [{"id": tc["id"], "type": "function",
+                                          "function": tc["function"]}
+                                         for tc in tool_calls]}
+            if reasoning:
+                asst["reasoning_content"] = reasoning
+            messages.append(asst)
+            for tc in tool_calls:
+                name = tc["function"]["name"]
+                try:
+                    args = json.loads(tc["function"]["arguments"] or "{}")
+                except ValueError:
+                    args = {}
+                result = _run_tool(name, args)
+                summary = result.get("result", "")
+                if isinstance(summary, str):
+                    summary = summary[:160]
+                else:
+                    summary = str(summary)[:160]
+                yield {"type": "tool", "name": name, "args": args,
+                       "summary": summary, "ok": result.get("ok", False)}
+                messages.append({"role": "tool", "tool_call_id": tc["id"],
+                                 "content": json.dumps(result, ensure_ascii=False)})
+        else:
+            answer = self._final_answer_no_tools(session_id, messages, max_rounds)
+        if not answer:
+            answer = "（无回答）"
+        mid = self.store.add_message(session_id, "assistant", answer,
+                                     tokens=self._estimate_tokens(answer),
+                                     reasoning_content=reasoning)
+        yield {"type": "delta", "text": answer}
+        yield {"type": "done", "cached": False, "message_id": mid,
+               "tokens": self._estimate_tokens(question) + self._estimate_tokens(answer)}
+
+    def _ask_writing_tools(self, session_id: int, question: str,
+                           effort: str | None = None) -> Iterator[dict]:
+        """AI 写作模式：工具调用循环（计划→检索→写作→验证→迭代→保存）。
+
+        写作任务需要更多轮次（默认 15 轮），因为完整流程包括：
+        1. 生成大纲（1 轮）
+        2. 每章检索 + 写作（N 章 × 2 轮）
+        3. 验证 + 可能的修订（2-4 轮）
+        4. 保存（1 轮）
+        """
+        from .writing_tools import run_tool, tool_specs
+
+        system = self._writing_system_prompt()
+        extra = self._system_extra()
+        if extra:
+            system += "\n\n=== 用户附加指令 ===\n" + extra
+        history = self.store.recent_messages(session_id, self.settings.history_max_messages)
+        history = [m for m in history if m["role"] in ("user", "assistant")]
+        history = self._fit_history(history)
+        messages: list[dict] = [{"role": "system", "content": system}]
+        for m in history:
+            msg = {"role": m["role"], "content": m["content"]}
+            if m["role"] == "assistant" and m.get("reasoning_content"):
+                msg["reasoning_content"] = m["reasoning_content"]
+            messages.append(msg)
+        messages.append({"role": "user", "content": question})
+        self.store.add_message(session_id, "user", question,
+                               tokens=self._estimate_tokens(question))
+        yield {"type": "start", "cached": False, "retrieved": 0}
+        tools = tool_specs()
+        # 写作任务需要更多轮次（默认 15 轮，综述类 20 轮）
+        max_rounds = 20 if _is_report_task(question) else 15
+        answer = ""
+        reasoning = None
+        for _round in range(max_rounds):
+            try:
+                content, tool_calls, reasoning = self.chat.complete_with_tools(
+                    f"session:{session_id}", messages, tools)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("AI 写作模式工具循环失败")
+                yield {"type": "error", "message": f"对话失败：{e}"}
+                return
+            if not tool_calls:
+                answer = (content or "").strip()
+                break
             asst: dict = {"role": "assistant", "content": content,
                           "tool_calls": [{"id": tc["id"], "type": "function",
                                           "function": tc["function"]}
@@ -853,7 +1080,8 @@ class ChatService:
                     args = {}
                 result = run_tool(name, args)
                 yield {"type": "tool", "name": name, "args": args,
-                       "summary": result["result"][:160], "ok": result["ok"]}
+                       "summary": result.get("result", "")[:160] if isinstance(result.get("result"), str) else str(result.get("result", ""))[:160],
+                       "ok": result.get("ok", False)}
                 messages.append({"role": "tool", "tool_call_id": tc["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
         else:
@@ -952,6 +1180,9 @@ class ChatService:
             return
         if session.get("kind") == "lit":
             yield from self._ask_lit_tools(session_id, question, effort=effort)
+            return
+        if session.get("kind") == "writing":
+            yield from self._ask_writing_tools(session_id, question, effort=effort)
             return
         paper = self.store.get_paper(session["paper_id"])
         if not paper or not paper.get("doc_json"):

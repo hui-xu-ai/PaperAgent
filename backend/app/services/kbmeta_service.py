@@ -55,11 +55,9 @@ class KbMetaService:
             kbapi.init_kb(self._roots)
             self._ready = True
             logger.info("paperkb 初始化完成（db=%s）", self._roots.main_db)
-        # 注入 LLM（backend llm_service 适配 paperkb.LLMClient；未配置则不注入）
+        # 注入 LLM（backend llm_service 适配 paperkb.LLMClient；动态解析，无需传引用）
         try:
-            from .llm_service import get_ai
-
-            kbapi.configure_llm(_KBLLMAdapter(get_ai()))
+            kbapi.configure_llm(_KBLLMAdapter())
         except Exception as e:  # noqa: BLE001
             logger.debug("paperkb LLM 未注入（编译需先配置供应商）: %s", e)
 
@@ -131,6 +129,8 @@ class KbMetaService:
         """paperkb 翻译+总结（写回 document.json 的 text_zh/ai_summary）。
 
         前置按任务粒度清零 translate 防护计数（防跨篇/跨服务生命周期累计误拦）。
+        翻译模型路由由 _KBLLMAdapter 内部动态处理（优先翻译专用 AI，回落主模型）。
+        若配置了翻译专用 AI，自动启用紧凑模式（小上下文分块，段落内联，无共享前缀）。
         """
         self._ensure()
         try:
@@ -139,7 +139,14 @@ class KbMetaService:
             get_guard().reset_context("translate")
         except Exception:  # noqa: BLE001
             pass
-        return kbapi.translate_paper(doc_json)
+        # 检测是否配置了翻译专用 AI → 自动启用紧凑模式
+        compact = False
+        try:
+            from .llm_service import get_translation_ai
+            compact = get_translation_ai() is not None
+        except Exception:  # noqa: BLE001
+            pass
+        return kbapi.translate_paper(doc_json, compact=compact)
 
     # ---------------------------------------------------------- 文献阅读日记
     # 数据聚合 + 用户笔记。与 paperkb.api 解耦：直接构造 KBStore(ROOTS)，
@@ -177,17 +184,25 @@ class _KBLLMAdapter:
 
     - translate：独立组（80 次/300 万字符；translate_now 前置按任务粒度清零）
     - 编译等：归入 engine 组（12 次/800k；task 翻译前也会 reset）
+    - **动态解析**（LLM 架构优化）：每次 complete() 实时获取当前 AI 实例，
+      热切换供应商/翻译模型立即生效（旧实现构造时捕获引用 ⇒ 热切换不传播）。
+    - **翻译路由**：translate context 优先用翻译专用 AI（若已配置），否则回落主模型。
     """
-
-    def __init__(self, base):
-        self._base = base
 
     def complete(self, prompt: str, context: str = "compile") -> str:
         mapped = {"translate": "translate", "ask": "ask"}.get(context, "engine")
-        # 翻译补全上限走 base（DeepSeekAI）实例的 max_tokens（build_ai 按供应商透传，
-        # 默认 DEFAULT_MAX_OUTPUT_TOKENS=16384）——翻译/总结共用该上限，防批量译文被截断。
-        # 批3：**思考档决策用真实 context**（compile/l1/l2/l3…）；`mapped` 只用于 TokenGuard 分组。
-        return self._base.complete(prompt, context=mapped, effort_context=context)
+        # 翻译路由：轮询取池内下一个专用 AI（多模型并行时分发批次），空池回落主模型
+        if context == "translate":
+            try:
+                from .llm_service import next_translation_ai
+                t_ai = next_translation_ai()
+                if t_ai is not None:
+                    return t_ai.complete(prompt, context=mapped, effort_context=context)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("翻译路由异常: %s", e)
+        from .llm_service import get_ai
+        base = get_ai()
+        return base.complete(prompt, context=mapped, effort_context=context)
 
 
 def get_kbmeta() -> KbMetaService:

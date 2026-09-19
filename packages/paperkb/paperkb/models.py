@@ -50,6 +50,8 @@ class PaperMeta(BaseModel):
     journal_override: str = ""                              # 人工纠正的期刊名（匹配失败时）
     kind: str = ""                                          # 资源类型（paper/thesis/book/…）
                                                             # 空 = 由 rid 前缀推导（layout.kind_for）
+    ai_value_score: float | None = None                     # AI 价值评分（0-5，L1+L2 编译时产出）
+    topic_score: float | None = None                        # 主题匹配评分（0-1，L1+L2 编译时产出）
 
     @property
     def citation_count(self) -> int:

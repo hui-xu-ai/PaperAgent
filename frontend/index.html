@@ -322,6 +322,46 @@
               </div>
             </div>
           </section>
+
+          <!-- T1：翻译模型（独立路由，可选） -->
+          <section class="scard wide">
+            <h4>翻译模型 <span class="muted" style="font-weight:normal;font-size:0.9em">（可选；启用 1 个=切换，启用多个=并行轮询提速，都不启用=用主模型）</span></h4>
+            <div id="translate-provider-display">
+              <p class="muted" id="translate-provider-none">未配置翻译专用模型（使用主模型翻译）</p>
+              <div id="translate-provider-info" style="display:none">
+                <table class="provider-table">
+                  <thead><tr><th>启用</th><th>名称</th><th>Base URL</th><th>模型</th><th>操作</th></tr></thead>
+                  <tbody id="translate-provider-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="btn small" id="translate-provider-edit">添加翻译模型</button>
+            </div>
+            <div class="provider-form modal-mask" id="translate-provider-form" style="display:none">
+              <div class="pform-modal modal">
+                <div class="pform-head">翻译专用模型</div>
+                <label class="pform-row">名称 <input id="tpf-name" placeholder="如 硅基流动（翻译）"></label>
+                <label class="pform-row">Base URL <input id="tpf-base" placeholder="https://api.siliconflow.cn/v1"></label>
+                <label class="pform-row">模型 <input id="tpf-model" placeholder="tencent/Hunyuan-MT-7B"></label>
+                <label class="pform-row">API Key
+                  <span style="display:flex;gap:6px;align-items:center">
+                    <input id="tpf-key" type="password" placeholder="sk-..." style="flex:1">
+                    <button type="button" class="btn small" id="tpf-key-toggle" title="显示/隐藏密钥">显示</button>
+                  </span>
+                </label>
+                <label class="pform-row">输出上限 max_tokens（留空=64000）
+                  <input id="tpf-max" type="number" step="1" min="1" placeholder="8192"></label>
+                <div class="pform-actions">
+                  <button class="btn small" id="tpf-test">测试连接</button>
+                  <span id="tpf-test-result" class="muted"></span>
+                  <button class="btn small" id="tpf-clear">清除（用主模型）</button>
+                  <button class="btn small" id="tpf-cancel">取消</button>
+                  <button class="btn small primary" id="tpf-save">保存</button>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
 
         <!-- 解析（自上而下：MinerU 状态条 → MinerU 参数 → PaddleOCR 参数 → AI 仲裁 → 统一保存）
@@ -1272,15 +1312,31 @@
     </div>
   </div>
 
-  <!-- 2026-09-12：知识库回收站（移出知识库的文献，产物保留，可一键恢复） -->
+  <!-- 2026-09-12：知识库回收站（移出知识库的文献，产物保留，可一键恢复）
+       2026-09-19 重设计：参考 AI检索文献库（kba-table + 搜索 + 翻页），支持灵活浏览/查找/恢复/彻底删除 -->
   <div class="modal-mask" id="trash-modal" style="display:none">
     <div class="modal trash-modal">
       <div class="modal-header">
         <h3>🗑 回收站（已移出知识库）</h3>
         <button class="btn small" id="trash-close">✕</button>
       </div>
-      <div class="settings-body">
-        <div id="trash-body"><div class="empty">加载中…</div></div>
+      <div class="settings-body trash-body">
+        <div class="trash-toolbar">
+          <input id="trash-search" class="trash-search" type="search" placeholder="搜索标题 / DOI / 期刊…">
+          <span id="trash-count" class="muted"></span>
+          <button class="btn small danger" id="trash-empty">🗑 清空回收站</button>
+        </div>
+        <div class="trash-tablewrap">
+          <table class="kba-table trash-table">
+            <thead><tr><th>标题</th><th>期刊</th><th>年</th><th>DOI</th><th>移出时间</th><th class="trash-ops-th">操作</th></tr></thead>
+            <tbody id="trash-tbody"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="trash-pager">
+          <button class="btn small" id="trash-prev">上一页</button>
+          <span id="trash-page" class="muted"></span>
+          <button class="btn small" id="trash-next">下一页</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1525,7 +1581,16 @@
   <!-- 图谱可视化库（three.js UMD 全局 THREE；graphology/fa2 由 layout.worker 自行 importScripts）-->
   <script src="/vendor/three/three.min.js"></script>
   <script src="/version.js"></script>
-  <!-- lit-admin.js 必须在 app.js 之前（boot() 同步调用 bindLitAdmin）-->
+  <!-- utils.js + ui.js：核心工具 + UI 交互层（从 app.js 拆出）-->
+  <script src="/js/utils.js"></script>
+  <script src="/js/ui.js"></script>
+  <script src="/js/sessions.js"></script>
+  <script src="/js/papers.js"></script>
+  <script src="/js/diary.js"></script>
+  <script src="/js/settings.js"></script>
+  <script src="/js/reader.js"></script>
+  <script src="/js/kb.js"></script>
+  <script src="/js/chat.js"></script>
   <script src="/js/lit-admin.js"></script>
   <script src="/app.js"></script>
   <!-- 文献计量图谱（ES 模块，自绑定 #lit-graph-btn，独立于 app.js）-->

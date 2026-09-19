@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 KEY_PROVIDERS = "providers"
 KEY_ACTIVE = "active_provider"
+KEY_TRANSLATION_PROVIDER = "translation_provider"  # T1：旧单条翻译配置（已迁移入池，仅兼容回读）
+KEY_TRANSLATION_PROVIDERS = "translation_providers"  # 2026-09-19 翻译模型池（列表，enabled 标志）
 KEY_PRICES = "prices"
 KEY_KB_PATH = "kb_path"
 # MinerU 主通道配置（.env 单一来源：MINERU_API_KEY / MINERU_PARSER）
@@ -486,6 +488,87 @@ class SettingsService:
         if not any(p["id"] == provider_id for p in providers):
             raise ValueError(f"供应商不存在: {provider_id}")
         self.store.set_setting(KEY_ACTIVE, provider_id)
+
+    # ---------------------------------------------------------- 翻译模型池（多模型：切换/并行）
+    # 2026-09-19 从单个翻译供应商升级为**池**：`translation_providers` 为 JSON 列表，每个条目
+    # 带 `enabled` 标志。**启用 1 个 = 切换模式**（只用该模型）；**启用多个 = 并行模式**
+    # （轮询分发各批次，提速）。都不启用 = 回落主模型。旧单条 `translation_provider` 自动迁移入池。
+    def get_translation_providers(self, masked: bool = True) -> list[dict]:
+        """获取翻译供应商池（全部，含未启用的）。[] = 未配置（回落主模型）。"""
+        raw = self.store.get_setting(KEY_TRANSLATION_PROVIDERS)
+        providers: list[dict] = []
+        if raw:
+            try:
+                v = json.loads(raw)
+                providers = v if isinstance(v, list) else []
+            except json.JSONDecodeError:
+                providers = []
+        # 一次性迁移：旧单条 → 池
+        if not providers:
+            old = self.store.get_setting(KEY_TRANSLATION_PROVIDER)
+            if old:
+                try:
+                    single = json.loads(old)
+                    if isinstance(single, dict) and single.get("model"):
+                        single["enabled"] = True
+                        providers = [single]
+                        self.store.set_setting(
+                            KEY_TRANSLATION_PROVIDERS,
+                            json.dumps(providers, ensure_ascii=False))
+                except json.JSONDecodeError:
+                    pass
+        if masked:
+            out = []
+            for p in providers:
+                q = dict(p)
+                q["api_key"] = _mask(q.get("api_key", ""))
+                out.append(q)
+            return out
+        return providers
+
+    def get_enabled_translation_providers(self, masked: bool = False) -> list[dict]:
+        """池内**已启用**的翻译供应商（实际参与翻译路由的）。"""
+        return [p for p in self.get_translation_providers(masked=masked)
+                if p.get("enabled")]
+
+    def save_translation_providers(self, providers: list[dict]) -> None:
+        """保存翻译供应商池（整体替换；脱敏 key 保留原值；补 id/enabled 缺省）。"""
+        current = {p["id"]: p for p in self.get_translation_providers(masked=False)}
+        cleaned = []
+        for p in providers:
+            p = dict(p)
+            if not p.get("id"):
+                p["id"] = "translate_" + uuid.uuid4().hex[:8]
+            cur = current.get(p["id"], {})
+            if _is_masked_key(p.get("api_key", ""), cur.get("api_key", "")):
+                p["api_key"] = cur.get("api_key", "")
+            p["enabled"] = bool(p.get("enabled"))
+            cleaned.append(p)
+        self.store.set_setting(KEY_TRANSLATION_PROVIDERS,
+                               json.dumps(cleaned, ensure_ascii=False))
+        # 迁移后清掉旧单条键（避免回读歧义）
+        if self.store.get_setting(KEY_TRANSLATION_PROVIDER):
+            self.store.set_setting(KEY_TRANSLATION_PROVIDER, "")
+
+    # 兼容旧调用点（单数语义 = 第一个启用的）
+    def get_translation_provider(self, masked: bool = True) -> dict | None:
+        """兼容包装：返回第一个**已启用**的翻译供应商（无则 None）。"""
+        enabled = self.get_enabled_translation_providers(masked=masked)
+        return enabled[0] if enabled else None
+
+    def save_translation_provider(self, provider: dict | None) -> None:
+        """兼容包装：按单条保存（None=清空池）。"""
+        if not provider:
+            self.clear_translation_provider()
+            return
+        provider = dict(provider)
+        provider.setdefault("enabled", True)
+        self.save_translation_providers([provider])
+
+    def clear_translation_provider(self) -> None:
+        """清除翻译供应商池（回落主模型）。"""
+        self.store.set_setting(KEY_TRANSLATION_PROVIDERS, "")
+        self.store.set_setting(KEY_TRANSLATION_PROVIDER, "")
 
     # ---------------------------------------------------------- 供应商并发能力（T）
     def provider_supports_concurrency(self, provider_id: str) -> bool:
@@ -967,6 +1050,7 @@ class SettingsService:
         return {
             "providers": self.get_providers(masked=True),
             "active_provider": self.get_active_id(),
+            "translation_providers": self.get_translation_providers(masked=True),
             "prices": self.get_prices(),
             "kb_path": self.get_kb_path(),
             "kb_copy_mode": self.get_kb_copy_mode(),

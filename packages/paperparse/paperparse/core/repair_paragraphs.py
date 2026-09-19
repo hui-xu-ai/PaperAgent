@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from paperparse.core.md_align import (align_md_to_skeleton, norm_text, _dice,
                                       _tokens)
+from paperparse.core.block_classify import _is_caption_line
 from paperparse.core.para_align import strip_latex
 
 __all__ = ["repair_md_paragraphs", "RepairResult", "RepairItem"]
@@ -231,19 +232,23 @@ def repair_md_paragraphs(md_text: str, skeleton, *,
     # 同一 body 段，如 "(d) Dual-responsive…\n![](img)\nFigure 1. …"）→
     #   图注文本单独成 caption（防丢失），子图标题/面板标签噪声丢弃，
     #   使正文邻接干净（修 6/8 漏拼 + 图注 1/4/5/7 丢失 + 问题1）。
-    _CAP_START = re.compile(r"(?:fig(?:ure)?|table|scheme)\.?\s*\d+", re.I)
+    # 严格判据：复用 block_classify._is_caption_line 单一来源（排除正文子图引用
+    # "Fig. 2a shows" 与大写子图 "Fig. 2A illustrates"，与 md_align R10 同源）
+    _CAP_POS = re.compile(r"(?:fig(?:ure)?|table|scheme)\.?\s*\d+", re.I)
     for _p in md_paras:
         if _p.kind != "body" or "![" not in (_p.text or ""):
             continue
         _cand = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", (_p.text or ""))
         _cand = re.sub(r"^(?:\([a-h]\)[\s,;]*\n?)+", "", _cand).strip()
-        # 图注可能在段中（"(d) 子图标题…\nFigure 1. …"）→ 搜索定位图注起点
-        _m = _CAP_START.search(_cand)
+        # 图注可能在段中（"(d) 子图标题…\nFigure 1. …"）→ 逐个图号位置测试是否真题注起点
+        _m = next((mm for mm in _CAP_POS.finditer(_cand)
+                   if _is_caption_line(_cand[mm.start():])), None)
         if _m:
             _p.kind = "caption"          # 图注文本独立保留（子图标题/标签丢弃）
             _p.text = _cand[_m.start():].strip()
-        else:
-            _p.kind = "image"            # 纯图区噪声 → build 层丢弃
+        elif len(_cand) <= 60:
+            _p.kind = "image"            # 纯图区噪声（无题注无正文）→ build 层丢弃
+        # else：有实质正文但无真题注 → 保持 body（不丢弃，防正文引用段被误删）
 
     _PANEL_ONLY = re.compile(r"^(?:\([a-h]\)\s*(?:\d)?[\s,;]*)+$")
     _DIGIT_ONLY = re.compile(r"^\d{1,3}$")          # 独立页码噪声

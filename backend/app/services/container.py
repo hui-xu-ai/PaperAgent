@@ -170,6 +170,17 @@ def init_container(settings: Settings) -> None:
         _chat = None
         _llm_ready = False
         logger.warning("未配置 LLM 供应商：翻译/对话功能不可用（设置中心配置后保存即生效）")
+    # T1：翻译专用 AI 池（可选，独立于主模型；启用多个 = 轮询并行）
+    translate_pool = _settings_svc.get_enabled_translation_providers(masked=False)
+    if translate_pool:
+        try:
+            from .llm_service import init_translation_ais
+            init_translation_ais(translate_pool, _guard)
+            logger.info("翻译专用 AI 池已加载: %d 个 (%s)",
+                        len(translate_pool),
+                        ", ".join(p.get("model", "?") for p in translate_pool))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("翻译专用 AI 池加载失败（回落主模型）: %s", e)
     _event_bus.publish("info", "system", "startup",
                        "服务启动完成", {"llm_ready": _llm_ready,
                                       "provider": (provider or {}).get("id", "")})
@@ -358,6 +369,35 @@ def apply_provider(provider: dict | None) -> bool:
     _chat = None
     _llm_ready = False
     return False
+
+
+def apply_translation_providers(providers: list[dict] | None) -> bool:
+    """应用翻译供应商池（2026-09-19 多模型）。providers=已启用列表；空/None → 回落主模型。
+
+    返回是否至少一个生效。
+    """
+    from .llm_service import clear_translation_ai, init_translation_ais
+    pool = [p for p in (providers or []) if p.get("api_key")]
+    if pool:
+        try:
+            init_translation_ais(pool, _guard)
+            if _event_bus:
+                _event_bus.publish(
+                    "info", "settings", "translation_provider_switch",
+                    f"翻译 AI 池生效: {len(pool)} 个 ({', '.join(p.get('model','?') for p in pool)})",
+                    {"providers": [p.get("id") for p in pool]})
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.error("翻译 AI 池初始化失败: %s", e)
+            clear_translation_ai()
+            return False
+    clear_translation_ai()
+    return False
+
+
+def apply_translation_provider(provider: dict | None) -> bool:
+    """兼容包装：单条应用（None=清除）。委托给池版本。"""
+    return apply_translation_providers([provider] if provider else None)
 
 
 def llm_ready() -> bool:

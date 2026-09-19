@@ -77,6 +77,9 @@ body {
 .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .btn.primary:hover { background: var(--primary-hover); }
 .btn.primary:disabled { opacity: .5; cursor: not-allowed; }
+.btn.danger { background: #fff; border-color: var(--err); color: var(--err); }
+.btn.danger:hover { background: var(--err); color: #fff; }
+.btn.danger:disabled { opacity: .5; cursor: not-allowed; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn.small { padding: 3px 9px; font-size: 11.5px; }
 .icon-btn { border: none; background: none; font-size: 13px; color: var(--muted); cursor: pointer; padding: 4px 7px; border-radius: 6px; display: inline-flex; align-items: center; }
@@ -924,6 +927,15 @@ body[data-theme="paper"] {  /* 纸质 · 豆绿护眼 */
 /* ══════════ 管理模式工具调用事件（2026-08-27）══════════ */
 .tool-call { border: 1px solid var(--border); border-left: 3px solid var(--primary); border-radius: 8px; background: var(--panel-2, rgba(127,127,127,.06)); padding: 6px 10px; margin: 4px 0; font-size: 12px; }
 .tool-call .tool-summary { color: var(--muted); margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
+.limit-warning { border: 1px solid #e6a817; border-left: 3px solid #e6a817; border-radius: 8px; background: rgba(230,168,23,.08); padding: 6px 10px; margin: 6px 0; font-size: 12px; color: #b8860b; }
+.limit-card { border: 1px solid var(--border); border-left: 3px solid #d32f2f; border-radius: 8px; background: var(--panel-2, rgba(127,127,127,.06)); padding: 10px 14px; margin: 8px 0; }
+.limit-card .limit-body { font-size: 13px; line-height: 1.6; margin-bottom: 10px; }
+.limit-card .limit-body strong { color: #d32f2f; }
+.limit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.btn-sm { padding: 4px 12px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); cursor: pointer; }
+.btn-sm:hover { background: var(--hover); }
+.btn-sm.btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+.btn-sm.btn-primary:hover { opacity: .85; }
 .answer-text { white-space: pre-wrap; }
 
 
@@ -1069,17 +1081,27 @@ body[data-theme="paper"] {  /* 纸质 · 豆绿护眼 */
   background: var(--primary-soft); cursor: pointer; }
 .imp-page .scard { width: 100%; }
 
-/* ── 知识库回收站（2026-09-12 用户需求）── */
-.modal.trash-modal { width: 720px; height: auto; max-height: 80vh; }
-.trash-hint { font-size: 11.5px; margin-bottom: 8px; }
-.trash-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
-  border-bottom: 1px solid var(--border); }
-.trash-row:last-child { border-bottom: none; }
-.trash-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; font-size: 12.5px; color: var(--text); }
-.trash-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; font-size: 11px; }
-.trash-row .trash-restore { flex: 0 0 auto; white-space: nowrap; }
+/* ── 知识库回收站（2026-09-12 用户需求 · 2026-09-19 表格化重设计：对齐 AI 检索文献列表）── */
+.modal.trash-modal { width: 880px; max-width: 94vw; height: auto; max-height: 82vh; }
+.trash-modal .settings-body.trash-body {
+  display: flex; flex-direction: column; gap: 8px; overflow: hidden;
+  padding: 10px 20px 16px; }
+.trash-toolbar { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.trash-search { flex: 1 1 auto; min-width: 160px; padding: 5px 9px; font-size: 12.5px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg, #fff); color: var(--text); }
+.trash-search:focus { outline: none; border-color: var(--primary); }
+.trash-toolbar #trash-count { font-size: 11.5px; white-space: nowrap; flex: 0 0 auto; }
+.trash-tablewrap { flex: 1 1 auto; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.trash-table { margin-top: 0; }
+.trash-table thead th { position: sticky; top: 0; z-index: 1; }
+.trash-table td.trash-cell-title { max-width: 260px; }
+.trash-table td.trash-cell-doi { max-width: 190px; word-break: break-all; }
+.trash-table td.trash-ops { white-space: nowrap; }
+.trash-table td.trash-ops .btn { margin-right: 5px; }
+.trash-table td.trash-ops .btn:last-child { margin-right: 0; }
+.trash-ops-th { width: 1%; white-space: nowrap; }
+.trash-pager { display: flex; align-items: center; justify-content: center; gap: 12px; flex: 0 0 auto; }
+.trash-pager #trash-page { font-size: 11.5px; }
 
 /* 文件选择行 + 结果区 */
 .imp-file-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }

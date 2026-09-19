@@ -117,6 +117,11 @@ _REF_SUP_BARE = re.compile(
 def _sup_inline_refs(text: str) -> str:
     """[局部] 正文引用编号统一上标（mineru 部分漏转 <sup>[n]</sup>；已上标的
     占位保护不动；仅 body 段调用——参考文献区/表格由 build_markdown 分流）。"""
+    # MinerU 伪公式：把 HTML 上标/下标包进数学定界符（"$<sup>[1]</sup>$"、"$<sup>[2–4]</sup>$"）。
+    # HTML 标签不是 LaTeX，$ 包裹会让前端当公式送 KaTeX 把标签转义成可见文本（用户报
+    # "<sup>[1−5]</sup> 无法渲染"），AI 上下文也带噪声 → 脱去纯 sup/sub 标签外层的 $。
+    # 紧判据：$…$ 内**只含** <sup>/<sub> 标签（无其它 LaTeX）才脱，绝不碰真公式 "$x^2$"。
+    text = re.sub(r"\$(\s*(?:<su[bp]>[^<>]*</su[bp]>\s*)+)\$", r"\1", text, flags=re.I)
     prot: list[str] = []
 
     def _save(m):
@@ -1069,7 +1074,21 @@ def build_markdown(repair_items: list, figures: list | None = None,
     out: list[str] = []
     in_refs = False
     ref_rows: list[tuple[int, str]] = []
-    for i, r in enumerate(repair_items):
+    # 2026-09-19（用户要求）：干净版 en.md（include_references=False）从**首个尾部声明段**
+    # （致谢/利益冲突/CRediT 作者贡献/数据可用性/支撑信息/参考文献…）起截断其后全部——
+    # 这些是干扰段落，不进供 AI 翻译/编译/问答的干净全文。mineru_full.md（原始备份，
+    # include_references=True）保留全部内容不动。判据单一来源 block_classify.is_tail_noise。
+    items = repair_items
+    if not include_references:
+        from paperparse.core.block_classify import is_tail_noise
+        _total = len(repair_items)
+        _cut = next((i for i, r in enumerate(repair_items)
+                     if is_tail_noise((r.text or "").strip(), i, _total,
+                                      is_heading=(r.kind == "heading"),
+                                      section=getattr(r, "section", "") or "")),
+                    _total)
+        items = repair_items[:_cut]
+    for i, r in enumerate(items):
         text = (r.text or "").strip()
         if not text:
             continue

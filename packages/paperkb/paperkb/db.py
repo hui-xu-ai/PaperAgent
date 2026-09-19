@@ -25,7 +25,7 @@ _META_COLS = (
     "journal", "year", "month", "issn", "eissn", "keywords_json",
     "research_areas_json", "wos_categories_json", "funding", "times_cited",
     "wos_id", "references_json", "source_file", "imported_at", "paper_id",
-    "journal_override", "kind",
+    "journal_override", "kind", "ai_value_score", "topic_score",
 )
 
 # papers_meta 建表 DDL 抽成常量：迁移层 `migrations/0003_meta_pk_rid.py` 重建该表时
@@ -54,8 +54,10 @@ PAPERS_META_DDL = """CREATE TABLE IF NOT EXISTS papers_meta (
     imported_at TEXT DEFAULT '',
     paper_id INTEGER,
     journal_override TEXT DEFAULT '',
-    kind TEXT DEFAULT ''           -- 资源类型（P0-B step3）：paper/thesis/book/chapter/
+    kind TEXT DEFAULT '',           -- 资源类型（P0-B step3）：paper/thesis/book/chapter/
                                    -- patent/standard/note/si/review；空=由 rid 前缀推导
+    ai_value_score REAL,            -- AI 价值评分 0-5（L1+L2 编译时产出）
+    topic_score REAL                -- 主题匹配评分 0-1（L1+L2 编译时产出）
 );
 """
 
@@ -190,6 +192,13 @@ class KBStore:
                 logger.warning("FTS 分词器升级 trigram：索引已清空，正在从 kb 重建…")
                 rebuilt = self.reindex_from_kb(fulltext=True)
                 logger.warning("FTS trigram 重建完成: %s", rebuilt)
+            # 迁移：papers_meta 补 AI 评分列（2026-09-19）
+            meta_cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(papers_meta)").fetchall()}
+            for col in ("ai_value_score", "topic_score"):
+                if meta_cols and col not in meta_cols:
+                    conn.execute(f"ALTER TABLE papers_meta ADD COLUMN {col} REAL")
+                    logger.info("papers_meta 补列: %s", col)
 
     # ---------------------------------------------------------- 标识 ↔ rid
     def resolve_rid(self, key: str) -> str:
@@ -297,7 +306,7 @@ class KBStore:
             # **整行替换**（bib 更准，本就该覆盖）。注意这不是"bib 搞坏了数据"，而是
             # "写入语义是整行替换而非逐字段合并"。
             old = conn.execute(
-                "SELECT paper_id, kind, journal_override FROM papers_meta WHERE rid=?",
+                "SELECT paper_id, kind, journal_override, ai_value_score, topic_score FROM papers_meta WHERE rid=?",
                 (rid,)).fetchone()
             if old is not None:
                 keep: dict = {}
@@ -308,6 +317,10 @@ class KBStore:
                 if (not (getattr(meta, "journal_override", "") or "").strip()
                         and (old["journal_override"] or "")):
                     keep["journal_override"] = old["journal_override"]
+                if getattr(meta, "ai_value_score", None) is None and old["ai_value_score"] is not None:
+                    keep["ai_value_score"] = old["ai_value_score"]
+                if getattr(meta, "topic_score", None) is None and old["topic_score"] is not None:
+                    keep["topic_score"] = old["topic_score"]
                 if keep:
                     meta = meta.model_copy(update=keep)
             conn.execute(
@@ -316,8 +329,9 @@ class KBStore:
                     journal,year,
                     month,issn,eissn,keywords_json,research_areas_json,
                     wos_categories_json,funding,times_cited,wos_id,references_json,
-                    source_file,imported_at,paper_id,journal_override,kind)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    source_file,imported_at,paper_id,journal_override,kind,
+                    ai_value_score,topic_score)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (rid, doi, meta.title, meta.abstract,
                  _json(meta.authors), _json(meta.affiliations),
                  _json(getattr(meta, "corresponding", []) or []),
@@ -328,7 +342,9 @@ class KBStore:
                  _json([r.model_dump() for r in meta.references]),
                  meta.source_file, now, meta.paper_id,
                  getattr(meta, "journal_override", "") or "",
-                 (getattr(meta, "kind", "") or "").strip().lower()))
+                 (getattr(meta, "kind", "") or "").strip().lower(),
+                 getattr(meta, "ai_value_score", None),
+                 getattr(meta, "topic_score", None)))
             # FTS 同步（删除旧行 + 插入新行）
             conn.execute("DELETE FROM meta_fts WHERE rid=?", (rid,))
             conn.execute(
@@ -460,6 +476,25 @@ class KBStore:
                 "SELECT key, doi, pdf_md5, paper_id FROM doi_md5_map ORDER BY key"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ---------------------------------------------------------- AI 评分
+    def update_ai_scores(self, paper_doi: str, *,
+                         ai_value_score: float | None = None,
+                         topic_score: float | None = None) -> None:
+        """写入 L1+L2 编译产出的 AI 评分（零额外成本：编译时顺手打分）。"""
+        sets, vals = [], []
+        if ai_value_score is not None:
+            sets.append("ai_value_score=?")
+            vals.append(round(float(ai_value_score), 2))
+        if topic_score is not None:
+            sets.append("topic_score=?")
+            vals.append(round(float(topic_score), 4))
+        if not sets:
+            return
+        vals.append(paper_doi)
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE papers_meta SET {', '.join(sets)} WHERE rid=?", vals)
 
     # ---------------------------------------------------------- compile_jobs
     def upsert_job(self, paper_doi: str, level: str, status: str = "pending",
@@ -1018,6 +1053,8 @@ def _row_to_meta(row: sqlite3.Row | None) -> PaperMeta | None:
         paper_id=row["paper_id"],
         journal_override=row["journal_override"] or "" if "journal_override" in row.keys() else "",
         kind=(row["kind"] if "kind" in row.keys() else "") or "",
+        ai_value_score=(row["ai_value_score"] if "ai_value_score" in row.keys() else None),
+        topic_score=(row["topic_score"] if "topic_score" in row.keys() else None),
     )
 
 

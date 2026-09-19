@@ -71,14 +71,27 @@ _TAIL_STRONG_RE = re.compile(
 _TAIL_SHORT_CHARS = 200      # 位于前半段时，只有"短声明段"才认作结尾杂项
 
 
-def _is_tail_noise(text: str, idx: int, total: int) -> bool:
-    """[局部] 该段是否"结尾杂项"（致谢/利益冲突/参考文献…，出现即截断其后全部段落）"""
-    t = text or ""
-    if not _TAIL_NOISE_RE.match(t):
+def _is_tail_noise(text: str, idx: int, total: int, section: str = "",
+                   is_heading: bool = False) -> bool:
+    """[局部] 该段是否"结尾杂项"（致谢/利益冲突/参考文献…，出现即截断其后全部段落）
+
+    2026-09-19 修复：尾部声明的**标题段** text_en 带 markdown "## " 前缀
+    （"## CRediT authorship contribution statement"），旧判据 `^\\s*(credit authorship|…)`
+    匹配不到 → 标题段漏网，只有恰好命中的正文段才触发截断（snb 整篇没截、cej/ncomms
+    漏掉声明标题）。这里先剥 "#+ " 前缀再匹配，并**同时匹配 section 字段**（节名干净，
+    声明段落的 section 即 "Acknowledgements"/"Data availability" 等）。
+    **标题段无歧义**：is_heading 命中即截断，不受"后半段/短段"位置门限约束
+    （修 cej：CRediT 标题在 50% 线前一段、且 "credit authorship" 不在强模式表 → 漏截）。
+    """
+    t = re.sub(r"^#+\s*", "", (text or "")).strip()   # 剥 markdown 标题前缀
+    sec = (section or "").strip()
+    if not (_TAIL_NOISE_RE.match(t) or _TAIL_NOISE_RE.match(sec)):
         return False
+    if is_heading:
+        return True                       # 尾部声明标题段：无歧义，直接截断
     if total > 4 and idx >= total * _TAIL_START_FRAC:
         return True                       # 后半段：命中原样截断
-    return len(t) <= _TAIL_SHORT_CHARS and bool(_TAIL_STRONG_RE.match(t))
+    return len(t) <= _TAIL_SHORT_CHARS and bool(_TAIL_STRONG_RE.match(t) or _TAIL_STRONG_RE.match(sec))
 
 
 def tail_cut_index(doc: PaperDoc) -> int:
@@ -88,7 +101,9 @@ def tail_cut_index(doc: PaperDoc) -> int:
     """
     paras = doc.paragraphs
     for i, p in enumerate(paras):
-        if _is_tail_noise((p.text_en or "").strip(), i, len(paras)):
+        if _is_tail_noise((p.text_en or "").strip(), i, len(paras),
+                          getattr(p, "section", "") or "",
+                          bool(getattr(p, "is_heading", False))):
             return i
     return len(paras)
 

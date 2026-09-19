@@ -440,6 +440,11 @@ class TaskManager:
         try:
             from .container import get_guard
             get_guard().reset_context("engine")
+            # 2026-09-19：combined（解析+翻译）走 context="translate"，此前**只重置 engine**，
+            # 导致 translate 计数跨论文累计——批量导入时第一篇吃满 80 次后，后续每篇翻译
+            # 立即被红线拦截失败（实测论文 12-15 全 failed）。与独立 translate_now 路径
+            # （kbmeta_service.reset_context("translate")）对齐：按篇重置 translate 计数。
+            get_guard().reset_context("translate")
         except Exception:  # noqa: BLE001 - 重置失败不阻塞（按累计限制兜底）
             pass
         try:

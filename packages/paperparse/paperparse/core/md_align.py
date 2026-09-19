@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+
+# caption 严格判据单一真相源（block_classify R10）：数字后须标点/大写，排除正文子图引用
+from paperparse.core.block_classify import _is_caption_line
 from typing import Optional
 
 from paperparse.core.para_align import strip_latex
@@ -120,8 +123,8 @@ def parse_md_paragraphs(md_text: str) -> list[MdPara]:
         elif first.startswith("!["):
             kind = "image"
             # 图片标记后紧跟图注（同一块内 "![](...)\nFig. 1. caption"）→ 拆出 caption
-            if len(lines) > 1 and re.match(
-                    r"^(fig(?:ure)?|table|scheme)\.?\s*\d+", lines[1], re.I):
+            # 严格判据：数字后须标点/大写，排除正文子图引用 "Fig. 1a shows"（R10 同源）
+            if len(lines) > 1 and _is_caption_line(lines[1]):
                 paras.append(MdPara(idx=idx, text=block, kind=kind,
                                     norm=norm_text(block), section=section))
                 idx += 1
@@ -130,7 +133,7 @@ def parse_md_paragraphs(md_text: str) -> list[MdPara]:
                                     norm=norm_text(cap_block), section=section))
                 idx += 1
                 continue
-        elif re.match(r"^(fig(?:ure)?|table|scheme)\.?\s*\d+", first, re.I):
+        elif _is_caption_line(first):
             kind = "caption"
         paras.append(MdPara(idx=idx, text=block, kind=kind,
                            norm=norm_text(block), section=section))

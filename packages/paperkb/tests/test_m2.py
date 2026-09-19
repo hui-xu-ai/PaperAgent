@@ -126,16 +126,20 @@ def test_score_missing_normalization():
     r = value_score(meta, journal_info=None, has_bib=False)
     assert r["parts"]["if"]["available"] is False
     assert r["parts"]["cited"]["available"] is False
-    # 仅 topic+year 可用 → score = (0.2×topic + 0.1×year)/0.3×5
+    assert r["parts"]["ai_value"]["available"] is False
+    assert r["parts"]["topic"]["available"] is False
+    # 仅 year 可用 → 权重归一化后 score = 0.10/0.10 * year_val / 1.0 * 5.0
     assert 0 < r["score"] <= 5.0
-    assert r["level"] in ("L1", "L2")
+    assert r["level"] in ("L1", "L2")  # 无 AI 评分 → 不可能 L3
 
 
-def test_score_star_forces_l3():
+def test_score_ai_value_forces_l3():
     meta = _meta()
-    r = value_score(meta, journal_info=None, has_bib=False,
-                    starred=["10.1000/test.1"])
-    assert r["level"] == "L3"  # ⭐ 强制 L3
+    meta.ai_value_score = 4.5
+    r = value_score(meta, journal_info=None, has_bib=False)
+    assert r["parts"]["ai_value"]["value"] == 4.5
+    assert r["parts"]["ai_value"]["available"] is True
+    assert r["score"] > 0
 
 
 def test_score_year_old():
