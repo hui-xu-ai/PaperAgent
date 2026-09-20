@@ -95,6 +95,52 @@ def _strip_html_tags(text: str) -> str:
     """清理标准 HTML 标签（保留 [[MATHn]] 等自定义标记）。"""
     return _HTML_TAG_RE.sub('', text or '')
 
+
+# 嵌套 $...$ 修复（2026-09-20 用户反馈：zh.md/en_zh.md 中出现 $\mathrm{Co(O$_{x}$/P$_{x}$)@P-LIG}$）
+# LLM 有时会错误地把 [[MATHn]] 展开为嵌套 $...$ 格式（如 $_{x}$），导致 LaTeX 渲染失败。
+# 需要把内层的 $...$ 剥离，只保留内容（_{x}）。
+
+
+def _fix_nested_dollars(text: str) -> str:
+    """修复嵌套 $...$：把 $_{x}$ → _{x}、$^{2}$ → ^{2} 等内层定界符剥离。
+    
+    仅处理**外层已有 $...$ 包裹**的情况（如 $\mathrm{...}_{x}...$ 内的 $_{x}$）。
+    独立公式（整段就是 $...$）不动。
+    """
+    if not text or '$' not in text:
+        return text
+    
+    # 策略：找到所有 $...$ 区间，检查是否有嵌套的 $...$
+    # 如果有，剥离内层的所有 $ 定界符对
+    result = []
+    i = 0
+    n = len(text)
+    
+    while i < n:
+        if text[i] == '$':
+            # 找到最后一个 $ 作为闭合定界符（贪婪匹配）
+            j = text.rfind('$', i + 1)
+            if j != -1 and j > i + 1:
+                inner = text[i+1:j]
+                # 检查内层是否有嵌套的 $...$
+                if '$' in inner:
+                    # 剥离内层的所有 $ 定界符对：$content$ → content
+                    # 使用循环直到没有更多 $...$ 对
+                    while '$' in inner:
+                        inner = re.sub(r'\$([^$]*)\$', r'\1', inner)
+                    result.append('$' + inner + '$')
+                else:
+                    result.append(text[i:j+1])
+                i = j + 1
+            else:
+                result.append(text[i])
+                i += 1
+        else:
+            result.append(text[i])
+            i += 1
+    
+    return ''.join(result)
+
 # 模型"拒绝/占位"式译文（批4 防御）：这类文本**不是译文**，绝不能落进 text_zh（否则会
 # 渲染进 zh.md/en_zh.md 污染阅读）。实测来源：目标段落没出现在给模型的全文里 → 模型回
 # 「（原文未提供该段内容，无法翻译。）」。根因已修（待译清单与共享上下文同源），此处兜底
@@ -314,6 +360,7 @@ def _apply_translations(data_out: dict, paras: list[dict],
             result = re.sub(pat, lambda _mm, _r=repl: _r, result)  # lambda 防转义解析
         result = _strip_control(result)
         result = _strip_html_tags(result)  # 2026-09-19：清理 <sup> 等 HTML 标签
+        result = _fix_nested_dollars(result)  # 2026-09-20：修复嵌套 $...$（$_{x}$ → _{x}）
         if not result.strip() or _is_refusal(result):
             rejected += 1
             continue
@@ -527,6 +574,7 @@ def _translate_oversized(llm, paras: list[dict], targets: list[int],
             full = re.sub(pat, lambda _m, _r=repl: _r, full)
         full = _strip_control(full)
         full = _strip_html_tags(full)  # 2026-09-19：清理 <sup> 等 HTML 标签
+        full = _fix_nested_dollars(full)  # 2026-09-20：修复嵌套 $...$（$_{x}$ → _{x}）
         if full.strip() and not _is_refusal(full):
             paras[idx]["text_zh"] = full
             translated += 1
