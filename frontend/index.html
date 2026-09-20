@@ -386,6 +386,14 @@
                        aria-describedby="mineru-key-desc">
                 <span class="hint" id="mineru-key-desc">写入 .env 的 MINERU_API_KEY；<b>未配置时解析功能被禁用</b>（免费/本地通道已按质量要求移除）。</span>
               </label>
+              <label class="fitem" for="mineru-model-version">解析模型
+                <select id="mineru-model-version" aria-describedby="mineru-model-version-desc">
+                  <option value="vlm">VLM（推荐，视觉语言模型）</option>
+                  <option value="pipeline">Pipeline（传统管线）</option>
+                  <option value="mineru-html">MinerU-HTML（HTML 输出）</option>
+                </select>
+                <span class="hint" id="mineru-model-version-desc">VLM 对公式/表格/版式识别更优；Pipeline 速度更快但精度略低。</span>
+              </label>
               <label class="fitem" for="mineru-language">解析语言
                 <select id="mineru-language" aria-describedby="mineru-language-desc">
                   <option value="auto">自动判定（默认）</option>
@@ -409,6 +417,27 @@
                 </label>
                 <span class="hint" id="mineru-table-desc">开启后表格转 Markdown 表格；关闭可减少错乱表格。</span>
               </div>
+              <details class="advanced-paths">
+                <summary>API 路径（MinerU 版本升级时可调整，默认 v4）</summary>
+                <div class="fgrid" style="margin-top:0.5rem">
+                  <label class="fitem" for="mineru-upload-path">上传路径
+                    <input id="mineru-upload-path" type="text" placeholder="/file-urls/batch">
+                    <span class="hint">POST 申请临时上传链接</span>
+                  </label>
+                  <label class="fitem" for="mineru-submit-path">提交路径
+                    <input id="mineru-submit-path" type="text" placeholder="/extract/task">
+                    <span class="hint">POST 提交解析任务</span>
+                  </label>
+                  <label class="fitem" for="mineru-poll-path">轮询路径
+                    <input id="mineru-poll-path" type="text" placeholder="/extract/task/{task_id}">
+                    <span class="hint">GET 查询任务状态（{task_id} 为占位符）</span>
+                  </label>
+                  <label class="fitem" for="mineru-batch-results-path">批量结果路径
+                    <input id="mineru-batch-results-path" type="text" placeholder="/extract-results/batch/{batch_id}">
+                    <span class="hint">GET 查询批量结果（{batch_id} 为占位符）</span>
+                  </label>
+                </div>
+              </details>
             </fieldset>
           </section>
 

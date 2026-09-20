@@ -17,7 +17,8 @@ const FOCUSABLE_SEL = 'a[href], button:not([disabled]), input:not([disabled]):no
    声明式配置代替"给每个控件单独绑一堆重复代码"；用 #settings-modal 上的事件委托捕获。 */
 const SETTINGS_DIRTY_GROUPS = [
   { group: 'parse', btn: 'parse-save', flag: 'parse-dirty', page: 'stab-parse',
-    items: ['mineru-key', 'mineru-language', 'mineru-is-ocr', 'mineru-enable-table',
+    items: ['mineru-key', 'mineru-model-version', 'mineru-language', 'mineru-is-ocr', 'mineru-enable-table',
+            'mineru-upload-path', 'mineru-submit-path', 'mineru-poll-path', 'mineru-batch-results-path',
             'po-token', 'po-base', 'po-model',
             'po-restructure-pages', 'po-merge-tables', 'po-relevel-titles',
             'parse-mode', 'parse-gate', 'parse-interval',
@@ -275,16 +276,25 @@ async function openSettings() {
 }
 
 /* ── MinerU 参数 / PaddleOCR 选项：契约字段缺失时按默认值回填（后端可能未部署完成） ── */
-const MINERU_PARAM_DEFAULTS = { language: 'auto', is_ocr: 'auto', enable_table: true };
+const MINERU_PARAM_DEFAULTS = { model_version: 'vlm', language: 'auto', is_ocr: 'auto', enable_table: true,
+  api_paths: { upload: '/file-urls/batch', submit: '/extract/task',
+               poll: '/extract/task/{task_id}', batch_results: '/extract-results/batch/{batch_id}' } };
 const PADDLE_OPTION_DEFAULTS = { restructurePages: true, mergeTables: true, relevelTitles: true };
 
 function applyMineruParams(p) {
   const v = Object.assign({}, MINERU_PARAM_DEFAULTS, p || {});
+  const mv = ['vlm', 'pipeline', 'mineru-html'].includes(v.model_version) ? v.model_version : 'vlm';
   const lang = ['auto', 'en', 'ch'].includes(v.language) ? v.language : 'auto';
   const ocr = ['auto', 'on', 'off'].includes(v.is_ocr) ? v.is_ocr : 'auto';
+  const paths = v.api_paths || MINERU_PARAM_DEFAULTS.api_paths;
+  $('mineru-model-version').value = mv;
   $('mineru-language').value = lang;
   $('mineru-is-ocr').value = ocr;
   $('mineru-enable-table').checked = v.enable_table !== false && v.enable_table !== 0;
+  $('mineru-upload-path').value = paths.upload || '';
+  $('mineru-submit-path').value = paths.submit || '';
+  $('mineru-poll-path').value = paths.poll || '';
+  $('mineru-batch-results-path').value = paths.batch_results || '';
 }
 function applyPaddleOptions(o) {
   const v = Object.assign({}, PADDLE_OPTION_DEFAULTS, o || {});
@@ -297,9 +307,16 @@ function applyPaddleOptions(o) {
 }
 function readMineruParams() {
   return {
+    model_version: $('mineru-model-version').value,
     language: $('mineru-language').value,
     is_ocr: $('mineru-is-ocr').value,
     enable_table: !!$('mineru-enable-table').checked,
+    api_paths: {
+      upload: $('mineru-upload-path').value || '/file-urls/batch',
+      submit: $('mineru-submit-path').value || '/extract/task',
+      poll: $('mineru-poll-path').value || '/extract/task/{task_id}',
+      batch_results: $('mineru-batch-results-path').value || '/extract-results/batch/{batch_id}',
+    },
   };
 }
 function readPaddleOptions() {
@@ -771,10 +788,11 @@ async function saveParse() {
     if (el) {
       el.classList.remove('warn');
       el.classList.add('ok');
-      el.textContent = '✅ 已保存（MinerU Key ' + ($('mineru-key').value ? '已设置' : '未设置')
-        + ' · 语言 ' + ($('mineru-language').selectedOptions[0]?.textContent || '')
-        + ' · mode=' + (p.mode || $('parse-mode').value)
-        + '，AI 仲裁 ' + ((p.ai_review !== false) ? '开' : '关')
+      el.textContent = '\u2705 \u5df2\u4fdd\u5b58\uff08MinerU Key ' + ($('mineru-key').value ? '\u5df2\u8bbe\u7f6e' : '\u672a\u8bbe\u7f6e')
+        + ' \u00b7 \u6a21\u578b ' + ($('mineru-model-version').selectedOptions[0]?.textContent || '')
+        + ' \u00b7 \u8bed\u8a00 ' + ($('mineru-language').selectedOptions[0]?.textContent || '')
+        + ' \u00b7 mode=' + (p.mode || $('parse-mode').value)
+        + '\uff0cAI \u4ef2\u88c1 ' + ((p.ai_review !== false) ? '\u5f00' : '\u5173')
         + '，翻译时机 ' + ((p.translate_gate || 'wait') === 'wait' ? '等待复核' : '立即')
         + '，篇间隔 ' + (p.parse_interval_sec ?? $('parse-interval').value) + 's）';
     }

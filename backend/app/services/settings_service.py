@@ -61,6 +61,7 @@ PARSE_MODES = ("dual", "single")
 # 批2：MinerU 解析质量参数（.env 单一来源；auto = 按 PDF 首页智能判定，见 paperparse.core.parse_params）
 MINERU_LANGUAGES = ("auto", "en", "ch")
 MINERU_IS_OCR_MODES = ("auto", "on", "off")
+MINERU_MODEL_VERSIONS = ("vlm", "pipeline", "mineru-html")
 # PaddleOCR optionalPayload：**权威定义在 paperparse.core.parse_params**（那里同时有默认值与文档依据）
 try:
     from paperparse.core.parse_params import DEFAULT_PADDLEOCR_OPTIONS
@@ -971,25 +972,45 @@ class SettingsService:
     @staticmethod
     def _mineru_params_from_env() -> dict:
         """MinerU 解析质量参数（实时读 .env/os.environ；auto = 智能判定，见 parse_params）。"""
+        model_version = (os.getenv("MINERU_MODEL_VERSION", "vlm") or "vlm").strip().lower()
         lang = (os.getenv("MINERU_LANGUAGE", "auto") or "auto").strip().lower()
         is_ocr = (os.getenv("MINERU_IS_OCR", "auto") or "auto").strip().lower()
         table = (os.getenv("MINERU_ENABLE_TABLE", "1") or "1").strip().lower()
-        return {"language": lang if lang in MINERU_LANGUAGES else "auto",
+        upload_path = (os.getenv("MINERU_UPLOAD_PATH", "/file-urls/batch") or "/file-urls/batch").strip()
+        submit_path = (os.getenv("MINERU_SUBMIT_PATH", "/extract/task") or "/extract/task").strip()
+        poll_path = (os.getenv("MINERU_POLL_PATH", "/extract/task/{task_id}") or "/extract/task/{task_id}").strip()
+        batch_results_path = (os.getenv("MINERU_BATCH_RESULTS_PATH", "/extract-results/batch/{batch_id}")
+                              or "/extract-results/batch/{batch_id}").strip()
+        return {"model_version": model_version if model_version in MINERU_MODEL_VERSIONS else "vlm",
+                "language": lang if lang in MINERU_LANGUAGES else "auto",
                 "is_ocr": is_ocr if is_ocr in MINERU_IS_OCR_MODES else "auto",
-                "enable_table": table not in ("0", "false", "no", "off")}
+                "enable_table": table not in ("0", "false", "no", "off"),
+                "api_paths": {"upload": upload_path, "submit": submit_path,
+                              "poll": poll_path, "batch_results": batch_results_path}}
 
     @staticmethod
     def _normalize_mineru_params(raw: dict) -> dict:
         """校验并归一化前端提交的 MinerU 参数（非法值 → 400，不静默改写用户输入）。"""
         raw = raw or {}
+        model_version = str(raw.get("model_version", "vlm") or "vlm").strip().lower()
+        if model_version not in MINERU_MODEL_VERSIONS:
+            raise ValueError("model_version 仅支持 " + "/".join(MINERU_MODEL_VERSIONS))
         lang = str(raw.get("language", "auto") or "auto").strip().lower()
         if lang not in MINERU_LANGUAGES:
             raise ValueError("language 仅支持 " + "/".join(MINERU_LANGUAGES))
         is_ocr = str(raw.get("is_ocr", "auto") or "auto").strip().lower()
         if is_ocr not in MINERU_IS_OCR_MODES:
             raise ValueError("is_ocr 仅支持 " + "/".join(MINERU_IS_OCR_MODES))
-        return {"language": lang, "is_ocr": is_ocr,
-                "enable_table": bool(raw.get("enable_table", True))}
+        api_paths = raw.get("api_paths") or {}
+        upload_path = str(api_paths.get("upload", "/file-urls/batch") or "/file-urls/batch").strip()
+        submit_path = str(api_paths.get("submit", "/extract/task") or "/extract/task").strip()
+        poll_path = str(api_paths.get("poll", "/extract/task/{task_id}") or "/extract/task/{task_id}").strip()
+        batch_results_path = str(api_paths.get("batch_results", "/extract-results/batch/{batch_id}")
+                                 or "/extract-results/batch/{batch_id}").strip()
+        return {"model_version": model_version, "language": lang, "is_ocr": is_ocr,
+                "enable_table": bool(raw.get("enable_table", True)),
+                "api_paths": {"upload": upload_path, "submit": submit_path,
+                              "poll": poll_path, "batch_results": batch_results_path}}
 
     @staticmethod
     def _normalize_paddleocr_options(raw: dict) -> dict:
@@ -1029,9 +1050,14 @@ class SettingsService:
         self.store.set_setting(KEY_PARSE, json.dumps(payload, ensure_ascii=False))
 
         expected = {
+            "MINERU_MODEL_VERSION": params["model_version"],
             "MINERU_LANGUAGE": params["language"],
             "MINERU_IS_OCR": params["is_ocr"],
             "MINERU_ENABLE_TABLE": "1" if params["enable_table"] else "0",
+            "MINERU_UPLOAD_PATH": params["api_paths"]["upload"],
+            "MINERU_SUBMIT_PATH": params["api_paths"]["submit"],
+            "MINERU_POLL_PATH": params["api_paths"]["poll"],
+            "MINERU_BATCH_RESULTS_PATH": params["api_paths"]["batch_results"],
             "PADDLEOCR_OPTIONS": json.dumps(options, ensure_ascii=False),
         }
         readback = {"ok": True, "mismatch": [], "values": {}}

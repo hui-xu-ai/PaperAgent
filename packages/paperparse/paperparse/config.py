@@ -74,6 +74,11 @@ class AppConfig:
     mineru_daily_page_limit: int = 1000
     mineru_timeout_sec: int = 120
     mineru_max_upload_bytes: int = 750 * 1024
+    # 2026-09-20：API 路径可配置（MinerU 版本升级时可能变更，GUI 设置中心可改）
+    mineru_upload_path: str = "/file-urls/batch"
+    mineru_submit_path: str = "/extract/task"
+    mineru_poll_path: str = "/extract/task/{task_id}"
+    mineru_batch_results_path: str = "/extract-results/batch/{batch_id}"
     # 2026-09-12 批2：解析**质量参数**集中声明（此前 language 硬编码 "en"，enable_table/is_ocr
     # 根本不下发 ⇒ 中文文献走英文 OCR、扫描件近乎无输出）。取值与默认值：
     #   mineru_language: auto（按首页字符集判定 ch/en）| en | ch
@@ -139,6 +144,11 @@ def load_config(env_file: str | None = DEFAULT_ENV_FILE) -> AppConfig:
         mineru_timeout_sec=_as_int(os.getenv("MINERU_TIMEOUT_SEC"), AppConfig.mineru_timeout_sec),
         mineru_max_upload_bytes=_as_int(os.getenv("MINERU_MAX_UPLOAD_BYTES"),
                                         AppConfig.mineru_max_upload_bytes),
+        mineru_upload_path=os.getenv("MINERU_UPLOAD_PATH", AppConfig.mineru_upload_path).strip(),
+        mineru_submit_path=os.getenv("MINERU_SUBMIT_PATH", AppConfig.mineru_submit_path).strip(),
+        mineru_poll_path=os.getenv("MINERU_POLL_PATH", AppConfig.mineru_poll_path).strip(),
+        mineru_batch_results_path=os.getenv("MINERU_BATCH_RESULTS_PATH",
+                                            AppConfig.mineru_batch_results_path).strip(),
         mineru_language=os.getenv("MINERU_LANGUAGE", AppConfig.mineru_language).strip().lower(),
         mineru_is_ocr=os.getenv("MINERU_IS_OCR", AppConfig.mineru_is_ocr).strip().lower(),
         mineru_enable_table=_as_bool(os.getenv("MINERU_ENABLE_TABLE"), AppConfig.mineru_enable_table),

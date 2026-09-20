@@ -210,7 +210,7 @@ class MineruClient:
         p = Path(pdf_path)
         b64 = base64.b64encode(p.read_bytes()).decode("ascii")
         payload = {"files": [{"name": p.name, "file_content": b64}]}
-        r = self._post("/file-urls/batch", payload)
+        r = self._post(self.cfg.mineru_upload_path, payload)
         urls = (r.get("data") or {}).get("file_urls") or []
         if not urls:
             raise PaperError("PAPER-0010", stage="S1",
@@ -219,7 +219,7 @@ class MineruClient:
 
     def submit(self, file_url: str) -> str:
         """[全局] 提交解析任务 → task_id"""
-        r = self._post("/extract/task", {
+        r = self._post(self.cfg.mineru_submit_path, {
             "url": file_url, "model_version": self.cfg.mineru_model_version})
         task_id = (r.get("data") or {}).get("task_id")
         if not task_id:
@@ -238,10 +238,11 @@ class MineruClient:
         报错:
             PAPER-0013（失败/超时）
         """
+        poll_url = self.cfg.mineru_poll_path.replace("{task_id}", task_id)
         deadline = time.time() + max(MIN_WAIT_SEC, pages * WAIT_PER_PAGE_SEC)
         while time.time() < deadline:
             try:
-                resp = requests.get("%s/extract/task/%s" % (self.base, task_id),
+                resp = requests.get("%s%s" % (self.base, poll_url),
                                     headers=self.headers, timeout=30)
                 body = self._check_response(resp)
             except requests.RequestException as exc:
@@ -561,12 +562,12 @@ class MineruClient:
             **mineru_payload_params(_params),
         }
         try:
-            resp = requests.post("%s/file-urls/batch" % self.base,
+            resp = requests.post("%s%s" % (self.base, self.cfg.mineru_upload_path),
                                  headers=self.headers, json=claim_payload,
                                  timeout=self.cfg.mineru_timeout_sec)
         except requests.RequestException as exc:
             raise PaperError("PAPER-0010", stage="S1",
-                             detail={"exc": str(exc)[:300], "hint": "POST /file-urls/batch"}) from exc
+                             detail={"exc": str(exc)[:300], "hint": "POST %s" % self.cfg.mineru_upload_path}) from exc
         if resp.status_code in (401, 403):
             raise PaperError("PAPER-0012", stage="S1", detail={"http": resp.status_code})
         if resp.status_code >= 400:
@@ -623,17 +624,18 @@ class MineruClient:
         # 上传后系统自动提交解析任务（勿再调 /extract/task）
 
         # (4) 轮询批量结果
+        batch_results_url = self.cfg.mineru_batch_results_path.replace("{batch_id}", batch_id)
         deadline = time.time() + max(MIN_WAIT_SEC, pages * WAIT_PER_PAGE_SEC)
         zip_url = None
         err_msg = ""
         while time.time() < deadline:
             try:
-                r = requests.get("%s/extract-results/batch/%s" % (self.base, batch_id),
+                r = requests.get("%s%s" % (self.base, batch_results_url),
                                  headers=self.headers, timeout=30)
                 rb = self._check_response(r)
             except requests.RequestException as exc:
                 raise PaperError("PAPER-0010", stage="S1",
-                                 detail={"exc": str(exc)[:300], "hint": "轮询 /extract-results/batch"}) from exc
+                                 detail={"exc": str(exc)[:300], "hint": "轮询 %s" % self.cfg.mineru_batch_results_path}) from exc
             results = (rb.get("data") or {}).get("extract_result") or []
             st = None
             if results:
