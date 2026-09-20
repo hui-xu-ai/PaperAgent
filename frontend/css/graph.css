@@ -77,6 +77,19 @@
 .lg-legend .lg-lg-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
 .lg-legend .lg-swatch { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
 .lg-legend .lg-gradient { height: 8px; border-radius: 4px; margin: 4px 0 2px; }
+
+/* 聚类图例 */
+.lg-cluster-legend { display: flex; flex-direction: column; gap: 4px; max-height: 400px; overflow-y: auto; }
+.lg-cluster-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px;
+  cursor: pointer; transition: background .15s; font-size: 11px; }
+.lg-cluster-item:hover { background: rgba(0,0,0,.05); }
+.lg-cluster-item.active { background: rgba(79,156,249,.15); }
+.lg-cluster-color { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; border: 1px solid rgba(0,0,0,.1); }
+.lg-cluster-info { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.lg-cluster-id { font-weight: 600; color: var(--lg-text); }
+.lg-cluster-size { font-size: 10px; color: var(--lg-muted); }
+.lg-cluster-kw { font-size: 10px; color: var(--lg-muted); margin-left: auto; max-width: 120px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lg-loading { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px;
   align-items: center; justify-content: center; background: rgba(240,242,245,.7); color: var(--lg-text); font-size: 13px; }
 .lg-spinner { width: 30px; height: 30px; border: 3px solid var(--lg-border); border-top-color: var(--lg-accent);

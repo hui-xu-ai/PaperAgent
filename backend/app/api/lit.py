@@ -447,6 +447,15 @@ def graph_node(doi: str = Query(..., description="节点 DOI")) -> dict:
     return detail
 
 
+@router.get("/graph/clusters")
+def graph_cluster_stats() -> list[dict]:
+    """聚类统计：id, size, top_keywords。"""
+    try:
+        return container.get_lit().graph_cluster_stats()
+    except Exception as e:
+        _handle_error(e, "graph/clusters")
+
+
 # ================================================================ 向量索引
 
 @router.post("/vector/build")

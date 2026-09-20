@@ -12,6 +12,7 @@ const IDS = {
   cited: 'lg-f-cited', citedNum: 'lg-f-cited-num',
   if: 'lg-f-if', ifNum: 'lg-f-if-num',
   quartile: 'lg-f-quartile',
+  cluster: 'lg-f-cluster',
   inkb: 'lg-f-inkb', exref: 'lg-f-exref',
   limit: 'lg-f-limit', limitVal: 'lg-f-limit-val',
   sort: 'lg-f-sort', yearRange: 'lg-year-range',
@@ -45,6 +46,10 @@ export function readFilters() {
   const boxes = [...$(IDS.quartile).querySelectorAll('input[type=checkbox]')];
   const checked = boxes.filter((b) => b.checked).map((b) => b.value);
   if (checked.length && checked.length < boxes.length) p.quartiles = checked.join(',');
+
+  // 聚类过滤
+  const clusterVal = $(IDS.cluster).value;
+  if (clusterVal) p.cluster = parseInt(clusterVal);
 
   if ($(IDS.inkb).checked) p.in_kb_only = true;
   if ($(IDS.exref).checked) p.exclude_references = true;
@@ -83,6 +88,27 @@ export function populateFacets(f) {
   }
 }
 
+/** 填充聚类下拉选项（从后端获取聚类列表）。 */
+export function populateClusterFilter(clusters) {
+  const select = $(IDS.cluster);
+  if (!select) return;
+
+  // 保留第一个"全部聚类"选项
+  select.innerHTML = '<option value="">全部聚类</option>';
+
+  if (!clusters || !clusters.length) return;
+
+  // 按 ID 排序
+  clusters.sort((a, b) => a.id - b.id);
+
+  for (const c of clusters) {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = `聚类 ${c.id}（${c.size} 篇）`;
+    select.appendChild(opt);
+  }
+}
+
 function _setRangeMax(id, max, fallback, step) {
   const el = $(id);
   const m = Number(max) > 0 ? Number(max) : fallback;
@@ -102,6 +128,7 @@ export function resetFilters() {
   $(IDS.if).value = 0;
   $(IDS.ifNum).value = 0;
   for (const b of $(IDS.quartile).querySelectorAll('input[type=checkbox]')) b.checked = true;
+  $(IDS.cluster).value = '';
   $(IDS.inkb).checked = false;
   $(IDS.exref).checked = false;
   $(IDS.limit).value = DEFAULTS.limit;

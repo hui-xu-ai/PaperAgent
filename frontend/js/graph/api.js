@@ -44,3 +44,8 @@ export function getNeighbors(doi) {
 export function getNode(doi) {
   return _get('/node', { doi });
 }
+
+/** 聚类统计（id, size, keywords）。 */
+export function getClusters() {
+  return _get('/clusters');
+}

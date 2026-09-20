@@ -356,6 +356,62 @@ def get_filter_facets(store: LitStore, *,
     }
 
 
+def cluster_stats(store: LitStore) -> list[dict]:
+    """返回聚类统计：id, size, top_keywords（从聚类内论文关键词统计）。"""
+    import json
+    from collections import Counter
+
+    with store._conn() as conn:
+        # 获取每个聚类的论文 DOI 和 keywords_json
+        cluster_papers = conn.execute("""
+            SELECT cocitation_cluster AS cluster_id, doi, keywords_json
+            FROM papers
+            WHERE cocitation_cluster IS NOT NULL
+            ORDER BY cocitation_cluster
+        """).fetchall()
+
+    # 按聚类分组统计关键词
+    cluster_data: dict[int, dict] = {}
+    for row in cluster_papers:
+        cid = row["cluster_id"]
+        if cid not in cluster_data:
+            cluster_data[cid] = {"size": 0, "keywords": Counter()}
+        cluster_data[cid]["size"] += 1
+
+        # keywords_json 是 JSON 字符串或列表
+        kws_json = row["keywords_json"]
+        if not kws_json:
+            continue
+
+        try:
+            # 尝试解析 JSON
+            if isinstance(kws_json, str):
+                kws = json.loads(kws_json)
+            else:
+                kws = kws_json
+
+            if isinstance(kws, list):
+                for kw in kws:
+                    kw = str(kw).strip()
+                    if kw and len(kw) > 1:
+                        cluster_data[cid]["keywords"][kw] += 1
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # 构建返回结果
+    result = []
+    for cid in sorted(cluster_data.keys()):
+        data = cluster_data[cid]
+        top_kws = [kw for kw, _ in data["keywords"].most_common(5)]
+        result.append({
+            "id": cid,
+            "size": data["size"],
+            "keywords": top_kws,
+        })
+
+    return result
+
+
 def get_neighbors(store: LitStore, doi: str) -> dict:
     """长按高亮用：返回引用该文献的（citing）与该文献引用的（cited）DOI。"""
     with store._conn() as conn:

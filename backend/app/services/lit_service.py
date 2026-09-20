@@ -424,6 +424,12 @@ class LitService:
         from paperlit import api as lit
         return lit.graph_node_detail(doi)
 
+    def graph_cluster_stats(self) -> list[dict]:
+        """聚类统计：id, size, top_keywords。"""
+        self._ensure()
+        from paperlit import api as lit
+        return lit.graph_cluster_stats()
+
     # ---------------------------------------------------------- 向量索引
 
     def build_vector_index(self, batch_size: int = 32) -> dict:

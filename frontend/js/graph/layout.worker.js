@@ -1,18 +1,24 @@
-/* graph/layout.worker.js — ForceAtlas2 引力布局 Web Worker（含节点体积斥力）。
+/* graph/layout.worker.js — ForceAtlas2 引力布局 Web Worker（含后处理去重叠）。
  *
  * 用 importScripts 加载 vendor 的 graphology + forceatlas2 UMD。
  * fa2.forceatlas2.assign() 是高层 API：接受 graphology 图 → 内部转 Float32Array
  * → 迭代 → 回写坐标。比直接调 fa2.iterate（原始数组 API）安全。
  *
- * 防重叠斥力：
- *   - 类似同种电荷斥力：F = k / d^2
- *   - 考虑节点体积：实际距离 = 中心距离 - (r1 + r2)
- *   - 当实际距离 < spacing 时，施加巨大斥力防止重叠
+ * 布局策略：
+ *   1. FA2 先跑完全部迭代（不施加斥力），让图谱力学收敛
+ *   2. 收敛后发送 desoverlap 消息，施加短程斥力消除重叠
+ *
+ * 防重叠斥力（短程力，仅在后处理阶段使用）：
+ *   - 触发条件：圆心距 < 1.1 * (r1 + r2)
+ *   - 范围外力为0，不影响全局布局
+ *   - 范围内按 1/d^2 衰减，d = 圆弧间距
  *
  * 协议：
  *   → {type:'init', ids, edges, clusters, nodeSizes, settings}
  *   ← {type:'ready', n}
  *   → {type:'run', iterations:N}
+ *   ← {type:'positions', positions:Float32Array(2N)}
+ *   → {type:'desoverlap', passes:N}
  *   ← {type:'positions', positions:Float32Array(2N)}
  *   → {type:'update-settings', settings}
  */
@@ -32,7 +38,6 @@ let settings = null;
 function seedPositions(ids, clusters, randomize) {
   const clusterIds = [...new Set(ids.map(id => clusters[id] || 0))];
   const clusterAngle = {};
-  // randomize（用户点"重跑布局"）时加随机旋转，否则固定 0 保证可复现
   const angleOffset = randomize ? Math.random() * Math.PI * 2 : 0;
   clusterIds.forEach((c, i) => { clusterAngle[c] = (i / Math.max(1, clusterIds.length)) * Math.PI * 2 + angleOffset; });
   const R = Math.max(200, ids.length * 0.6);
@@ -41,7 +46,6 @@ function seedPositions(ids, clusters, randomize) {
     const c = clusters[id] || 0;
     const a = clusterAngle[c];
     const cx = Math.cos(a) * R, cy = Math.sin(a) * R;
-    // 确定性种子用索引哈希（可复现）；randomize 用真随机（重跑得到新布局）
     const jitter = randomize ? Math.random() : ((i * 2654435761) % 1000) / 1000;
     const jr = 40 + jitter * 120;
     const ja = randomize ? Math.random() * Math.PI * 2 : jitter * Math.PI * 2;
@@ -50,16 +54,15 @@ function seedPositions(ids, clusters, randomize) {
   return pos;
 }
 
-/** 计算节点半径（从 size 属性）。 */
 function getRadius(nodeId) {
   const size = nodeSizes[nodeId] || 2;
-  return size * 0.5; // 半径 = 直径的一半
+  return size * 0.7;
 }
 
-/** 应用防重叠斥力（类似同种电荷，考虑节点体积）。 */
-function applyOverlapRepulsion(graph, ids, spacing) {
-  const k = 5000; // 斥力常数（越大斥力越强）
-  const minDist = spacing || 5; // 最小允许距离（圆弧之间）
+/** 短程斥力：只在圆心距 < 1.1*(r1+r2) 时触发，范围外为0。 */
+function applyOverlapRepulsion() {
+  const k = 80000;
+  const rangeMultiplier = 1.1;
 
   for (let i = 0; i < ids.length; i++) {
     const id1 = ids[i];
@@ -75,26 +78,39 @@ function applyOverlapRepulsion(graph, ids, spacing) {
       const dy = pos2.y - pos1.y;
       const centerDist = Math.sqrt(dx * dx + dy * dy);
 
-      if (centerDist < 0.001) continue; // 避免除零
+      const radiusSum = r1 + r2;
+      if (centerDist >= radiusSum * rangeMultiplier) continue;
 
-      // 实际距离 = 中心距离 - 两个半径（圆弧之间的距离）
-      const actualDist = centerDist - (r1 + r2);
-
-      // 当实际距离 < minDist 时，施加斥力
-      if (actualDist < minDist) {
-        // 斥力大小：F = k / (actualDist + 0.1)^2（+0.1 避免除零）
-        const force = k / Math.pow(actualDist + 0.1, 2);
-        const fx = (dx / centerDist) * force;
-        const fy = (dy / centerDist) * force;
-
-        // 反向推开两个节点
-        graph.setNodeAttribute(id1, 'x', pos1.x - fx);
-        graph.setNodeAttribute(id1, 'y', pos1.y - fy);
-        graph.setNodeAttribute(id2, 'x', pos2.x + fx);
-        graph.setNodeAttribute(id2, 'y', pos2.y + fy);
+      if (centerDist < 0.001) {
+        const angle = Math.random() * Math.PI * 2;
+        const push = radiusSum * 0.5;
+        graph.setNodeAttribute(id1, 'x', pos1.x - Math.cos(angle) * push);
+        graph.setNodeAttribute(id1, 'y', pos1.y - Math.sin(angle) * push);
+        graph.setNodeAttribute(id2, 'x', pos2.x + Math.cos(angle) * push);
+        graph.setNodeAttribute(id2, 'y', pos2.y + Math.sin(angle) * push);
+        continue;
       }
+
+      const arcDist = Math.max(0.1, centerDist - radiusSum);
+      const force = Math.min(k / (arcDist * arcDist), 150);
+      const fx = (dx / centerDist) * force;
+      const fy = (dy / centerDist) * force;
+
+      graph.setNodeAttribute(id1, 'x', pos1.x - fx);
+      graph.setNodeAttribute(id1, 'y', pos1.y - fy);
+      graph.setNodeAttribute(id2, 'x', pos2.x + fx);
+      graph.setNodeAttribute(id2, 'y', pos2.y + fy);
     }
   }
+}
+
+function extractPositions() {
+  const pos = new Float32Array(ids.length * 2);
+  for (let i = 0; i < ids.length; i++) {
+    const a = graph.getNodeAttributes(ids[i]);
+    pos[2 * i] = a.x; pos[2 * i + 1] = a.y;
+  }
+  return pos;
 }
 
 self.onmessage = (e) => {
@@ -127,19 +143,20 @@ self.onmessage = (e) => {
   if (msg.type === 'run') {
     if (!graph) return;
     const iters = Math.max(1, msg.iterations | 0);
-    const spacing = settings.spacing || 5;
-
-    // FA2 迭代
+    // FA2 纯迭代，不施加斥力（让力学自然收敛）
     fa2.forceatlas2.assign(graph, { iterations: iters, settings });
+    const pos = extractPositions();
+    self.postMessage({ type: 'positions', positions: pos.buffer }, [pos.buffer]);
+    return;
+  }
 
-    // 应用防重叠斥力（每轮迭代后）
-    applyOverlapRepulsion(graph, ids, spacing);
-
-    const pos = new Float32Array(ids.length * 2);
-    for (let i = 0; i < ids.length; i++) {
-      const a = graph.getNodeAttributes(ids[i]);
-      pos[2 * i] = a.x; pos[2 * i + 1] = a.y;
+  if (msg.type === 'desoverlap') {
+    if (!graph) return;
+    const passes = Math.max(1, msg.passes | 0 || 100);
+    for (let p = 0; p < passes; p++) {
+      applyOverlapRepulsion();
     }
+    const pos = extractPositions();
     self.postMessage({ type: 'positions', positions: pos.buffer }, [pos.buffer]);
     return;
   }

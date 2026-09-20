@@ -34,6 +34,7 @@ __all__ = [
     "compute_paper_rank", "top_papers",
     "compute_clusters", "cluster_papers",
     "graph_network", "graph_filter_facets", "graph_neighbors", "graph_node_detail",
+    "graph_cluster_stats",
     "build_vector_index", "vector_search", "vector_index_size",
     "search",
     "cached_search", "cache_clear", "cache_stats",
@@ -367,6 +368,13 @@ def graph_node_detail(doi: str) -> dict | None:
     from .graph import get_node_detail
     store = _require_store()
     return get_node_detail(store, doi)
+
+
+def graph_cluster_stats() -> list[dict]:
+    """聚类统计：id, size, top_keywords。"""
+    from .graph import cluster_stats
+    store = _require_store()
+    return cluster_stats(store)
 
 
 # ---- P4: 向量索引 ----

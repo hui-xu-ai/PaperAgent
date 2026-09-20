@@ -38,6 +38,14 @@ const COLOR_SCALES = {
   ],
 };
 
+/** 聚类调色板（tableau10，区分度高）。 */
+const CLUSTER_PALETTE = [
+  '#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
+  '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac',
+  '#86bcb6', '#8cd17d', '#b6992d', '#499894', '#d37295',
+  '#a0cbe8', '#ffbe7d', '#8b8b8b', '#d4a6c8', '#d37295',
+];
+
 /** 线性插值颜色。 */
 function _lerpColor(color1, color2, t) {
   const r1 = parseInt(color1.slice(1, 3), 16);
@@ -70,6 +78,13 @@ function _getColorForIF(ifValue, palette) {
   // 超出范围
   if (ifValue < scale[0].if) return scale[0].color;
   return scale[scale.length - 1].color;
+}
+
+/** 根据聚类 ID 获取颜色（tableau10 调色板）。 */
+function _getColorForCluster(clusterId) {
+  const id = parseInt(clusterId) || 0;
+  const idx = Math.abs(id) % CLUSTER_PALETTE.length;
+  return CLUSTER_PALETTE[idx];
 }
 
 /** 计算节点大小（基于被引次数，根据 citationSource 选择字段）。 */
@@ -136,6 +151,7 @@ export function applyStyles(dataModel, styleOpts) {
     edgeColor = '#8890a0',
     edgeWidth = 0.3,
     citationSource = 'filtered',
+    colorMode = 'if', // 'if' | 'cluster'
   } = styleOpts;
 
   // 计算 IF 最大值（用于颜色归一化，如果需要）
@@ -144,7 +160,12 @@ export function applyStyles(dataModel, styleOpts) {
   // 应用节点样式
   dataModel.nodes.forEach(node => {
     node.renderSize = _computeNodeSize(node, sizeBase, citationSource, scaleAlgo);
-    node.renderColor = _getColorForIF(node.impact_factor || 0, palette);
+    // 根据颜色模式选择颜色
+    if (colorMode === 'cluster') {
+      node.renderColor = _getColorForCluster(node.cluster || 0);
+    } else {
+      node.renderColor = _getColorForIF(node.impact_factor || 0, palette);
+    }
     node.renderLabel = _computeNodeLabel(node, labelMode);
   });
 
