@@ -14,6 +14,7 @@ const $ = (id) => document.getElementById(id);
 const IDS = {
   colorscale: 'lg-s-colorscale',
   size: 'lg-s-size', sizeVal: 'lg-s-size-val',
+  scaleAlgo: 'lg-s-scale-algo',
   label: 'lg-s-label',
   edges: 'lg-s-edges', edgeDir: 'lg-s-edgelabel',
   bg: 'lg-s-bg', bgColor: 'lg-s-bgcolor', edgeColor: 'lg-s-edgecolor',
@@ -30,6 +31,7 @@ export function readStyle() {
   return {
     palette: $(IDS.colorscale).value || 'viridis',
     sizeBase: Number($(IDS.size).value) || 1,
+    scaleAlgo: $(IDS.scaleAlgo).value || 'pow06',
     labelMode: $(IDS.label).value || 'year_cited',
     showEdges: $(IDS.edges).checked,
     showEdgeDir: $(IDS.edgeDir).checked,

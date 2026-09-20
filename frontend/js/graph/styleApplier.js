@@ -73,7 +73,7 @@ function _getColorForIF(ifValue, palette) {
 }
 
 /** 计算节点大小（基于被引次数，根据 citationSource 选择字段）。 */
-function _computeNodeSize(node, sizeBase, citationSource) {
+function _computeNodeSize(node, sizeBase, citationSource, scaleAlgo = 'pow06') {
   let citeCount;
   if (citationSource === 'wos') {
     citeCount = node.times_cited || 0;
@@ -84,8 +84,24 @@ function _computeNodeSize(node, sizeBase, citationSource) {
     citeCount = node.filtered_citations || 0;
   }
   node.cite_count = citeCount; // 保存供标签使用
-  // pow(0.6) 缩放：高被引节点更大、低被引节点更小，视觉差异更明显
-  const rawSize = 1.2 + Math.pow(citeCount, 0.6) * 1.8;
+  
+  // 根据选择的算法计算节点大小
+  let rawSize;
+  switch (scaleAlgo) {
+    case 'log2':
+      rawSize = 2 + Math.log2(1 + citeCount) * 1.5;
+      break;
+    case 'sqrt':
+      rawSize = 1.5 + Math.sqrt(citeCount) * 2;
+      break;
+    case 'linear':
+      rawSize = 1.2 + citeCount * 0.5;
+      break;
+    case 'pow06':
+    default:
+      rawSize = 1.2 + Math.pow(citeCount, 0.6) * 1.8;
+      break;
+  }
   return Math.max(1.2, rawSize * sizeBase);
 }
 
@@ -114,6 +130,7 @@ export function applyStyles(dataModel, styleOpts) {
   const {
     palette = 'viridis',
     sizeBase = 1,
+    scaleAlgo = 'pow06',
     labelMode = 'year_cited',
     showEdges = true,
     edgeColor = '#8890a0',
@@ -126,7 +143,7 @@ export function applyStyles(dataModel, styleOpts) {
 
   // 应用节点样式
   dataModel.nodes.forEach(node => {
-    node.renderSize = _computeNodeSize(node, sizeBase, citationSource);
+    node.renderSize = _computeNodeSize(node, sizeBase, citationSource, scaleAlgo);
     node.renderColor = _getColorForIF(node.impact_factor || 0, palette);
     node.renderLabel = _computeNodeLabel(node, labelMode);
   });
