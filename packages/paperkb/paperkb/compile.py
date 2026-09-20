@@ -926,6 +926,20 @@ class Compiler:
 
 # ---------------------------------------------------------------- 提示词
 
+# 编译输出格式硬约束（2026-09-21 用户拍板）：编译产物（_note/_wiki/_relations）是给 AI/人
+# 理解的知识卡，**不需要精确排版公式**。glm 等模型会把共享前缀"公式对照表"里的 LaTeX 原样抄进
+# JSON 字符串，单反斜杠是非法 JSON 转义 → 整段解析失败（"L1 编译输出无效（JSON 缺失 one_liner）"）。
+# 从源头禁止 LaTeX/反斜杠即可根除，比事后修转义更稳（成熟模型对此类指令遵循度高）。
+# 注意：**不改 shared_ctx**（它与翻译逐字节共享以命中前缀缓存），只在任务后缀加约束；
+# `_jsonutil` 防御式解析仍保留作残余兜底（模型偶发不听话时）。
+_NO_LATEX_RULE = (
+    "【输出格式硬约束】只用纯文本和简单 Markdown，严禁使用 LaTeX 数学公式："
+    "不要出现美元符号包裹的公式，不要出现任何反斜杠命令（例如 mathrm、approx、frac 这类带反斜杠的写法），"
+    "也不要用下划线或脱字符做上下标。化合物与离子请用普通文字书写（例如 Co(Ox/Px)、K+、BF4-、Co2P），"
+    "数值与单位用普通字符（例如 约 20000 S/cm、9.80 Am2/kg）。"
+    "本知识笔记仅供 AI 与人理解，无需精确公式排版；如需指代某个公式，请用文字描述其物理含义即可。\n"
+)
+
 
 def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str,
                qa_ctx: str = "") -> str:
@@ -939,6 +953,7 @@ def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str,
     qa_block = ("\n\n" + qa_ctx) if qa_ctx else ""
     task = (
         "你是科研知识编译助手。请依据上方论文全文，把它编译成结构化中文知识笔记。\n"
+        + _NO_LATEX_RULE +
         "要求：六维每维必须引用论文段落 ID（如 [P001]）；输出严格 JSON：\n"
         '{"one_liner": "一句话贡献", "background": {"text": "...", "paras": ["P001"]}, '
         '"method": {...}, "result": {...}, "conclusion": {...}, "innovation": {...}, '
@@ -962,6 +977,7 @@ def _prompt_l2(meta: dict, doc: PaperDoc, l1_ctx: str) -> str:
     shared = shared_ctx(doc)
     task = (
         "你是科研深度编译专家。基于论文产出深度知识卡（JSON）。\n"
+        + _NO_LATEX_RULE +
         "⚠️ L1 已覆盖六维摘要（背景/方法/结果/结论/创新/局限）。\n"
         "你的 wiki **禁止重复**上述内容，只写 L1 未涉及的深度分析。\n"
         "输出严格 JSON：\n"
@@ -990,6 +1006,7 @@ def _prompt_l1_l2_merged(meta: dict, doc: PaperDoc, journal_meta: str,
     qa_block = ("\n\n" + qa_ctx) if qa_ctx else ""
     task = (
         "你是科研知识编译专家。请依据上方论文全文，产出两级结构化中文知识卡（JSON）。\n\n"
+        + _NO_LATEX_RULE + "\n"
         "## L1 知识卡（基础摘要）\n"
         "- one_liner: 一句话核心贡献（≤50字）\n"
         "- background/method/result/conclusion/innovation/limitation: 六维总结\n"
@@ -1113,6 +1130,7 @@ def _prompt_l3(meta: dict, self_ctx: str,
     task = (
         "你是科研知识关系分析专家。基于下方本文及多篇相关文献的编译结果，"
         "分析它们之间的概念关系、方法论连接和研究演进脉络。\n\n"
+        + _NO_LATEX_RULE + "\n"
         "## 本文编译结果\n"
         f"{self_ctx}\n\n"
         "## 相关文献编译结果\n"
@@ -1176,65 +1194,33 @@ def _render_relations(meta, data: dict, related_ctxs: list[dict]) -> str:
 # ---------------------------------------------------------------- 工具
 
 def _parse_json(raw: str) -> dict:
-    """容错解析 LLM JSON 输出（剥围栏/提取首个 {...}）。"""
-    if not raw:
-        return {}
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-        text = re.sub(r"\n?```$", "", text).strip()
-    try:
-        return json.loads(text)
-    except ValueError:
-        m = re.search(r"\{.*\}", text, re.S)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except ValueError:
-                return {}
-    return {}
+    r"""容错解析 LLM JSON 输出（剥围栏 / 非法转义修复 / 推理前后缀 / 截断子对象回收）。
+
+    2026-09-21：与 translate 共用 `paperkb._jsonutil.extract_json_object`。此前是裸
+    ``json.loads`` + 贪婪 ``{.*}``，glm 等模型编译输出含 LaTeX 单反斜杠（``$\mathrm{…}$``
+    的 ``\m`` 是非法 JSON 转义）或带思维链前后缀时整段解析失败 → 偶发
+    "L1 编译输出无效（JSON 缺失 one_liner）" 判死、_note.md 不生成。
+    expected_keys 覆盖 L1(one_liner)/L2(wiki)/L3(summary) 三级产物。
+    """
+    from ._jsonutil import extract_json_object
+    return extract_json_object(raw, expected_keys=("one_liner", "wiki", "summary"))
 
 
 def _salvage_l1(text: str) -> dict:
-    """平衡括号抢救：从 malformed 输出中提取首个含 one_liner 的完整 JSON 对象。
+    """平衡括号抢救：从 malformed 输出里提取首个含 one_liner 的完整 JSON 对象（共用 _jsonutil）。
 
-    glm 常把 L2 Markdown 塞进 JSON 字符串或尾部多吐杂文本 ⇒ 整段 json.loads 失败、
-    贪婪 \\{.*\\} 也匹配到坏片段；但 one_liner 对象本身往往括号完整，平衡扫描可救回，
-    避免整轮编译判死→worker 整轮重试（烧全量 token）。
+    glm 常把 L2 Markdown 塞进 JSON 字符串或尾部多吐杂文本 ⇒ 整段解析失败；但 one_liner
+    对象本身往往括号完整，平衡扫描（含非法转义修复）可救回，避免整轮编译判死→worker
+    整轮重试（烧全量 token）。
     """
+    from ._jsonutil import balanced_extract
     if not text:
         return {}
     start = text.find("{")
     while 0 <= start < len(text):
-        depth = 0
-        in_str = False
-        esc = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if in_str:
-                if esc:
-                    esc = False
-                elif ch == "\\":
-                    esc = True
-                elif ch == '"':
-                    in_str = False
-                continue
-            if ch == '"':
-                in_str = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    frag = text[start:i + 1]
-                    if "one_liner" in frag:
-                        try:
-                            obj = json.loads(frag)
-                            if isinstance(obj, dict) and obj.get("one_liner"):
-                                return obj
-                        except ValueError:
-                            pass
-                    break
+        obj = balanced_extract(text, start)
+        if isinstance(obj, dict) and obj.get("one_liner"):
+            return obj
         start = text.find("{", start + 1)
     return {}
 

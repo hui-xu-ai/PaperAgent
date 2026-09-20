@@ -127,56 +127,14 @@ def _strip_control(text: str) -> str:
     return _CTRL_RE.sub("", text or "")
 
 
-# 非法 JSON 字符串转义修复：模型常把 LaTeX（如 $_{800^{\circ}C}$）以**单反斜杠**写进 JSON 字符串，
-# `\c` 是非法转义 → json.loads 失败。把"非合法 JSON 转义"的反斜杠补成双反斜杠（合法 → 还原为单反斜杠）。
-# 合法 JSON 转义：\" \\ \/ \b \f \n \r \t \uXXXX；其余一律视为 LaTeX 残留而修复。
-_INVALID_JSON_ESC_RE = re.compile(r'\\(?!(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))')
-
-
-def _repair_json_escapes(s: str) -> str:
-    return _INVALID_JSON_ESC_RE.sub(lambda m: "\\\\", s)
-
-
-def _loads_lenient(s: str) -> dict | None:
-    """json.loads，失败时尝试修复非法 LaTeX 转义再解析。返回 dict 或 None。"""
-    try:
-        d = json.loads(s)
-        return d if isinstance(d, dict) else None
-    except json.JSONDecodeError:
-        pass
-    try:
-        d = json.loads(_repair_json_escapes(s))
-        return d if isinstance(d, dict) else None
-    except json.JSONDecodeError:
-        return None
-
-
-def _balanced_extract(text: str, start: int) -> dict | None:
-    """从 text[start]=='{' 起做平衡括号提取，返回解析成功的 dict；否则 None。
-    处理嵌套花括号/字符串内引号与转义（含 LaTeX 非法转义修复）。"""
-    depth = in_str = esc = 0
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                data = _loads_lenient(text[start:i + 1])
-                if data is not None:
-                    return data
-                return None
-    return None
+# 非法 JSON 转义修复 / 宽松 loads / 平衡括号提取——与编译共用单一来源（paperkb._jsonutil）。
+# 2026-09-21：抽到 _jsonutil 后，compile 侧也用同一套兜底（此前 compile 缺这套 → glm 编译
+# 输出含 LaTeX 反斜杠时整轮判死"缺失 one_liner"）。此处保留 _ 前缀别名，调用点不变。
+from .._jsonutil import (  # noqa: E402
+    balanced_extract as _balanced_extract,
+    loads_lenient as _loads_lenient,
+    repair_json_escapes as _repair_json_escapes,
+)
 
 
 def _parse_json(text: str) -> dict:
