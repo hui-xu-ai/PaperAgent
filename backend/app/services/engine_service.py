@@ -625,9 +625,21 @@ class EngineService:
             # 2026-09-19 fix: 展平嵌套上标
             md = re.sub(r'\^\{\^\{([^}]+)\}\}', r'^{\1}', md)
             md = re.sub(r'_\{_\{([^}]+)\}\}', r'_{\1}', md)
-            # 2026-09-20 fix: 裸露 ^{...} 包裹 $...$（已在 $ 或 { 内的不动）
+            # 2026-09-21 fix: 裸露 ^{...}/_{...} 包裹 $...$ —— 但**只动数学环境之外**的片段。
+            # 旧实现用单字符 lookbehind/lookahead 判断“是否已在 $ 内”，识别不了
+            # $\mathrm{Co(O_{x})}$ 里的 _{x}（它前一个字符是 O 而非 $）其实已在外层 $...$ 中
+            # ⇒ 把干净公式撑成非法嵌套 $\mathrm{Co(O$_{x}$)}$（en.md 干净、en_zh.md/zh.md 全坏）。
+            # 改为：先把 $...$ / $$...$$ 数学片段抽出占位保护，仅对环境外文本做裸 ^{}/_{} 包裹，再回填。
+            _math: list[str] = []
+
+            def _stash(m):
+                _math.append(m.group(0))
+                return "\x00M%d\x00" % (len(_math) - 1)
+
+            md = re.sub(r'\$\$[^$]*\$\$|\$[^$]*\$', _stash, md)
             md = re.sub(r'(?<![$\{])\^\{([^}]+)\}(?![$\}])', r'$^{\1}$', md)
             md = re.sub(r'(?<![$\{])_\{([^}]+)\}(?![$\}])', r'$_{\1}$', md)
+            md = re.sub(r'\x00M(\d+)\x00', lambda m: _math[int(m.group(1))], md)
             return md
 
         files = {

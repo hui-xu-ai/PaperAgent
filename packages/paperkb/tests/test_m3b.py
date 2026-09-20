@@ -124,28 +124,38 @@ def test_whole_parse_fail_falls_back_to_batch(tmp_path):
 
 
 def test_whole_too_large_goes_direct_batch(tmp_path, monkeypatch):
-    """正文总量 > MAX_WHOLE_CHARS → 直接分批（不试整篇一次）；新放大因子下仍拆批产出全部。"""
+    """正文总量 > MAX_WHOLE_CHARS → 直接分批（不试整篇一次）；分批产出全部段落。"""
+    import math
     # 阈值压到 10：正文总量必然超过 → 走 /targets 分批。
     monkeypatch.setattr(pipeline, "MAX_WHOLE_CHARS", 10)
+    n = 70
     paras = [{"para_id": "P%03d" % i, "section": "S", "is_heading": False,
-              "text_en": "para %d body" % i, "text_zh": ""} for i in range(70)]
+              "text_en": "para %d body" % i, "text_zh": ""} for i in range(n)]
     p = tmp_path / "document.json"
     p.write_text(json.dumps({"metadata": {}, "paragraphs": paras}), encoding="utf-8")
-    # 70 段按 MAX_BATCH_PARAS=64 分成 2 批（64 + 6）→ 每次返回一批的 translations。
-    fake = FakeLLM([json.dumps({"translations": [{"para_id": "P%03d" % i, "zh": "译%d" % i}
-                                                 for i in range(64)]}),
-                    json.dumps({"translations": [{"para_id": "P%03d" % i, "zh": "译%d" % i}
-                                                 for i in range(64, 70)]})])
+    # 按 MAX_BATCH_PARAS 切批，每批返回该批全部段落译文（批数随常量自适应，不写死）。
+    bs = pipeline.MAX_BATCH_PARAS
+    responses = []
+    for start in range(0, n, bs):
+        chunk = range(start, min(start + bs, n))
+        responses.append(json.dumps({"translations": [
+            {"para_id": "P%03d" % i, "zh": "译%d" % i} for i in chunk]}))
+    fake = FakeLLM(responses)
     r = run_translate(p, fake)
-    assert r["calls"] == 2                       # 2 批 = 2 次调用（未走整篇单次）
-    assert r["translated"] == 70
+    assert r["calls"] == math.ceil(n / bs)      # 未走整篇单次，按批数调用
+    assert r["translated"] == n
 
 
-# ---------------------------------------------------------------- References 跳过 / 批次放大
-def test_batch_factors_amplified():
-    """批次因子放大生效：MAX_BATCH_PARAS / MAX_BODY_CHARS 显著上调（少批大批，减少请求/限流）。"""
-    assert pipeline.MAX_BATCH_PARAS >= 64
-    assert pipeline.MAX_BODY_CHARS >= 30000
+# ---------------------------------------------------------------- References 跳过 / 批次大小
+def test_batch_size_safe_for_capped_models():
+    """非紧凑批大小须留足输出余量（2026-09-21 用户实测 glm-5.3-flash 输出硬顶 ~11K token）。
+
+    旧值 30000 字符/批 → 输出 ~15K token 必触顶截断（整篇一次也只译出前 ~1/3）。
+    译文输出 token ≈ 英文源字符 ×0.5，故 MAX_BODY_CHARS 收到 ~12000（输出 ~6K token）稳落顶内；
+    仍有"应译未译单段补跑"作触顶兜底，故降批不丢段。
+    """
+    assert pipeline.MAX_BODY_CHARS <= 12000
+    assert pipeline.MAX_BATCH_PARAS <= 24
 
 
 def test_reference_cut_legacy_kept_for_compat():
@@ -286,10 +296,14 @@ def test_skip_references_section(tmp_path):
     assert data["paragraphs"][4]["text_zh"] == ""
 
 
-def test_do_batch_no_recursive_split(tmp_path):
-    """_do_batch 去递归拆批：批内 JSON 失败只同 prompt 重试一次，不切两半级联调用。"""
+def test_do_batch_no_raise_no_recursive_split(tmp_path):
+    """_do_batch 解析空**不再上抛**（交上层单段补跑兜底），且同 prompt 只重试一次、不递归拆批。
+
+    2026-09-21：旧实现解析失败即 raise → 同模型（glm 输出纯文本标记/截断 JSON）整批译文丢失
+    且拖垮整篇。现统一走 _parse_translation_output 三级兜底，解析不出返回空 out（不抛）。
+    """
     p = _mk_doc(tmp_path, n=3)
-    fake = FakeLLM(["bad", "bad"])               # 两次都坏 → 应上抛，而非拆半重试
+    fake = FakeLLM(["bad", "bad"])               # 两次都坏 → 返回空，而非上抛/拆半重试
     from paperkb.context import CTX_HEADER, paper_context_with_math
     from paperkb.doc import read_document
     data = json.loads(p.read_text(encoding="utf-8"))
@@ -298,9 +312,60 @@ def test_do_batch_no_recursive_split(tmp_path):
     block, math_list = paper_context_with_math(doc)
     shared = CTX_HEADER + block
     para_id_to_idx = {pp.get("para_id"): i for i, pp in enumerate(paras)}
-    with pytest.raises(ValueError):
-        pipeline._do_batch(fake, shared, paras, [0, 1, 2], para_id_to_idx,
-                           math_list, "translate", [0])
+    out, rejected = pipeline._do_batch(fake, shared, paras, [0, 1, 2], para_id_to_idx,
+                                       math_list, "translate", [0])
+    assert out == {}                             # 解析不出 → 空（不抛，由补跑兜底）
     assert fake._calls[0][0] == "translate"
     # 同一批只发 2 次（重试一次）；若递归拆批会多于 2 次。
     assert len(fake._calls) <= 2
+
+
+# ====================== 2026-09-21 同模型（glm）翻译全英文回归钉 ======================
+def test_parse_translation_output_three_forms():
+    """_parse_translation_output 三级兜底：完整JSON / 纯文本[Pxxx]标记 / 截断JSON数组回收。"""
+    ids = ["P001", "P002", "P003"]
+    # ① 完整 JSON
+    good = json.dumps({"translations": [{"para_id": "P001", "zh": "甲"},
+                                        {"para_id": "P002", "zh": "乙"}]}, ensure_ascii=False)
+    assert len(pipeline._parse_translation_output(good, ids)["translations"]) == 2
+    # ② 纯文本标记（glm 不遵守 JSON 指令时的自然格式）
+    plain = "[P001] 甲译文\n\n[P002] 乙译文\n\n[P003] 丙译文"
+    got = pipeline._parse_translation_output(plain, ids)["translations"]
+    assert [t["para_id"] for t in got] == ["P001", "P002", "P003"]
+    # ③ 截断 JSON 数组（输出触顶，P002 对象已完整但数组 ] 与外层 } 没收尾）→ 回收完整内层对象
+    trunc = '{"translations": [{"para_id": "P001", "zh": "甲"}, {"para_id": "P002", "zh": "乙"}'
+    rec = pipeline._parse_translation_output(trunc, ids)["translations"]
+    assert {t["para_id"] for t in rec} == {"P001", "P002"}
+    # 全坏 → 空（不抛）
+    assert pipeline._parse_translation_output("garbage", ids)["translations"] == []
+
+
+def test_noncompact_plain_text_markers_translated(tmp_path):
+    """★同模型路径（compact=False）：glm 输出纯文本 [Pxxx] 标记也能译出（旧实现只认严格 JSON
+    → 整批丢失 → text_zh=0 → zh.md/en_zh.md 全英文）。"""
+    p = _mk_doc(tmp_path, n=3)
+    fake = FakeLLM(["[P000] 第零段译文\n\n[P001] 第一段译文\n\n[P002] 第二段译文"])
+    r = run_translate(p, fake, compact=False)
+    assert r["translated"] == 3
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert all((pp.get("text_zh") or "").strip() for pp in data["paragraphs"])
+
+
+def test_whole_truncated_falls_back_to_batches(tmp_path, monkeypatch):
+    """★整篇一次输出触顶只译出前若干段 → 未覆盖的 target 自动回退分批补译（不再静默 0 译文）。"""
+    monkeypatch.setattr(pipeline, "MAX_WHOLE_CHARS", 100000)   # 确保走整篇一次
+    n = 6
+    paras = [{"para_id": "P%03d" % i, "section": "S", "is_heading": False,
+              "text_en": "para %d body" % i, "text_zh": ""} for i in range(n)]
+    p = tmp_path / "document.json"
+    p.write_text(json.dumps({"metadata": {}, "paragraphs": paras}), encoding="utf-8")
+    # 第 1 次（整篇一次）只返回前 2 段（模拟触顶截断）；其后分批把剩余 4 段补齐。
+    whole = json.dumps({"translations": [{"para_id": "P000", "zh": "译0"},
+                                         {"para_id": "P001", "zh": "译1"}]}, ensure_ascii=False)
+    rest = json.dumps({"translations": [{"para_id": "P%03d" % i, "zh": "译%d" % i}
+                                        for i in range(2, n)]}, ensure_ascii=False)
+    fake = FakeLLM([whole, rest])
+    r = run_translate(p, fake, compact=False)
+    assert r["translated"] == n                  # 整篇 2 段 + 分批补 4 段 = 全部
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert all((pp.get("text_zh") or "").strip() for pp in data["paragraphs"])

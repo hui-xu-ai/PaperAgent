@@ -27,11 +27,15 @@ from .latextap import reassemble
 
 logger = logging.getLogger(__name__)
 
-# 分批因子放大（用户反馈：避免"很多小批"触发限流/大量请求）：
-# 从多小批 → 少数大批。MAX_BATCH_PARAS 8→64、MAX_BODY_CHARS 10000→30000，配 max_tokens=64000
-# （llm_service.DEFAULT_MAX_OUTPUT_TOKENS），单批译文输出不截断。保持串行（不并发）。
-MAX_BODY_CHARS = 30000
-MAX_BATCH_PARAS = 64
+# 分批因子（非紧凑=主模型路径）：单批正文上限决定**单次输出 token**，必须留足余量避开
+# 供应商输出硬顶。2026-09-21 用户实测 glm-5.3-flash：请求 max_tokens=64000 但**服务端输出
+# 硬顶 ~11K token**（日志连续 11056/11203/11171），旧值 30000 字符/批 → 输出 ~15K token 必触顶
+# 截断（整篇一次也只译出前 ~1/3 段）。译文输出 token ≈ 英文源字符 ×0.5（中文更密，紧凑模式
+# 6000 字符→≤3000 token 实测），故 12000 字符/批 → ~6K token，稳落 11K 顶内。
+# 仍有 `_run_batches` 的"应译未译单段补跑"作触顶兜底（单段输出小必不截断），故降批不丢段。
+# 大输出模型（DeepSeek 64K）走"整篇一次"命中，分批仅兜底，降批对其影响很小。
+MAX_BODY_CHARS = 12000
+MAX_BATCH_PARAS = 24
 MAX_CALLS = 64
 MAX_TOTAL_INPUT_CHARS = 300000
 # 整篇一次阈值：全部可译段落正文总量 ≤ 此值才尝试整篇一次。取值需 ≤ TokenGuard 单次
@@ -95,51 +99,6 @@ def _strip_html_tags(text: str) -> str:
     """清理标准 HTML 标签（保留 [[MATHn]] 等自定义标记）。"""
     return _HTML_TAG_RE.sub('', text or '')
 
-
-# 嵌套 $...$ 修复（2026-09-20 用户反馈：zh.md/en_zh.md 中出现 $\mathrm{Co(O$_{x}$/P$_{x}$)@P-LIG}$）
-# LLM 有时会错误地把 [[MATHn]] 展开为嵌套 $...$ 格式（如 $_{x}$），导致 LaTeX 渲染失败。
-# 需要把内层的 $...$ 剥离，只保留内容（_{x}）。
-
-
-def _fix_nested_dollars(text: str) -> str:
-    """修复嵌套 $...$：把 $_{x}$ → _{x}、$^{2}$ → ^{2} 等内层定界符剥离。
-    
-    仅处理**外层已有 $...$ 包裹**的情况（如 $\mathrm{...}_{x}...$ 内的 $_{x}$）。
-    独立公式（整段就是 $...$）不动。
-    """
-    if not text or '$' not in text:
-        return text
-    
-    # 策略：找到所有 $...$ 区间，检查是否有嵌套的 $...$
-    # 如果有，剥离内层的所有 $ 定界符对
-    result = []
-    i = 0
-    n = len(text)
-    
-    while i < n:
-        if text[i] == '$':
-            # 找到最后一个 $ 作为闭合定界符（贪婪匹配）
-            j = text.rfind('$', i + 1)
-            if j != -1 and j > i + 1:
-                inner = text[i+1:j]
-                # 检查内层是否有嵌套的 $...$
-                if '$' in inner:
-                    # 剥离内层的所有 $ 定界符对：$content$ → content
-                    # 使用循环直到没有更多 $...$ 对
-                    while '$' in inner:
-                        inner = re.sub(r'\$([^$]*)\$', r'\1', inner)
-                    result.append('$' + inner + '$')
-                else:
-                    result.append(text[i:j+1])
-                i = j + 1
-            else:
-                result.append(text[i])
-                i += 1
-        else:
-            result.append(text[i])
-            i += 1
-    
-    return ''.join(result)
 
 # 模型"拒绝/占位"式译文（批4 防御）：这类文本**不是译文**，绝不能落进 text_zh（否则会
 # 渲染进 zh.md/en_zh.md 污染阅读）。实测来源：目标段落没出现在给模型的全文里 → 模型回
@@ -284,6 +243,47 @@ def _parse_plain_translation(text: str, expected_ids: list[str]) -> dict:
     return {"translations": results}
 
 
+def _parse_translation_output(raw: str, para_ids: list[str]) -> dict:
+    """把翻译 LLM 响应**稳健**解析为 ``{"translations": [{para_id, zh}, ...]}``。
+
+    2026-09-21（用户实测 glm-5.3-flash 同模型翻译全英文）：非紧凑（同主模型）路径此前
+    只走 `_parse_json`，失败即上抛——但通用模型有两种常见"非严格 JSON"输出，都会让整批
+    译文丢失（text_zh=0 → zh.md/en_zh.md 回退英文）：
+      ① **纯文本标记** `[P001] 译文…`（glm 等不遵守 JSON 指令时的自然格式）；
+      ② **截断的 JSON 数组**（输出触顶 ~11K token，`{"translations":[{…},{…}` 没收尾）
+         —— 旧 `_parse_json` 的通用兜底会从任意 `{` 平衡提取，结果只返回**单个内层对象**
+         `{"para_id":…,"zh":…}`（没有 translations 外层）⇒ `_apply_translations` 取
+         `.get("translations")` 恒空 ⇒ 0 段译出且**不触发分批回退**。
+    本函数按 ①完整JSON → ②纯文本标记 → ③逐个回收截断数组里已完整的译文对象 三级兜底，
+    解析不出任何条目时返回 ``{"translations": []}``（交上层回退分批/单段补跑）。
+    """
+    # ① 完整 JSON（含 translations 列表）
+    try:
+        data = _parse_json(raw)
+        if isinstance(data, dict) and (data.get("translations") or []):
+            return data
+    except ValueError:
+        pass
+    # ② 纯文本 [Pxxx] 标记
+    plain = _parse_plain_translation(raw, para_ids)
+    if plain.get("translations"):
+        return plain
+    # ③ 截断 JSON 数组：扫描回收所有完整的 {"para_id":..,"zh":..} 对象
+    recovered: list[dict] = []
+    seen: set[str] = set()
+    text = raw or ""
+    for m in re.finditer(r"\{", text):
+        obj = _balanced_extract(text, m.start())
+        if isinstance(obj, dict) and obj.get("para_id") and obj.get("zh"):
+            pid = str(obj["para_id"])
+            if pid not in seen:
+                seen.add(pid)
+                recovered.append({"para_id": pid, "zh": obj["zh"]})
+    if recovered:
+        return {"translations": recovered}
+    return {"translations": []}
+
+
 def _translate_task(para_ids: list[str]) -> str:
     """译文任务后缀（参考上方全文，翻译指定段落，保留 [[MATHn]] 标签）。
 
@@ -360,7 +360,6 @@ def _apply_translations(data_out: dict, paras: list[dict],
             result = re.sub(pat, lambda _mm, _r=repl: _r, result)  # lambda 防转义解析
         result = _strip_control(result)
         result = _strip_html_tags(result)  # 2026-09-19：清理 <sup> 等 HTML 标签
-        result = _fix_nested_dollars(result)  # 2026-09-20：修复嵌套 $...$（$_{x}$ → _{x}）
         if not result.strip() or _is_refusal(result):
             rejected += 1
             continue
@@ -372,40 +371,29 @@ def _do_batch(llm, shared: str, paras: list[dict], batch: list[int],
               para_id_to_idx: dict[str, int], math_list: list[str], context: str,
               calls: list[int], *, compact: bool = False,
               prev_context: str = "") -> tuple[dict, int]:
-    """翻译单个批次：单次 LLM + **同 prompt 最多重试一次（不递归拆批）**，失败上抛。
+    """翻译单个批次：单次 LLM + **同 prompt 最多重试一次**；解析空不再上抛。
 
-    旧实现（上一轮）在 JSON 解析失败时把批切成两半递归重试（级联重复调用/token 浪费）。
-    现 max_tokens 已增至 64000，正常批不会截断；同 prompt 重试一次仍失败则上抛，不再
-    缩小批。返回的 zh 已 reassemble + KNOWN_FIXES + 清洗（空串丢弃计 rejected）。
-
-    compact=True：紧凑模式（小上下文模型），段落内联、无共享前缀、JSON 失败→纯文本后备。
-    2026-09-19：prev_context 传入前一批译文末尾，改善跨批连续性。
+    2026-09-21：解析统一走 `_parse_translation_output`（完整 JSON / 纯文本 [Pxxx] 标记 /
+    截断数组逐对象回收 三级兜底），**紧凑与非紧凑共用**——此前非紧凑只认严格 JSON、失败即
+    上抛，导致 glm 等输出纯文本标记或截断 JSON 时整批译文丢失（text_zh=0 → 回退英文）。
+    解析为空时不再 raise，而是返回空 out，由 `_run_batches` 的"应译未译单段补跑"兜底
+    （单段输出小、不触顶，必能译出），避免一处解析失败拖垮整篇。
+    返回的 zh 已 reassemble + KNOWN_FIXES + 清洗（空串丢弃计 rejected）。
     """
     para_ids = [paras[i].get("para_id") for i in batch]
     if compact:
         prompt = _translate_task_compact(paras, batch, prev_context=prev_context)
     else:
         prompt = with_task(shared, _translate_task(para_ids))
-    data_out: dict | None = None
+    data_out: dict = {"translations": []}
     for attempt in (0, 1):
-        try:
-            raw = llm.complete(prompt, context=context)
-            calls[0] += 1
-            try:
-                data_out = _parse_json(raw)
-            except ValueError:
-                if compact:
-                    # 紧凑模式后备：部分模型（如 Hunyuan-MT）不输出 JSON 而输出纯文本标记
-                    data_out = _parse_plain_translation(raw, para_ids)
-                    if not data_out.get("translations"):
-                        raise ValueError("纯文本解析也无结果")
-                else:
-                    raise
+        raw = llm.complete(prompt, context=context)
+        calls[0] += 1
+        data_out = _parse_translation_output(raw, para_ids)
+        if data_out.get("translations"):
             break
-        except ValueError:
-            if attempt == 1:
-                raise
-            logger.warning("译文批 %d 段解析失败，重试一次", len(batch))
+        if attempt == 0:
+            logger.warning("译文批 %d 段解析为空，重试一次", len(batch))
     out, rejected = _apply_translations(data_out, paras, para_id_to_idx, math_list)
     return out, rejected
 
@@ -574,7 +562,6 @@ def _translate_oversized(llm, paras: list[dict], targets: list[int],
             full = re.sub(pat, lambda _m, _r=repl: _r, full)
         full = _strip_control(full)
         full = _strip_html_tags(full)  # 2026-09-19：清理 <sup> 等 HTML 标签
-        full = _fix_nested_dollars(full)  # 2026-09-20：修复嵌套 $...$（$_{x}$ → _{x}）
         if full.strip() and not _is_refusal(full):
             paras[idx]["text_zh"] = full
             translated += 1
@@ -615,24 +602,24 @@ def _run_batches(llm, shared: str, paras: list[dict], targets: list[int],
             batch_zh += zh
         # 取本批译文末尾 ~200 字作为下一批连续性上下文
         prev_zh_tail = batch_zh[-200:] if len(batch_zh) > 200 else batch_zh
-        # 截断补跑（仅紧凑模式）：本批应译未译的段落单独成批重译
-        if compact:
-            missing = [i for i in batch if i not in tr_map]
-            if missing:
-                logger.warning("紧凑批截断：%d/%d 段未译，按单段补跑",
-                               len(missing), len(batch))
-                for idx in missing:
-                    try:
-                        m_map, m_rej = _do_batch(llm, shared, paras, [idx],
-                                                 para_id_to_idx, math_list, context,
-                                                 calls, compact=compact)
-                        rejected += m_rej
-                        for mi, zh in m_map.items():
-                            paras[mi]["text_zh"] = zh
-                            translated += 1
-                    except Exception as e:  # noqa: BLE001 - 单段补跑失败保留原文
-                        logger.warning("单段补跑失败（%s）保留原文: %s",
-                                       paras[idx].get("para_id"), e)
+        # 截断补跑（紧凑+非紧凑通用）：本批应译未译的段落单独成批重译。
+        # 2026-09-21：非紧凑（同主模型）也启用——glm 等输出触顶时整批只译出前若干段，
+        # 单段补跑输出小、必不触顶，保证不漏译（旧实现仅紧凑模式补跑 ⇒ 同模型整批丢失）。
+        missing = [i for i in batch if i not in tr_map]
+        if missing:
+            logger.warning("批截断：%d/%d 段未译，按单段补跑", len(missing), len(batch))
+            for idx in missing:
+                try:
+                    m_map, m_rej = _do_batch(llm, shared, paras, [idx],
+                                             para_id_to_idx, math_list, context,
+                                             calls, compact=compact)
+                    rejected += m_rej
+                    for mi, zh in m_map.items():
+                        paras[mi]["text_zh"] = zh
+                        translated += 1
+                except Exception as e:  # noqa: BLE001 - 单段补跑失败保留原文
+                    logger.warning("单段补跑失败（%s）保留原文: %s",
+                                   paras[idx].get("para_id"), e)
     # 紧凑模式：超长段落句子切块翻译
     if oversized:
         o_tr, o_rej = _translate_oversized(llm, paras, oversized, math_list,
@@ -650,7 +637,11 @@ def _try_whole(llm, shared: str, paras: list[dict], targets: list[int],
     正常模式：共享全文前缀 + 翻译任务后缀（大上下文模型，提示词缓存命中）。
     紧凑模式：段落内联（小上下文模型），无共享前缀。
 
-    返回 ({idx: zh} | None=需回退分批, rejected)。解析失败/超限 → 返回 None 交上层回退分批。
+    返回 ({idx: zh}（**可能只覆盖部分 target**）| None=正文超限未发起调用, rejected)。
+    2026-09-21：解析改走 `_parse_translation_output`（纯文本标记/截断数组都能回收），
+    且**不再因解析失败返回 None**——输出触顶时整篇一次往往只译出前若干段，返回这部分
+    覆盖结果，由 `run_translate` 对**未覆盖的 target 回退分批补译**（旧实现解析失败即
+    丢弃整篇结果且不回退 ⇒ text_zh=0 全英文）。仅"正文超限根本没发请求"才返回 None。
     """
     para_ids = [paras[i].get("para_id") for i in targets]
     if compact:
@@ -665,22 +656,14 @@ def _try_whole(llm, shared: str, paras: list[dict], targets: list[int],
     try:
         raw = llm.complete(prompt, context=context)
         calls[0] += 1
-        try:
-            data_out = _parse_json(raw)
-        except ValueError:
-            if compact:
-                data_out = _parse_plain_translation(raw, para_ids)
-                if not data_out.get("translations"):
-                    raise ValueError("纯文本解析也无结果")
-            else:
-                raise
-    except ValueError:
-        logger.warning("整篇一次翻译解析失败，回退分批")
-        return None, 0
     except Exception as e:  # noqa: BLE001
         logger.warning("整篇一次翻译异常(%s)，回退分批", e)
         return None, 0
+    data_out = _parse_translation_output(raw, para_ids)
     out, rejected = _apply_translations(data_out, paras, para_id_to_idx, math_list)
+    if len(out) < len(targets):
+        logger.warning("整篇一次仅译出 %d/%d 段（疑似输出触顶截断），其余回退分批补译",
+                       len(out), len(targets))
     return out, rejected
 
 
@@ -723,23 +706,27 @@ def run_translate(doc_path: str | Path, llm, *, context: str = "translate",
     calls_box = [0]
     translated = rejected = truncated = 0
 
+    # 整篇一次 = 优化（大输出模型一发命中、共享前缀缓存友好）；**分批是兜底真相源**：
+    # 整篇一次未覆盖（输出触顶截断/解析不全/正文超限）的 target 一律交分批补译，
+    # 保证不漏段（旧实现"整篇一次成功就用它、否则才分批"⇒ 截断时静默 0 译文全英文）。
+    covered: set[int] = set()
     whole_limit = COMPACT_MAX_WHOLE_CHARS if compact else MAX_WHOLE_CHARS
     if total_chars > 0 and total_chars <= whole_limit:
         whole_map, whole_rej = _try_whole(llm, shared, paras, targets, para_id_to_idx,
                                           math_list, context, calls_box, compact=compact)
-        if whole_map is not None:
-            rejected += whole_rej
-            for idx, zh in whole_map.items():
-                paras[idx]["text_zh"] = zh
-                translated += 1
-        else:
-            (translated, rejected), truncated = _run_batches(
-                llm, shared, paras, targets, para_id_to_idx, math_list, context,
-                calls_box, compact=compact)
-    else:
-        (translated, rejected), truncated = _run_batches(
-            llm, shared, paras, targets, para_id_to_idx, math_list, context,
+        rejected += whole_rej
+        for idx, zh in (whole_map or {}).items():
+            paras[idx]["text_zh"] = zh
+            translated += 1
+            covered.add(idx)
+
+    remaining = [i for i in targets if i not in covered]
+    if remaining:
+        (b_tr, b_rej), truncated = _run_batches(
+            llm, shared, paras, remaining, para_id_to_idx, math_list, context,
             calls_box, compact=compact)
+        translated += b_tr
+        rejected += b_rej
 
     p.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"translated": translated, "rejected": rejected, "targets": len(targets),
