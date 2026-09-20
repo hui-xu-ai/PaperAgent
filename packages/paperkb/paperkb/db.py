@@ -26,6 +26,8 @@ _META_COLS = (
     "research_areas_json", "wos_categories_json", "funding", "times_cited",
     "wos_id", "references_json", "source_file", "imported_at", "paper_id",
     "journal_override", "kind", "ai_value_score", "topic_score",
+    "paper_rank", "cocitation_cluster", "impact_factor", "quartile",
+    "library_citations", "source_main",
 )
 
 # papers_meta 建表 DDL 抽成常量：迁移层 `migrations/0003_meta_pk_rid.py` 重建该表时
@@ -57,7 +59,13 @@ PAPERS_META_DDL = """CREATE TABLE IF NOT EXISTS papers_meta (
     kind TEXT DEFAULT '',           -- 资源类型（P0-B step3）：paper/thesis/book/chapter/
                                    -- patent/standard/note/si/review；空=由 rid 前缀推导
     ai_value_score REAL,            -- AI 价值评分 0-5（L1+L2 编译时产出）
-    topic_score REAL                -- 主题匹配评分 0-1（L1+L2 编译时产出）
+    topic_score REAL,               -- 主题匹配评分 0-1（L1+L2 编译时产出）
+    paper_rank REAL,                -- PaperRank（paperlit 引用图谱 PageRank 变体）
+    cocitation_cluster INTEGER,     -- 共被引聚类 ID（paperlit）
+    impact_factor REAL,             -- 期刊影响因子（paperlit 清洗模块填充）
+    quartile TEXT DEFAULT '',       -- JCR 分区 Q1/Q2/Q3/Q4（paperlit）
+    library_citations INTEGER DEFAULT 0, -- 库内被引次数（paperlit）
+    source_main TEXT DEFAULT ''     -- 主数据来源（wos/openalex/crossref/semantic_scholar）
 );
 """
 
@@ -199,6 +207,19 @@ class KBStore:
                 if meta_cols and col not in meta_cols:
                     conn.execute(f"ALTER TABLE papers_meta ADD COLUMN {col} REAL")
                     logger.info("papers_meta 补列: %s", col)
+            # 迁移：papers_meta 补 paperlit 元数据列（2026-09-19）
+            _LIT_META_COLS = {
+                "paper_rank": "REAL",
+                "cocitation_cluster": "INTEGER",
+                "impact_factor": "REAL",
+                "quartile": "TEXT DEFAULT ''",
+                "library_citations": "INTEGER DEFAULT 0",
+                "source_main": "TEXT DEFAULT ''",
+            }
+            for col, ddl in _LIT_META_COLS.items():
+                if meta_cols and col not in meta_cols:
+                    conn.execute(f"ALTER TABLE papers_meta ADD COLUMN {col} {ddl}")
+                    logger.info("papers_meta 补列(paperlit): %s", col)
 
     # ---------------------------------------------------------- 标识 ↔ rid
     def resolve_rid(self, key: str) -> str:
@@ -306,7 +327,10 @@ class KBStore:
             # **整行替换**（bib 更准，本就该覆盖）。注意这不是"bib 搞坏了数据"，而是
             # "写入语义是整行替换而非逐字段合并"。
             old = conn.execute(
-                "SELECT paper_id, kind, journal_override, ai_value_score, topic_score FROM papers_meta WHERE rid=?",
+                "SELECT paper_id, kind, journal_override, ai_value_score, topic_score,"
+                " paper_rank, cocitation_cluster, impact_factor, quartile,"
+                " library_citations, source_main"
+                " FROM papers_meta WHERE rid=?",
                 (rid,)).fetchone()
             if old is not None:
                 keep: dict = {}
@@ -321,6 +345,14 @@ class KBStore:
                     keep["ai_value_score"] = old["ai_value_score"]
                 if getattr(meta, "topic_score", None) is None and old["topic_score"] is not None:
                     keep["topic_score"] = old["topic_score"]
+                # paperlit 元数据：bib 不提供，保留既有值（sync_lit_meta 单独写入）
+                for _lit_col in ("paper_rank", "cocitation_cluster", "impact_factor",
+                                 "quartile", "library_citations", "source_main"):
+                    old_val = old[_lit_col]
+                    new_val = getattr(meta, _lit_col, None)
+                    if (new_val in (None, 0, 0.0, "") and old_val is not None
+                            and old_val not in (None, 0, 0.0, "")):
+                        keep[_lit_col] = old_val
                 if keep:
                     meta = meta.model_copy(update=keep)
             conn.execute(
@@ -330,8 +362,10 @@ class KBStore:
                     month,issn,eissn,keywords_json,research_areas_json,
                     wos_categories_json,funding,times_cited,wos_id,references_json,
                     source_file,imported_at,paper_id,journal_override,kind,
-                    ai_value_score,topic_score)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ai_value_score,topic_score,
+                    paper_rank,cocitation_cluster,impact_factor,quartile,
+                    library_citations,source_main)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (rid, doi, meta.title, meta.abstract,
                  _json(meta.authors), _json(meta.affiliations),
                  _json(getattr(meta, "corresponding", []) or []),
@@ -344,7 +378,13 @@ class KBStore:
                  getattr(meta, "journal_override", "") or "",
                  (getattr(meta, "kind", "") or "").strip().lower(),
                  getattr(meta, "ai_value_score", None),
-                 getattr(meta, "topic_score", None)))
+                 getattr(meta, "topic_score", None),
+                 getattr(meta, "paper_rank", 0.0) or 0.0,
+                 getattr(meta, "cocitation_cluster", 0) or 0,
+                 getattr(meta, "impact_factor", 0.0) or 0.0,
+                 getattr(meta, "quartile", "") or "",
+                 getattr(meta, "library_citations", 0) or 0,
+                 getattr(meta, "source_main", "") or ""))
             # FTS 同步（删除旧行 + 插入新行）
             conn.execute("DELETE FROM meta_fts WHERE rid=?", (rid,))
             conn.execute(
@@ -445,6 +485,26 @@ class KBStore:
             "citing": [{"doi": r["citing_doi"]} for r in citing],
         }
 
+    def citation_peers(self, doi: str, limit: int = 10) -> list[dict]:
+        """通过引用关系关联的文献（出边+入边合并去重）。"""
+        with self._conn() as conn:
+            cited = conn.execute(
+                "SELECT cited_doi AS doi FROM citations WHERE citing_doi=? LIMIT ?",
+                (doi, limit)).fetchall()
+            citing = conn.execute(
+                "SELECT citing_doi AS doi FROM citations WHERE cited_doi=? LIMIT ?",
+                (doi, limit)).fetchall()
+        seen = set()
+        peers = []
+        for r in list(cited) + list(citing):
+            d = r["doi"]
+            if d and d not in seen and d != doi:
+                seen.add(d)
+                peers.append({"doi": d})
+            if len(peers) >= limit:
+                break
+        return peers
+
     def all_dois(self) -> set[str]:
         with self._conn() as conn:
             rows = conn.execute("SELECT doi FROM papers_meta").fetchall()
@@ -491,10 +551,70 @@ class KBStore:
             vals.append(round(float(topic_score), 4))
         if not sets:
             return
-        vals.append(paper_doi)
+        rid = self.resolve_rid(paper_doi)
+        vals.append(rid)
         with self._conn() as conn:
             conn.execute(
                 f"UPDATE papers_meta SET {', '.join(sets)} WHERE rid=?", vals)
+
+    def fill_journal_meta(self, paper_doi: str) -> bool:
+        """按需补全 IF/分区：papers_meta 缺失时从 journals.db 查找并写入。
+
+        查找顺序（与 _score_meta 一致）：ISSN/eISSN 精确 → 期刊名规范化。
+        返回 True 表示有更新。
+        """
+        rid = self.resolve_rid(paper_doi)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT impact_factor, quartile, issn, eissn, journal"
+                " FROM papers_meta WHERE rid=?", (rid,)).fetchone()
+        if row is None:
+            return False
+        if row["impact_factor"] and row["quartile"]:
+            return False
+        try:
+            from .journals import JournalsDB
+            from .config import data_dir
+            jdb_path = data_dir() / "reference" / "journals.db"
+            if not jdb_path.exists():
+                return False
+            jdb = JournalsDB(str(jdb_path))
+            info = jdb.lookup_issn(row["eissn"] or "", row["issn"] or "")
+            if info is None and row["journal"]:
+                info = jdb.lookup(row["journal"])
+            if info is None:
+                return False
+            jcr = info.get("jcr") or {}
+            new_if = jcr.get("jif") or 0
+            new_q = jcr.get("quartile") or ""
+            if not new_if and not new_q:
+                return False
+            sets, vals = [], []
+            if not row["impact_factor"] and new_if:
+                sets.append("impact_factor=?")
+                vals.append(float(new_if))
+            if not row["quartile"] and new_q:
+                sets.append("quartile=?")
+                vals.append(new_q)
+            if not row["impact_factor"] and new_q:
+                sets.append("source_main=?")
+                vals.append("journals.db")
+            if sets:
+                vals.append(rid)
+                with self._conn() as conn:
+                    conn.execute(
+                        f"UPDATE papers_meta SET {', '.join(sets)} WHERE rid=?",
+                        vals)
+            return bool(sets)
+        except Exception:
+            return False
+
+    def delete_meta(self, key: str) -> None:
+        """删除元数据记录（按 rid 或 doi）。"""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM papers_meta WHERE rid=?", (key,))
+            if key and "." in key:  # 看起来像 DOI，也按 doi 删
+                conn.execute("DELETE FROM papers_meta WHERE doi=?", (key,))
 
     # ---------------------------------------------------------- compile_jobs
     def upsert_job(self, paper_doi: str, level: str, status: str = "pending",
@@ -515,6 +635,15 @@ class KBStore:
                 "SELECT * FROM compile_jobs WHERE paper_doi=? AND level=?",
                 (paper_doi, level)).fetchone()
         return dict(row) if row else None
+
+    def delete_job(self, paper_doi: str, level: str = "") -> None:
+        """删除编译任务记录（按 paper_doi + 可选 level）。"""
+        with self._conn() as conn:
+            if level:
+                conn.execute("DELETE FROM compile_jobs WHERE paper_doi=? AND level=?",
+                             (paper_doi, level))
+            else:
+                conn.execute("DELETE FROM compile_jobs WHERE paper_doi=?", (paper_doi,))
 
     # ---------------------------------------------------------- 回收站（2026-09-12）
     def trash_add(self, key: str, dirname: str = "", title: str = "", note: str = "") -> None:
@@ -746,7 +875,7 @@ class KBStore:
                     continue
                 doi = key
                 files = []
-                for name in ("_note.md", "_details.md", "_wiki.md"):
+                for name in ("_note.md", "_wiki.md", "_relations.md"):
                     p = d / name
                     if p.exists():
                         files.append({"filename": name,
@@ -1017,6 +1146,85 @@ class KBStore:
                 (name,)).fetchall()
         return [dict(r) for r in rows]
 
+    def concepts_for_doi(self, paper_doi: str) -> list[dict]:
+        """获取某篇文献的所有概念。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT name, definition FROM concepts WHERE paper_doi=?",
+                (paper_doi,)).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---------------------------------------------------------- paperlit 同步
+    def sync_lit_meta(self, lit_db_path: Path) -> dict:
+        """从 paperlit 的 lit.db 同步文献计量数据到 papers_meta。
+
+        按 DOI join，把 lit.db 的 paper_rank / cocitation_cluster / impact_factor /
+        quartile / library_citations / source_main 写回 papers_meta。
+        返回 {synced: N, total: M}。
+        """
+        if not lit_db_path.exists():
+            return {"synced": 0, "total": 0, "error": "lit.db 不存在"}
+        src = sqlite3.connect(str(lit_db_path))
+        src.row_factory = sqlite3.Row
+        try:
+            rows = src.execute(
+                "SELECT doi, paper_rank, cocitation_cluster, impact_factor,"
+                " quartile, library_citations, source_main"
+                " FROM papers WHERE doi <> ''"
+                " AND (paper_rank > 0 OR cocitation_cluster > 0"
+                "      OR impact_factor > 0 OR quartile <> ''"
+                "      OR library_citations > 0 OR source_main <> '')"
+            ).fetchall()
+        finally:
+            src.close()
+        if not rows:
+            return {"synced": 0, "total": 0}
+        synced = 0
+        with self._conn() as conn:
+            for r in rows:
+                doi = r["doi"]
+                rid_row = conn.execute(
+                    "SELECT rid FROM identifiers WHERE kind='doi' AND value=?",
+                    (doi,)).fetchone()
+                if not rid_row:
+                    rid_row = conn.execute(
+                        "SELECT rid FROM papers_meta WHERE doi=?", (doi,)).fetchone()
+                if not rid_row:
+                    continue
+                rid = rid_row["rid"]
+                conn.execute(
+                    "UPDATE papers_meta SET"
+                    " paper_rank=COALESCE(?,paper_rank),"
+                    " cocitation_cluster=COALESCE(?,cocitation_cluster),"
+                    " impact_factor=COALESCE(?,impact_factor),"
+                    " quartile=CASE WHEN ?<>'' THEN ? ELSE quartile END,"
+                    " library_citations=COALESCE(?,library_citations),"
+                    " source_main=CASE WHEN ?<>'' THEN ? ELSE source_main END"
+                    " WHERE rid=?",
+                    (r["paper_rank"] or None,
+                     r["cocitation_cluster"] or None,
+                     r["impact_factor"] or None,
+                     r["quartile"] or "", r["quartile"] or "",
+                     r["library_citations"] or None,
+                     r["source_main"] or "", r["source_main"] or "",
+                     rid))
+                synced += 1
+        return {"synced": synced, "total": len(rows)}
+
+    def cluster_peers(self, cluster: int, exclude_doi: str = "",
+                      limit: int = 5) -> list[dict]:
+        """同共被引聚类的其他文献（按 paper_rank 降序）。"""
+        if cluster <= 0:
+            return []
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT doi, title, year, journal, times_cited, paper_rank"
+                " FROM papers_meta"
+                " WHERE cocitation_cluster = ? AND doi <> ? AND doi <> ''"
+                " ORDER BY paper_rank DESC LIMIT ?",
+                (cluster, exclude_doi or "", limit)).fetchall()
+        return [dict(r) for r in rows]
+
 
 def _json(value) -> str:
     import json
@@ -1055,6 +1263,12 @@ def _row_to_meta(row: sqlite3.Row | None) -> PaperMeta | None:
         kind=(row["kind"] if "kind" in row.keys() else "") or "",
         ai_value_score=(row["ai_value_score"] if "ai_value_score" in row.keys() else None),
         topic_score=(row["topic_score"] if "topic_score" in row.keys() else None),
+        paper_rank=(row["paper_rank"] if "paper_rank" in row.keys() else None) or 0.0,
+        cocitation_cluster=(row["cocitation_cluster"] if "cocitation_cluster" in row.keys() else None) or 0,
+        impact_factor=(row["impact_factor"] if "impact_factor" in row.keys() else None) or 0.0,
+        quartile=(row["quartile"] if "quartile" in row.keys() else "") or "",
+        library_citations=(row["library_citations"] if "library_citations" in row.keys() else None) or 0,
+        source_main=(row["source_main"] if "source_main" in row.keys() else "") or "",
     )
 
 

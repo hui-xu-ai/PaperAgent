@@ -217,12 +217,17 @@ class CompileProcessRequest(BaseModel):
     limit: int = 1
 
 
+class CompileBatchRequest(BaseModel):
+    dois: list[str]
+    action: str = "retry"  # "retry" | "l3"
+
+
 def _publish_compile(doi: str, level: str, result: object, *, queued: bool = False) -> None:
     """编译收尾/入队 → 事件总线（前端据此刷新阅读器「编译结果标签页」）。
 
     2026-09-12 用户实测修复：**同步** `compile/now` 与 `compile/queue` 都不经过
     `CompileWorker`（worker 的 notify 只覆盖后台队列路径）⇒ 手动编译完成时前端收不到任何信号，
-    阅读器标签页永远不刷新（表现为"编译完了，却没出现 `_note.md`/`_details.md` 标签"）。
+    阅读器标签页永远不刷新（表现为"编译完了，却没出现 `_note.md`/`_wiki.md` 标签"）。
     """
     try:
         err = isinstance(result, dict) and bool(result.get("error"))
@@ -269,6 +274,19 @@ def compile_queue_all() -> dict:
 def compile_process(req: CompileProcessRequest) -> list[dict]:
     """处理队列（worker 循环）。"""
     return container.get_kbapi().compile_process(req.limit)
+
+
+@router.post("/compile/batch")
+def compile_batch(req: CompileBatchRequest) -> dict:
+    """批量编译（直接执行，不走队列）。
+
+    action="retry": 重试失败的编译（force L1）
+    action="l3": 执行 L3 跨文献概念分析
+    """
+    try:
+        return container.get_kbapi().compile_batch(req.dois, req.action)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"批量编译失败: {e}")
 
 
 @router.get("/compile/jobs")
@@ -357,6 +375,56 @@ def translate(req: TranslateRequest) -> dict:
         return container.get_kbapi().translate_now(req.doc_json)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"翻译失败: {e}")
+
+
+class TranslateCompileRequest(BaseModel):
+    doc_json: str
+    doi: str
+    level: str = "L1"
+
+
+@router.post("/translate-compile")
+async def translate_compile_parallel(req: TranslateCompileRequest) -> dict:
+    """并行执行翻译+编译（共享全文前缀缓存命中）。
+
+    2026-09-19 用户反馈：翻译和编译不应串行执行，应该并行请求以最大化缓存效率。
+    两者都使用 shared_ctx(doc) 作为全文前缀，并行请求时只要前缀一致就能命中缓存。
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    kbapi = container.get_kbapi()
+
+    def _do_translate():
+        return kbapi.translate_now(req.doc_json)
+
+    def _do_compile():
+        return kbapi.compile_now(req.doi, req.level)
+
+    loop = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor(max_workers=2)
+
+    try:
+        translate_task = loop.run_in_executor(executor, _do_translate)
+        compile_task = loop.run_in_executor(executor, _do_compile)
+
+        translate_result, compile_result = await asyncio.gather(
+            translate_task, compile_task, return_exceptions=True
+        )
+
+        # 处理异常结果
+        if isinstance(translate_result, Exception):
+            translate_result = {"error": str(translate_result)}
+        if isinstance(compile_result, Exception):
+            compile_result = {"error": str(compile_result)}
+
+        return {
+            "translate": translate_result,
+            "compile": compile_result,
+            "parallel": True,
+        }
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"并行执行失败: {e}")
 
 
 # ---------------------------------------------------------- M4：检索/问答
@@ -502,18 +570,27 @@ def kbmeta_kb_list(q: str = "", journal: str = "",
                    page: int = Query(1, ge=1),
                    page_size: int = Query(50, ge=1, le=200),
                    kind: str = "",
-                   has_attachment: bool = False) -> dict:
+                   has_attachment: bool = False,
+                   quartile: str = "",
+                   year_from: int | None = None,
+                   year_to: int | None = None,
+                   min_if: float = 0.0) -> dict:
     """知识库三视图聚合列表：bib 元数据 × 价值分 × kb/编译状态（过滤/排序/分页）。
 
     compile_status: done=已编译非空 / none=未编译 / L1|L2|L3=该等级已编译。
     kind: 空/all=全部；none=无编号资料；paper|thesis|book|chapter|patent|standard|report|note。
-    has_attachment: 只留有附件（SI/审稿意见/数据）的资源（F1/A2）。
+    has_attachment: 只留有附件（SI/审稿意见/数据）的资源（F1/A3）。
+    quartile: 分区筛选（逗号分隔，如 Q1,Q2）。
+    year_from / year_to: 年份范围。
+    min_if: 最低影响因子。
     """
     return container.get_kbapi().kb_list(q=q, journal=journal,
                                 compile_status=compile_status,
                                 score_min=score_min, sort=sort,
                                 page=page, page_size=page_size,
-                                kind=kind, has_attachment=has_attachment)
+                                kind=kind, has_attachment=has_attachment,
+                                quartile=quartile, year_from=year_from,
+                                year_to=year_to, min_if=min_if)
 
 
 @router.get("/kind/options")
@@ -602,10 +679,36 @@ def kbmeta_index_regenerate() -> dict:
     return container.get_kbapi().regenerate_index()
 
 
+@router.post("/sync-lit-meta")
+def kbmeta_sync_lit_meta() -> dict:
+    """从 paperlit 的 lit.db 同步文献计量数据（PaperRank/分区/影响因子/库内被引）到 papers_meta。"""
+    return container.get_kbapi().sync_lit_meta()
+
+
+@router.post("/fill-journal-meta")
+def kbmeta_fill_journal_meta() -> dict:
+    """批量补全缺失的 IF/分区：从 journals.db 按 ISSN/期刊名查找并写入 papers_meta。"""
+    from packages.paperkb.paperkb.api import fill_journal_meta_batch
+    return fill_journal_meta_batch()
+
+
+@router.post("/cleanup-stale")
+def kbmeta_cleanup_stale() -> dict:
+    """清理幽灵记录：kb 目录已删除但数据库仍有元数据/编译任务的条目。"""
+    return container.get_kbapi().cleanup_stale_records()
+
+
 @router.post("/compile/backfill")
 def kbmeta_compile_backfill() -> dict:
     """为 kb 中未完成 L1 的文献入队（补齐编译结构标准）。"""
     return container.get_kbapi().compile_backfill()
+
+
+@router.post("/vector/rebuild")
+def kbmeta_vector_rebuild(force: bool = False) -> dict:
+    """重建 KB 向量索引（编译结果 _note.md + _wiki.md + concepts）。"""
+    from paperkb.api import rebuild_kb_vector_index
+    return rebuild_kb_vector_index(force=force)
 
 
 @router.post("/markdown/upload")

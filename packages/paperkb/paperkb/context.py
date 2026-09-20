@@ -36,16 +36,17 @@ def _is_ref_section(text: str) -> bool:
     return any(kw in t for kw in _REF_SECTION_KEYWORDS)
 
 
-# 结尾杂项（不该进 AI 上下文）：References 之外的致谢/利益冲突/作者贡献/数据可用性/
+# 结尾杂项（不该进 AI 上下文）：References 之外的致谢/利益冲突/作者贡献/
 # 支撑信息等。**2026-09-12 用户实测**：PNAS 篇 42 段（ACKNOWLEDGMENTS + 参考文献条目）
 # 混进了共享前缀（7040 字符 ≈1828 token，占 11.7%）——根因是这些段落的 `section` 字段
 # 继承的是前一个真章节名（"Materials and Methods"），既不是 References 也没有 heading 标记，
 # 单靠 `_is_ref_section(section)` 拦不住。⇒ 增加"**首段文本形态**"判据 + 尾部截断。
+# 2026-09-20：data availability 从尾部杂项移除——L2 编译提示词要求 AI 评估数据可用性，
+# 若提前清洗则 AI 无法看到该声明。
 _TAIL_NOISE_RE = re.compile(
     r"^\s*(references|bibliography|literature cited|works cited|"
     r"acknowledg(e)?ments?|conflict of interest|declarations? of (competing|conflicting) interest|"
     r"competing interests?|author contributions?|authors'? contributions?|credit authorship|"
-    r"data availability|data statement|"
     r"supporting information(?!\s*(fig|figure|table|appendix|section|movie|note|scheme|"
     r"dataset|data set|ref)\b)|"
     r"supplementary (material|information|data)(?!\s*(fig|figure|table|appendix|section|movie)\b)|"
@@ -61,7 +62,6 @@ _TAIL_STRONG_RE = re.compile(
     r"^\s*(references|bibliography|literature cited|works cited|"
     r"acknowledg(e)?ments?|conflict of interest|declarations? of (competing|conflicting) interest|"
     r"competing interests?|author contributions?|authors'? contributions?|"
-    r"data availability|"
     # "Supporting Information **Figure S1** shows …" 是正文交叉引用，不是结尾声明 → 负向前瞻排除
     r"supporting information(?!\s*(fig|figure|table|appendix|section|movie|note|scheme|"
     r"dataset|data set|ref)\b)|"
@@ -82,6 +82,7 @@ def _is_tail_noise(text: str, idx: int, total: int, section: str = "",
     声明段落的 section 即 "Acknowledgements"/"Data availability" 等）。
     **标题段无歧义**：is_heading 命中即截断，不受"后半段/短段"位置门限约束
     （修 cej：CRediT 标题在 50% 线前一段、且 "credit authorship" 不在强模式表 → 漏截）。
+    2026-09-20：data availability 不再视为尾部杂项（L2 编译需评估数据可用性）。
     """
     t = re.sub(r"^#+\s*", "", (text or "")).strip()   # 剥 markdown 标题前缀
     sec = (section or "").strip()

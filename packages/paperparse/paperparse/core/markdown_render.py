@@ -41,8 +41,9 @@ EXCLUDE_SECTIONS = {
 # ---------------------------------------------------------------------------
 # 尾部杂项截断（en.md 干净版 / 双语主产物）——判据单一来源在 block_classify.is_tail_noise
 # （与 paperkb.context.tail_cut_index 同口径）。en.md 既是阅读区原文，又被 chat L2
-# 授权全文问答直接注入 AI，故与翻译/编译上下文同样剔除致谢/利益冲突/作者贡献/数据
-# 可用性/支撑信息等尾部声明（2026-09-19 用户要求补全这部分清洗规则）。
+# 授权全文问答直接注入 AI，故与翻译/编译上下文同样剔除致谢/利益冲突/作者贡献/
+# 支撑信息等尾部声明（2026-09-19 用户要求补全这部分清洗规则）。
+# 2026-09-20：data availability 不再剔除——L2 编译提示词要求 AI 评估数据可用性。
 def _is_tail_noise_para(p, idx: int, total: int) -> bool:
     """[局部] 段落是否"结尾杂项"（委托 block_classify.is_tail_noise）。"""
     from paperparse.core.block_classify import is_tail_noise

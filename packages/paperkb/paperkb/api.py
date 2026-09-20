@@ -493,11 +493,10 @@ def compile_queue(doi: str, level: str | None = None) -> dict:
     c = _need_compiler()
     if level:
         return c.queue(doi, level)
-    from .score import L2_THRESHOLD, L3_THRESHOLD
+    from .score import L2_THRESHOLD
 
     score = value_score_for(doi)
-    lv = ("L3" if score and score["score"] >= L3_THRESHOLD else
-          "L2" if score and score["score"] >= L2_THRESHOLD else "L1")
+    lv = ("L2" if score and score.get("level") == "L2" else "L1")
     return c.queue(doi, lv, value_score=(score or {}).get("score", 0))
 
 
@@ -551,7 +550,7 @@ def _kb_paper_compiled(store: KBStore, doi: str) -> bool:
     """该文献是否已编译纳入知识库：kb/<DOI>/ 目录存在且含编译产物。
 
     判定标志：目录存在，且含任一纳库/编译产物（en.md / zh.md / document.json /
-    _note.md / _details.md / _wiki.md）——即非 bib-only 空壳，才允卡片写回。
+    _note.md / _wiki.md / _relations.md）——即非 bib-only 空壳，才允卡片写回。
     """
     if not doi:
         return False
@@ -559,7 +558,7 @@ def _kb_paper_compiled(store: KBStore, doi: str) -> bool:
     if not d.is_dir():
         return False
     markers = ("en.md", "zh.md", "document.json",
-               "_note.md", "_details.md", "_wiki.md")
+               "_note.md", "_wiki.md", "_relations.md")
     return any((d / m).exists() for m in markers)
 
 
@@ -922,9 +921,9 @@ def _levels_from_status(krow: dict) -> list[str]:
     out = []
     if krow.get("note"):
         out.append("L1")
-    if krow.get("details"):
-        out.append("L2")
     if krow.get("wiki"):
+        out.append("L2")
+    if krow.get("relations"):
         out.append("L3")
     return out
 
@@ -932,7 +931,10 @@ def _levels_from_status(krow: dict) -> list[str]:
 def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             score_min: float = 0, sort: str = "value",
             page: int = 1, page_size: int = 50,
-            kind: str = "", has_attachment: bool = False) -> dict:
+            kind: str = "", has_attachment: bool = False,
+            on_disk_only: bool = True,
+            quartile: str = "", year_from: int | None = None,
+            year_to: int | None = None, min_if: float = 0.0) -> dict:
     """知识库三视图聚合列表：papers_meta × 价值分 × kb/编译状态。
 
     条目 = papers_meta（bib 权威元数据），doi 唯一键；评分/目录/编译三次批量
@@ -946,6 +948,7 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
         score_min      价值分下限（value_score >= score_min）
         sort           value 降序（默认）/ year 降序 / title 升序；未知值回落 value
         page / page_size  分页（page>=1；page_size 1..200，超出截断）
+        on_disk_only   默认 True：过滤掉 kb 目录已删除的幽灵记录（文件不在磁盘）
     返回：
         {"items": [{doi,title,journal,year,value_score,level,in_kb,
                     source_files:{source_pdf,en_md,document_json,images},
@@ -1007,9 +1010,23 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             continue
         if cs in ("l1", "l2", "l3") and cs.upper() not in compiled:
             continue
+        m_quartile = getattr(m, "quartile", "") or ""
+        if quartile and m_quartile not in [q.strip() for q in quartile.split(",")]:
+            continue
+        m_year = int(m.year) if m.year and str(m.year).isdigit() else 0
+        if year_from and m_year < year_from:
+            continue
+        if year_to and m_year > year_to:
+            continue
+        m_if = float(getattr(m, "impact_factor", 0.0) or 0.0)
+        if min_if and m_if < min_if:
+            continue
         krow = kb_rows.get(mkey) or {}
         if krow:
             matched.add(mkey)
+        # 2026-09-19：默认过滤 kb 目录已删除的幽灵记录（文件不在磁盘但数据库有记录）
+        if on_disk_only and not krow:
+            continue
         items.append({
             "doi": m.doi,
             "rid": m.rid or mkey,
@@ -1031,6 +1048,10 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             "compiled": compiled,
             "queued": queued,
             "last_error": agg.get("error", ""),
+            "impact_factor": getattr(m, "impact_factor", 0.0) or 0.0,
+            "quartile": getattr(m, "quartile", "") or "",
+            "paper_rank": getattr(m, "paper_rank", 0.0) or 0.0,
+            "library_citations": getattr(m, "library_citations", 0) or 0,
         })
 
     # 3b) P0-A：磁盘有产物、bib 元数据里没有目录（磁盘为准，否则"有文献但列表看不到"）
@@ -1074,6 +1095,10 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             "queued": [],
             "last_error": agg.get("error", ""),
             "kind": _kind_of_dir(dirname, key, store),
+            "impact_factor": 0.0,
+            "quartile": "",
+            "paper_rank": 0.0,
+            "library_citations": 0,
         })
 
     # 3c) P0-B step3：类型（kind）+ 附件数 + 类型/附件过滤（F1/A2；服务端过滤）
@@ -1601,6 +1626,44 @@ def kb_trash_empty() -> dict:
     return {"status": "emptied", "removed_keys": len(keys), "removed_dirs": removed_dirs}
 
 
+def cleanup_stale_records() -> dict:
+    """清理幽灵记录：kb 目录已删除但数据库仍有元数据/编译任务的条目。
+
+    扫描 papers_meta + compile_jobs，删除 kb 目录不存在的条目。
+    返回 {removed_meta: int, removed_jobs: int, kept: int}。
+    """
+    store = _need_store()
+    kb = store.roots.kb_dir
+    # 1) 收集磁盘上实际存在的 kb 目录键
+    disk_keys: set[str] = set()
+    if kb.exists():
+        for d in kb.iterdir():
+            if d.is_dir() and not d.name.startswith(("_", ".")):
+                key, _ = dir_to_key(d.name, store)
+                if key:
+                    disk_keys.add(key)
+    # 2) 清理 papers_meta 中 kb 目录不存在的条目
+    removed_meta = 0
+    kept = 0
+    for m in store.list_meta(limit=10000):
+        mkey = (m.doi or "").strip() or (m.rid or "")
+        if mkey in disk_keys:
+            kept += 1
+            continue
+        store.delete_meta(mkey)
+        removed_meta += 1
+    # 3) 清理 compile_jobs 中对应条目
+    removed_jobs = 0
+    for j in store.list_jobs():
+        doi = j.get("paper_doi") or ""
+        if doi and doi not in disk_keys:
+            store.delete_job(doi, j.get("level", ""))
+            removed_jobs += 1
+    logger.info("清理幽灵记录: 删除元数据 %d 条, 编译任务 %d 条, 保留 %d 条",
+                removed_meta, removed_jobs, kept)
+    return {"removed_meta": removed_meta, "removed_jobs": removed_jobs, "kept": kept}
+
+
 def regenerate_index() -> dict:
     """扫描 knowledge_base/ 重建总索引 _index.md（标题/DOI/年份/期刊/编译状态/链接）。
     编译/导入/同步后自动调用（文件系统即索引，卡帕西）。返回索引到的文献数。
@@ -1618,15 +1681,15 @@ def regenerate_index() -> dict:
             continue
         meta = store.get_meta(doi)
         note = (d / "_note.md").exists()
-        details = (d / "_details.md").exists()
         wiki = (d / "_wiki.md").exists()
-        level = ("L3" if wiki else "L2" if details else "L1" if note else "未编译")
+        relations = (d / "_relations.md").exists()
+        level = ("L3" if relations else "L2" if wiki else "L1" if note else "未编译")
         links = []
         if note:
             links.append(f"[[{d.name}/_note|笔记]]")
-        if details:
-            links.append(f"[[{d.name}/_details|详细]]")
         if wiki:
+            links.append(f"[[{d.name}/_wiki|深度]]")
+        if relations:
             links.append(f"[[{d.name}/_wiki|深度]]")
         title = ((meta.title if meta else "") or d.name).replace("|", "｜")
         rows.append({
@@ -1647,6 +1710,39 @@ def regenerate_index() -> dict:
     p = kb / "_index.md"
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"papers": len(rows), "path": str(p)}
+
+
+def sync_lit_meta(lit_db_path: str | Path = "") -> dict:
+    """从 paperlit 的 lit.db 同步文献计量数据到 papers_meta（门面入口）。
+
+    lit_db_path 缺省时按 data_dir/literature/lit.db 推导。
+    """
+    store = _need_store()
+    if not lit_db_path:
+        lit_db_path = store.roots.data_dir / "literature" / "lit.db"
+    else:
+        lit_db_path = Path(lit_db_path)
+    result = store.sync_lit_meta(lit_db_path)
+    logger.info("paperlit 元数据同步: %s", result)
+    return result
+
+
+def fill_journal_meta_batch() -> dict:
+    """批量补全缺失的 IF/分区：对 papers_meta 中 impact_factor 或 quartile 为空的记录，
+    从 journals.db 按 ISSN/期刊名查找并写入。返回 {total, filled, skipped}。"""
+    store = _need_store()
+    with store._conn() as conn:
+        rows = conn.execute(
+            "SELECT rid, doi FROM papers_meta"
+            " WHERE impact_factor = 0 OR impact_factor IS NULL"
+            " OR quartile = '' OR quartile IS NULL"
+        ).fetchall()
+    filled = 0
+    for r in rows:
+        key = r["doi"] or r["rid"]
+        if store.fill_journal_meta(key):
+            filled += 1
+    return {"total": len(rows), "filled": filled, "skipped": len(rows) - filled}
 
 
 def compile_backfill() -> dict:
@@ -1691,6 +1787,48 @@ def compile_backfill() -> dict:
             "failed": failed}
 
 
+def compile_batch(dois: list[str], action: str = "retry") -> dict:
+    """批量编译（直接执行，不走队列）。
+
+    Args:
+        dois: 目标文献 DOI 列表
+        action: "retry"=重试失败的编译 / "l3"=执行 L3 跨文献分析
+
+    Returns:
+        {"success": N, "failed": N, "skipped": N,
+         "results": [{"doi": ..., "status": "done"|"failed"|"skipped", "error": ...}]}
+    """
+    c = _need_compiler()
+    results: list[dict] = []
+    success = failed = skipped = 0
+
+    for doi in dois:
+        try:
+            if action == "l3":
+                r = c.compile(doi, "L3")
+            else:
+                r = c.compile(doi, "L1", force=True)
+            status = r.get("status", "done")
+            if status == "skipped_existing":
+                skipped += 1
+                results.append({"doi": doi, "status": "skipped", "error": ""})
+            else:
+                success += 1
+                results.append({"doi": doi, "status": "done", "error": ""})
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            results.append({"doi": doi, "status": "failed", "error": str(e)})
+
+    if success > 0:
+        try:
+            regenerate_index()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return {"success": success, "failed": failed, "skipped": skipped,
+            "results": results}
+
+
 def kb_dois() -> set[str]:
     """知识库（knowledge_base/）中所有文献的 DOI/键集合（轻量，供图谱 in_kb 标记）。
 
@@ -1732,13 +1870,13 @@ def stats() -> dict:
                 continue
             kb_papers += 1
             has_note = (d / "_note.md").exists()
-            has_details = (d / "_details.md").exists()
             has_wiki = (d / "_wiki.md").exists()
+            has_relations = (d / "_relations.md").exists()
             L1 += has_note
-            L2 += has_details
-            L3 += has_wiki
+            L2 += has_wiki
+            L3 += has_relations
             kb_rows.append({"doi": key, "dir": d.name, "note": has_note,
-                            "details": has_details, "wiki": has_wiki})
+                            "wiki": has_wiki, "relations": has_relations})
 
     library_papers = 0
     lib_dois: set[str] = set()
@@ -1779,3 +1917,138 @@ def status() -> dict:
         "fts_enabled": _settings.fts_enabled,
         "db": str(store.db_path),
     }
+
+
+# ---------------------------------------------------------------- 向量检索
+
+def kb_vector_search(query: str, top_k: int = 20,
+                     exclude_doi: str = "") -> list[dict]:
+    """知识库编译结果向量相似度搜索。
+
+    需 vector_impl=kb + SILICONFLOW_API_KEY；不满足时返回空列表。
+
+    Args:
+        query: 查询文本
+        top_k: 返回数量
+        exclude_doi: 排除的 DOI（L3 概念层搜索时排除自身）
+    """
+    if _settings.vector_impl != "kb":
+        return []
+    import os
+    api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+    if not api_key:
+        return []
+    from .vector import KbVectorIndex
+    store = _need_store()
+    idx = KbVectorIndex(store.roots, api_key=api_key)
+    return idx.search(query, top_k=top_k, exclude_doi=exclude_doi)
+
+
+def kb_vector_search_by_concepts(concept_names: list[str],
+                                 top_k: int = 20,
+                                 exclude_doi: str = "") -> list[dict]:
+    """混合检索：概念倒排 + 向量相似度。
+
+    Args:
+        concept_names: 查询概念列表
+        top_k: 返回数量
+        exclude_doi: 排除的 DOI
+    """
+    if _settings.vector_impl != "kb":
+        return []
+    import os
+    api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+    if not api_key:
+        return []
+    from .vector import KbVectorIndex
+    store = _need_store()
+    idx = KbVectorIndex(store.roots, api_key=api_key)
+    return idx.search_by_concepts(concept_names, top_k=top_k, store=store,
+                                  exclude_doi=exclude_doi)
+
+
+def rebuild_kb_vector_index(force: bool = False,
+                            progress_cb=None) -> dict:
+    """批量为所有已编译文献构建/重建 KB 向量索引。
+
+    Args:
+        force: 是否强制重建（忽略已索引的）
+        progress_cb: 进度回调 (indexed: int, total: int, doi: str)
+
+    Returns:
+        {"indexed": N, "total": M, "skipped": K}
+    """
+    import os
+    api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+    if not api_key:
+        return {"indexed": 0, "total": 0, "error": "SILICONFLOW_API_KEY 未配置"}
+
+    store = _need_store()
+    roots = store.roots
+    kb_dir = roots.kb_dir
+
+    # 扫描所有已编译文献（有 _note.md 的目录）
+    compiled = []
+    for note_path in kb_dir.rglob("_note.md"):
+        folder = note_path.parent
+        # 从 frontmatter 提取真实 DOI（目录名可能是 doi_to_dirname 格式）
+        doi = ""
+        try:
+            text = note_path.read_text(encoding="utf-8", errors="replace")
+            import re
+            m = re.search(r"^doi:\s*(.+)$", text, re.MULTILINE)
+            if m:
+                doi = m.group(1).strip()
+        except Exception:
+            pass
+        if not doi:
+            doi = folder.name  # 兜底用目录名
+        compiled.append((doi, folder))
+
+    if not compiled:
+        return {"indexed": 0, "total": 0, "skipped": 0}
+
+    from .vector import KbVectorIndex
+    idx = KbVectorIndex(roots, api_key=api_key)
+
+    indexed = 0
+    skipped = 0
+    total = len(compiled)
+
+    for i, (doi, folder) in enumerate(compiled):
+        note_text = ""
+        note_path = folder / "_note.md"
+        title = ""
+        if note_path.exists():
+            note_text = note_path.read_text(encoding="utf-8", errors="replace")
+            # 从 _note.md 提取标题（# 行）
+            for line in note_text.splitlines():
+                if line.startswith("# "):
+                    title = line[2:].strip()
+                    break
+
+        wiki_text = ""
+        wiki_path = folder / "_wiki.md"
+        if wiki_path.exists():
+            wiki_text = wiki_path.read_text(encoding="utf-8", errors="replace")
+
+        # 提取 concepts（从 concepts 表）
+        concepts = []
+        try:
+            concepts = store.concepts_for_doi(doi)
+        except Exception:
+            pass
+
+        added = idx.index_paper(
+            doi, note_text=note_text, wiki_text=wiki_text,
+            concepts=concepts, title=title, force=force,
+        )
+        if added > 0:
+            indexed += added
+        else:
+            skipped += 1
+
+        if progress_cb:
+            progress_cb(i + 1, total, doi)
+
+    return {"indexed": indexed, "total": total, "skipped": skipped}

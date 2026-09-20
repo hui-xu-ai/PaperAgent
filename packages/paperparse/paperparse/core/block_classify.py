@@ -97,13 +97,14 @@ def _is_caption_line(text: str) -> bool:
 # 尾部杂项（结尾声明）判据 —— en.md 干净版 / 双语主产物 / AI 全文上下文**单一来源**。
 # 用户 2026-09-19 要求：供翻译/编译/问答的干净全文不含 "Declaration of Competing
 # Interest"、"CRediT authorship contribution statement"、"Acknowledgements"、
-# "Data availability"、"Supporting Information" 等尾部声明段。命中即从该段起截断其后全部。
+# "Supporting Information" 等尾部声明段。命中即从该段起截断其后全部。
+# 2026-09-20：data availability 从尾部杂项移除——L2 编译提示词要求 AI 评估数据可用性，
+# 若提前清洗则 AI 无法看到该声明。
 # 注：paperkb.context 因两包独立另有一份同口径实现（改动需同步）。
 _TAIL_NOISE_RE = re.compile(
     r"^\s*(references|bibliography|literature cited|works cited|"
     r"acknowledg(e)?ments?|conflict of interest|declarations? of (competing|conflicting) interest|"
     r"competing interests?|author contributions?|authors'? contributions?|credit authorship|"
-    r"data availability|data statement|code availability|"
     r"supporting information(?!\s*(fig|figure|table|appendix|section|movie|note|scheme|"
     r"dataset|data set|ref)\b)|"
     r"supplementary (material|information|data)(?!\s*(fig|figure|table|appendix|section|movie)\b)|"
@@ -116,7 +117,6 @@ _TAIL_STRONG_RE = re.compile(
     r"^\s*(references|bibliography|literature cited|works cited|"
     r"acknowledg(e)?ments?|conflict of interest|declarations? of (competing|conflicting) interest|"
     r"competing interests?|author contributions?|authors'? contributions?|credit authorship|"
-    r"data availability|code availability|"
     r"supporting information(?!\s*(fig|figure|table|appendix|section|movie|note|scheme|"
     r"dataset|data set|ref)\b)|"
     r"supplementary (material|information|data)(?!\s*(fig|figure|table|appendix|section|movie)\b)|"
@@ -128,13 +128,14 @@ _TAIL_SHORT_CHARS = 200      # 前半篇时只有"短声明段"才认作尾部�
 
 def is_tail_noise(text: str, idx: int, total: int, *,
                   is_heading: bool = False, section: str = "") -> bool:
-    """[全局] 该段是否"结尾杂项"（致谢/利益冲突/作者贡献/数据可用性/支撑信息/参考文献…）。
+    """[全局] 该段是否"结尾杂项"（致谢/利益冲突/作者贡献/支撑信息/参考文献…）。
 
     判据（与 paperkb.context._is_tail_noise 同口径）：
       · 先剥 markdown "## " 前缀再匹配 text，并**同时匹配 section 字段**（节名干净）；
       · **标题段无歧义**：is_heading 命中即截断（不受位置门限约束）；
       · 正文段：位于后半篇（idx ≥ 50%）命中即截断；位于前半篇时仅"短段 + 强模式"才截断
         （防正文内联引用 "Supporting Information Figure S1 shows…" 误截）。
+    2026-09-20：data availability 不再视为尾部杂项（L2 编译需评估数据可用性）。
     """
     t = re.sub(r"^#+\s*", "", (text or "")).strip()
     sec = (section or "").strip()

@@ -49,6 +49,27 @@ _PADDLE_NOISE = {"header", "footer", "page_number", "page-header",
                  "page-footer", "footnote", "page-number"}
 
 
+def _strip_brace_cmd(t: str, cmd: str) -> str:
+    """[局部] 剥离 ``\\cmd{...}`` → 保留参数内容，支持嵌套花括号。"""
+    pat = re.compile(r"\\%s\s*\{" % re.escape(cmd))
+    while True:
+        m = pat.search(t)
+        if not m:
+            break
+        depth, start, i = 1, m.end(), m.end()
+        while i < len(t) and depth > 0:
+            if t[i] == '{':
+                depth += 1
+            elif t[i] == '}':
+                depth -= 1
+            i += 1
+        if depth == 0:
+            t = t[:m.start()] + t[start:i - 1] + t[i:]
+        else:
+            break
+    return t
+
+
 def _norm_format(t: str) -> str:
     """[局部] 格式表示归一化（上标标签/Unicode 符号/LaTeX 命令 → 同一文本），
     用于判定"仅表示差异"（如 <sup>−</sup> vs $^{-}$）。
@@ -71,8 +92,8 @@ def _norm_format(t: str) -> str:
     t = re.sub(r"\\cdot", "*", t)
     t = re.sub(r"\\times", "x", t)
     t = re.sub(r"\\left|\\right", "", t)
-    t = re.sub(r"\\mathrm\{([^}]*)\}", r"\1", t)
-    t = re.sub(r"\\text\{([^}]*)\}", r"\1", t)
+    t = _strip_brace_cmd(t, "mathrm")
+    t = _strip_brace_cmd(t, "text")
     t = re.sub(r"\\,", "", t)
     t = re.sub(r"\^\{([^}]*)\}", r"\1", t)
     t = re.sub(r"_\{([^}]*)\}", r"\1", t)
@@ -1152,6 +1173,24 @@ def build_markdown(repair_items: list, figures: list | None = None,
         # P16：公式碎片归一化（mineru 把 "$0 . 3 7$" 空格拆散 → "$0.37$"）
         if r.kind == "body":
             text = normalize_formula_fragments(text)
+        # 2026-09-20：HTML <sub>/<sup> → LaTeX 在 wrap_orphan_latex 之前完成，
+        # 否则孤儿包裹先包 $...$，后续 <sub>→_{x} 再被裸露包裹正则注入嵌套 $
+        # （$\mathrm{Co(O<sub>x</sub>)@LIG}$ → $\mathrm{Co(O$_{x}$)@LIG}$ 畸形）
+        if r.kind in ("body", "caption"):
+            def _sub_repl_bm(m):
+                inner = m.group(1)
+                if inner.startswith('^{') or inner.startswith('_{'):
+                    return inner
+                return '_{' + inner + '}'
+            def _sup_repl_bm(m):
+                inner = m.group(1)
+                if inner.startswith('^{') or inner.startswith('_{'):
+                    return inner
+                return '^{' + inner + '}'
+            text = re.sub(r'<sup>([^<]*)</sup>', _sup_repl_bm, text)
+            text = re.sub(r'<sub>([^<]*)</sub>', _sub_repl_bm, text)
+            text = re.sub(r'\^\{\^\{([^}]+)\}\}', r'^{\1}', text)
+            text = re.sub(r'_\{_\{([^}]+)\}\}', r'_{\1}', text)
         # P16：孤儿 LaTeX 补 $ 定界（mineru 可能漏 $，如 "\mathrm{CoO_x}@LIG"）
         if r.kind in ("body", "caption"):
             text = wrap_orphan_latex(text)
@@ -1450,7 +1489,7 @@ def _best_math_char(seg: str) -> str | None:
         if cmd in seg:
             return ch
     t = seg.replace("$", "")
-    t = re.sub(r"\\mathrm\s*\{([^{}]*)\}", r"\1", t)
+    t = _strip_brace_cmd(t, "mathrm")
     t = re.sub(r"\\[a-zA-Z]+", "", t)
     t = re.sub(r"[\s{}\[\]]", "", t)
     for ch in t:
@@ -1897,6 +1936,26 @@ def to_article_document(repair_items: list, figures: list,
         # 2026-08-26：引用编号上标化（与 build_markdown 一致，document.json 同步）
         if getattr(r, "kind", "") == "body":
             text = _sup_inline_refs(text)
+        # 2026-09-19 用户反馈：清理 HTML 标签（<sup>[1-5]</sup>等），改用 LaTeX 上标或纯文本
+        # 2026-09-19 fix: 防嵌套——<sup>内容已含 ^{...} 时只剥标签不重复包裹
+        def _sup_repl(m):
+            inner = m.group(1)
+            if inner.startswith('^{') or inner.startswith('_{'):
+                return inner  # 已有 LaTeX 上标，只剥 <sup> 壳
+            return '^{' + inner + '}'
+        def _sub_repl(m):
+            inner = m.group(1)
+            if inner.startswith('^{') or inner.startswith('_{'):
+                return inner
+            return '_{' + inner + '}'
+        text = re.sub(r'<sup>([^<]*)</sup>', _sup_repl, text)
+        text = re.sub(r'<sub>([^<]*)</sub>', _sub_repl, text)
+        text = re.sub(r'</?(?:em|strong|b|i|u|span|div|p|br|a|img|table|tr|td|th|ul|ol|li|h[1-6])[^>]*>', '', text)
+        # 2026-09-19 fix: 展平嵌套上标——MinerU 曾输出 ^{<sup>[N]</sup>}，转换后变 ^{^{[N]}}
+        text = re.sub(r'\^\{\^\{([^}]+)\}\}', r'^{\1}', text)  # ^{^{...}} → ^{...}
+        text = re.sub(r'_\{_\{([^}]+)\}\}', r'_{\1}', text)    # _{_{...}} → _{...}
+        # 2026-09-20：删除裸露 ^{...}/_{...} 包裹 $...$ 的正则——该正则不感知 $...$ 边界，
+        # 会在 $\mathrm{...}$ 内部注入嵌套 $。wrap_orphan_latex 会在下方统一处理定界。
         # P16：公式碎片归一化（与 build_markdown 保持一致）
         if getattr(r, "kind", "") == "body":
             text = normalize_formula_fragments(text)
@@ -2812,6 +2871,27 @@ def process_pdf_v2(pdf_path: str | Path, *, md_path: str | Path | None = None,
     # P16 输出前公式自检（$配对/括号配对→修复安全项+记录到 qa_report）
     md_out, _formula_issues = _formula_self_check(md_out)
     stats["formula_self_check"] = _formula_issues
+    # 2026-09-19: clean HTML tags from en.md (convert sup/sub to LaTeX first)
+    import re
+    def _sup_repl_en(m):
+        inner = m.group(1)
+        if inner.startswith('^{') or inner.startswith('_{'):
+            return inner
+        return '^{' + inner + '}'
+    def _sub_repl_en(m):
+        inner = m.group(1)
+        if inner.startswith('^{') or inner.startswith('_{'):
+            return inner
+        return '_{' + inner + '}'
+    md_out = re.sub(r"<sup>([^<]*)</sup>", _sup_repl_en, md_out)
+    md_out = re.sub(r"<sub>([^<]*)</sub>", _sub_repl_en, md_out)
+    md_out = re.sub(r"</?(?:em|strong|b|i|u|span|div|p|br|a|img|table|tr|td|th|ul|ol|li|h[1-6])[^>]*>", "", md_out)
+    # 2026-09-19 fix: 展平嵌套上标
+    md_out = re.sub(r'\^\{\^\{([^}]+)\}\}', r'^{\1}', md_out)
+    md_out = re.sub(r'_\{_\{([^}]+)\}\}', r'_{\1}', md_out)
+    # 2026-09-20：删除裸露 ^{...}/_{...} 包裹 $...$ 的正则——该正则不感知 $...$ 边界，
+    # 会将已在 $\mathrm{...}$ 内部的 _{x} 再包一层 $，产出 $\mathrm{Co(O$_{x}$)}$ 畸形。
+    # 逐段的 <sub>/<sup> 转换已在 build_markdown 中 wrap_orphan_latex 之前完成。
     en_md = out / "en.md"
     en_md.write_text(md_out, encoding="utf-8")
     # P15 Step5：document.json 落盘 ArticleDocument 兼容格式（load_document/

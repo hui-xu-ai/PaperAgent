@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """编译系统（卡帕西 LLM Wiki 风格，KB-DESIGN v0.6 §6）。
 
-- L1 知识编译：一次 LLM 调用输出 一句话贡献/六维(带段落引用)/概念标签 → _note.md
-- L2 章节要点：注入 L1 压缩版（compile_ctx），只补充不重复 → _details.md
-- L3 深度 wiki：注入 L1+L2 压缩版，输出 wiki 结构+概念列表 → _wiki.md + 概念页聚合
-- 编译结果链：每级产出 300 字压缩版存 compile_ctx，下级注入 → 省 token
+- L1+L2 合并编译：一次 LLM 调用同时产出 L1（一句话/六维/概念）+ L2（深度 wiki）→ 省 50% 全文输入
+- L1 知识编译：_note.md（一句话贡献 + 六维总结 + 概念标签 + AI 评分）
+- L2 深度 wiki：_wiki.md（方法论批判 + 可复现性 + 应用转化）
+- L3 概念关系层：_relations.md（用编译结果代替全文，分析跨文献概念关系，省 77% token）
 - 队列：compile_jobs 状态机；价值分决定等级；幂等（done **且产物在**才跳过 / 产物存在跳过 / force 覆盖）
 """
 from __future__ import annotations
@@ -31,13 +31,7 @@ doi: {doi}
 tags: [paper{concepts}]
 ---
 
-# 论文核心笔记：{title}
-
-## 基本信息
-- 作者：{authors}{corr_line}{aff_line}
-- 期刊/年份：{journal} {year}（{journal_meta}）
-- DOI：[{doi}](https://doi.org/{doi})
-- 被引：{cited}{kw_line}
+# {title}
 
 ## 一句话贡献
 > {one_liner}
@@ -61,11 +55,10 @@ tags: [paper{concepts}]
 
 ## 延伸阅读
 - 原文：[[en|English]]
-- 详细笔记：[[_details|章节要点]]（翻译/编译后补全）
 - 深度编译：[[_wiki|深度编译]]（高价值文献）
 """
 
-# L1/L2 压缩版字数（下级注入省 token；L3 需要更多上下文避免重复）
+# L1/L2 压缩版字数（下级注入省 token）
 _CTX_LIMIT = 1000
 
 
@@ -87,11 +80,6 @@ class Compiler:
         level = level.upper()
         if level not in ("L1", "L2", "L3"):
             raise ValueError(f"未知编译等级: {level}")
-        # 2026-09-11（用户模型）：**编译是内容进入知识库的唯一入口**——
-        # PDF 解析后文献只留在 library，用户选择编译时才把原文层同步进 kb。
-        # 这样编译读到的永远是最新正文（旧行为在解析后立刻复制一份冻结副本，
-        # 翻译后再编译会读到翻译前的旧副本，cej 曾因此少 87 段译文）。
-        # 幂等：kb 已有 document.json 则跳过（不覆盖，保持 D10 冻结原则）。
         self._ensure_source(doi)
         fn = {"L1": self._compile_l1, "L2": self._compile_l2,
               "L3": self._compile_l3}[level]
@@ -184,8 +172,8 @@ class Compiler:
             return {"doi": doi, "level": level, "error": str(e)}
 
     def queue_all_by_value(self, scores: list[dict]) -> dict:
-        """按价值分批量入队：L3(≥4.0 或 ⭐)/L2(≥2.5)/L1(其余，全做)。"""
-        n = {"L1": 0, "L2": 0, "L3": 0}
+        """按价值分批量入队：L2(≥4.0)/L1(其余，全做)。"""
+        n = {"L1": 0, "L2": 0}
         for s in scores:
             level = s.get("level") or "L1"
             try:
@@ -195,137 +183,399 @@ class Compiler:
                 continue
         return n
 
-    # ---------------------------------------------------------- L1
+    # ---------------------------------------------------------- L1+L2 合并编译
     def _compile_l1(self, doi: str, force: bool) -> dict:
-        """L1 编译 = **一次请求同时产出 L1 笔记与 L2 详细笔记**（2026-09-16 用户决策）。
+        """L1+L2 合并编译：一次 LLM 调用同时产出 _note.md + _wiki.md（节省 50% 全文输入）。
 
-        为什么合并（对所有供应商一致，不再按 provider 分叉）：
-          · 两级共用同一段共享全文前缀（~19k token）⇒ 合并后每篇少发一次全文前缀；
-          · L2 不再依赖 worker 的"编完 L1 再看价值分入队 L2"升级链 ⇒ 不会再出现"只出 L1"
-            （2026-09-15 实测事故）；L2 队列项此后会命中幂等跳过（`_compile_l2` 开头）。
-          · L3 保持原样：价值分 ≥4.0 时由升级链单独入队、单独一轮请求。
-        失败语义：组合请求失败 → 只落 L1（保持与旧行为一致），L2 由后续队列项单独重试。
-
-        2026-09-19 新增：L1+L2 编译时 AI 顺手评分（ai_value + topic_score），
-        评分写入 papers_meta 后自动重算价值分，达标则自动入队 L3（零额外 API 成本）。
+        如果合并编译失败或 L2 输出不完整，回退到只产出 L1。
         """
         doc = self._doc(doi)
         meta = self._resolve_meta(doi, doc)
         journal_meta = self._journal_meta(meta.journal, meta.issn, meta.eissn)
         note = self._note_path(doi)
-        details = self._details_path(doi)
+        wiki = self._wiki_path(doi)
         meta_json = meta.model_dump(mode="json")
         if note.exists() and not force:
             return {"status": "skipped_existing", "doi": doi, "level": "L1"}
         llm = get_llm()
-        topics = self._get_preferred_topics()
-        prompt = _prompt_l1_l2(meta_json, doc, journal_meta, topics=topics)
+        qa_ctx = self._qa_context(doi)
+
+        # 尝试合并编译（L1+L2 一次调用）
+        prompt = _prompt_l1_l2_merged(meta_json, doc, journal_meta, qa_ctx=qa_ctx)
         raw = llm.complete(prompt, context="compile")
-        # 两段式解析：L1 段 → JSON；分隔符之后 → L2 Markdown 纯文本。
-        # ⚠️ 关键：**L1 解析失败也不能丢 L1**——若整段 JSON 不合法，退回 L1 单发（与旧行为等价），
-        # 而不是抛错把这一轮编译判死（2026-09-15 实测：模型塞长 Markdown 进 JSON 时整条失败）。
-        l1_raw, l2_md = _split_l1_l2(raw)
-        try:
-            data = _parse_json(l1_raw)
-        except ValueError:
-            logger.warning("L1+L2 合并输出解析失败 → 退回 L1 单发（L2 留给队列项）: %s", doi)
-            raw = llm.complete(_prompt_l1(meta_json, doc, journal_meta), context="compile")
-            data = _parse_json(raw)
-            l2_md = ""
-        if isinstance(data, dict):
-            l2_md = l2_md or str(data.get(_L2_MD_KEY) or "").strip()
-        if not isinstance(data, dict) or not data.get("one_liner"):
+        data = _parse_json(raw)
+
+        # 拆分 L1/L2 输出
+        l1_data, l2_data = _split_l1_l2_merged(data)
+
+        # 验证 L1 输出完整性
+        if not (isinstance(l1_data, dict) and l1_data.get("one_liner")):
+            l1_data = _salvage_l1(raw)
+        if not isinstance(l1_data, dict) or not l1_data.get("one_liner"):
             raise CompileError("L1 编译输出无效（JSON 缺失 one_liner）")
-        note.write_text(_render_note(meta, data, journal_meta), encoding="utf-8")
-        self._save_ctx(doi, "L1", _ctx_from_l1(data))
+
+        # 保存 L1 产物
+        note.write_text(_render_note(meta, l1_data, journal_meta), encoding="utf-8")
+        self._save_ctx(doi, "L1", _ctx_from_l1(l1_data))
         self._mark_done(doi, "L1")
-        l2_md = (l2_md or "").strip()
-        if l2_md:
-            details.write_text(l2_md + "\n", encoding="utf-8")
-            self._save_ctx(doi, "L2", l2_md[: _CTX_LIMIT])
-            self._mark_done(doi, "L2")
-            logger.info("编译合并完成: %s → _note.md + _details.md（一次请求）", doi)
-        else:
-            logger.warning("编译合并：本次输出缺 L2（%s）→ 留给 L2 队列项单独编译", doi)
         self._index_paper_notes(doi)
-        # ---- AI 评分保存 + L3 自动升级（2026-09-19）----
-        ai_value = data.get("ai_value")
-        topic_score = data.get("topic_score")
-        l3_queued = False
-        if ai_value is not None or topic_score is not None:
-            self._save_ai_scores_and_maybe_l3(
-                doi, ai_value, topic_score if topics else None)
-            l3_queued = True
-        return {"status": "done", "doi": doi, "level": "L1",
-                "l2_written": bool(l2_md),
-                "concepts": data.get("concepts", []),
-                "ai_value": ai_value, "topic_score": topic_score,
-                "l3_auto_queued": l3_queued}
 
-    # ---------------------------------------------------------- L2
-    def _compile_l2(self, doi: str, force: bool) -> dict:
-        doc = self._doc(doi)
-        meta = self._resolve_meta(doi, doc)
-        details = self._details_path(doi)
-        if details.exists() and not force:
-            # 2026-09-12：已有产物**必须是有效产物**才算"跳过"。此前占位/拒绝文本
-            # （如 763B 的"待补充：章节原文与段落 ID…"）也算存在 → **永久挡住重编**。
+        # 保存 L2 产物（如果存在）
+        l2_done = False
+        if l2_data and l2_data.get("wiki"):
             try:
-                existing = details.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                existing = ""
-            if _l2_output_ok(existing):
-                return {"status": "skipped_existing", "doi": doi, "level": "L2"}
-            logger.info("L2 已有产物但判定无效（占位/拒绝文本）→ 重新编译: %s", doi)
-        l1_ctx = self._ctx(doi, "L1")
-        llm = get_llm()
-        prompt = _prompt_l2(meta.model_dump(mode="json"), doc, l1_ctx)
-        raw = llm.complete(prompt, context="compile")
-        md = raw.strip()
-        if len(md) < 20:
-            raise CompileError("L2 输出过短")
-        # 质量闸门（2026-09-12 用户反馈"L2 判定了但 _details.md 没有输出结果"）：
-        # 拒绝文本/占位曾以 763B 通过长度闸门被 `_mark_done` 标记成功，UI 全程无 error。
-        # 现在显式校验"像不像有效产物"，不合格 → CompileError → job=failed + last_error 可见。
-        if not _l2_output_ok(md):
-            refs = len(re.findall(r"\[P\d+\]", md))
-            raise CompileError(
-                f"L2 产出无效（段落引用仅 {refs} 处，疑似占位/拒绝文本；"
-                f"开头：{md[:120]!r}）")
-        details.write_text(md, encoding="utf-8")
-        self._save_ctx(doi, "L2", md[: _CTX_LIMIT])
-        self._mark_done(doi, "L2")
-        self._index_paper_notes(doi)
-        return {"status": "done", "doi": doi, "level": "L2"}
+                wiki.write_text(_render_wiki(meta, l2_data), encoding="utf-8")
+                self._save_ctx(doi, "L2", (l2_data.get("wiki") or "")[: _CTX_LIMIT])
+                self._mark_done(doi, "L2")
+                self._index_paper_notes(doi)
+                # 概念聚合（从 L2 的 concepts）
+                concepts = l2_data.get("concepts") or []
+                self._aggregate_concepts(doi, concepts)
+                l2_done = True
+                logger.info("L1+L2 合并编译成功: doi=%s", doi)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("L2 产物保存失败（L1 不受影响）: doi=%s err=%s", doi, e)
 
-    # ---------------------------------------------------------- L3
-    def _compile_l3(self, doi: str, force: bool) -> dict:
+        # 向量索引（编译后自动更新）
+        self._maybe_vector_index(doi, l1_data, l2_data, title=meta.title)
+
+        # AI 评分 + L2 自动升级逻辑（如果 L2 已在合并编译中完成，不再重复入队）
+        ai_value = l1_data.get("ai_value")
+        topic_score = l1_data.get("topic_score")
+        l2_queued = False
+        if not l2_done and (ai_value is not None or topic_score is not None):
+            self._save_ai_scores_and_maybe_l2(
+                doi, ai_value, topic_score if self._get_preferred_topics() else None)
+            l2_queued = True
+
+        return {"status": "done", "doi": doi, "level": "L1",
+                "concepts": l1_data.get("concepts", []),
+                "ai_value": ai_value, "topic_score": topic_score,
+                "l2_merged": l2_done, "l2_auto_queued": l2_queued}
+
+    # ---------------------------------------------------------- L2（深度 wiki）
+    def _compile_l2(self, doi: str, force: bool) -> dict:
         doc = self._doc(doi)
         meta = self._resolve_meta(doi, doc)
         wiki = self._wiki_path(doi)
         if wiki.exists() and not force:
-            return {"status": "skipped_existing", "doi": doi, "level": "L3"}
+            return {"status": "skipped_existing", "doi": doi, "level": "L2"}
         l1_ctx = self._ctx(doi, "L1")
-        l2_ctx = self._ctx(doi, "L2")
         llm = get_llm()
-        prompt = _prompt_l3(meta.model_dump(mode="json"), doc,
-                            l1_ctx, l2_ctx)
+        prompt = _prompt_l2(meta.model_dump(mode="json"), doc, l1_ctx)
+        raw = llm.complete(prompt, context="compile")
+        data = _parse_json(raw)
+        if not isinstance(data, dict):
+            raise CompileError("L2 编译输出无效")
+        wiki.write_text(_render_wiki(meta, data), encoding="utf-8")
+        self._save_ctx(doi, "L2", (data.get("wiki") or str(data))[: _CTX_LIMIT])
+        self._mark_done(doi, "L2")
+        self._index_paper_notes(doi)
+        concepts = data.get("concepts") or []
+        agg = self._aggregate_concepts(doi, concepts)
+        self._maybe_vector_index(doi, {"concepts": concepts}, {"wiki": data.get("wiki"), "concepts": concepts},
+                                 title=meta.title)
+        self._maybe_auto_l3(doi)
+        return {"status": "done", "doi": doi, "level": "L2",
+                "concepts": len(concepts), "concept_pages": agg}
+
+    # ---------------------------------------------------------- L3（概念关系层）
+    def _compile_l3(self, doi: str, force: bool) -> dict:
+        """L3 概念关系层：LLM 驱动检索 + 跨文献关系分析。
+
+        两步走：
+        1. LLM 读取本文 L1+L2，提取检索关键词
+        2. 用关键词搜索向量索引（标题+笔记+wiki+概念），取回候选文献编译结果
+        3. LLM 分析跨文献概念关系 → _relations.md
+
+        省 77% token（~20K vs 全文 ~88K）。
+        """
+        meta = self._resolve_meta_l3(doi)
+        relations_path = self._relations_path(doi)
+        if relations_path.exists() and not force:
+            return {"status": "skipped_existing", "doi": doi, "level": "L3"}
+
+        self_ctx = self._compiled_context(doi)
+        if not self_ctx:
+            raise CompileError(f"L3 无法读取编译结果: {doi}")
+
+        llm = get_llm()
+
+        # 第一步：LLM 提取检索关键词
+        keyword_prompt = _prompt_l3_keywords(meta.model_dump(mode="json"), self_ctx)
+        keyword_raw = llm.complete(keyword_prompt, context="compile")
+        keywords = self._parse_l3_keywords(keyword_raw)
+        if not keywords:
+            raise CompileError("L3 关键词提取失败")
+
+        # 第二步：向量搜索候选文献
+        related = self._search_related_by_keywords(keywords, doi, top_k=15)
+        if not related:
+            raise CompileError(
+                f"L3 向量检索无结果（关键词: {keywords[:3]}）: {doi}")
+
+        # 第三步：取回候选文献编译结果 + LLM 分析关系
+        related_ctxs = []
+        for r in related:
+            ctx = self._compiled_context(r["doi"])
+            if ctx:
+                related_ctxs.append({"doi": r["doi"], "context": ctx,
+                                     "score": r.get("score", 0),
+                                     "connection": r.get("passage_type", "")})
+
+        if not related_ctxs:
+            raise CompileError("L3 候选文献无编译结果")
+
+        prompt = _prompt_l3(meta.model_dump(mode="json"), self_ctx, related_ctxs)
         raw = llm.complete(prompt, context="compile")
         data = _parse_json(raw)
         if not isinstance(data, dict):
             raise CompileError("L3 编译输出无效")
-        wiki.write_text(_render_wiki(meta, data), encoding="utf-8")
-        self._save_ctx(doi, "L3", (data.get("summary") or str(data))[: _CTX_LIMIT])
+
+        relations_path.write_text(
+            _render_relations(meta, data, related_ctxs), encoding="utf-8")
+        self._save_ctx(doi, "L3",
+                       (data.get("summary") or "")[: _CTX_LIMIT])
         self._mark_done(doi, "L3")
-        self._index_paper_notes(doi)
-        concepts = data.get("concepts") or []
-        agg = self._aggregate_concepts(doi, concepts)
+
+        # 双向 cross_refs：把本文 wiki link 追加到相关文献的 _wiki.md
+        self._bidirectional_cross_refs(doi, related_ctxs)
+
         return {"status": "done", "doi": doi, "level": "L3",
-                "concepts": len(concepts), "concept_pages": agg}
+                "related": len(related_ctxs),
+                "keywords": keywords[:5],
+                "concepts": data.get("concept_map", [])}
+
+    def _search_related_by_keywords(self, keywords: list[str],
+                                    exclude_doi: str, top_k: int = 15
+                                    ) -> list[dict]:
+        """用关键词搜索向量索引，返回去重后的候选文献列表。"""
+        import os
+        api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+        if not api_key:
+            return []
+
+        try:
+            from .api import _settings
+            if getattr(_settings, "vector_impl", "noop") != "kb":
+                return []
+        except Exception:  # noqa: BLE001
+            return []
+
+        from .vector import KbVectorIndex
+        idx = KbVectorIndex(self.roots, api_key=api_key)
+
+        seen_dois: set[str] = set()
+        results: list[dict] = []
+
+        # 每个关键词独立搜索，按 DOI 聚合最高分
+        doi_best: dict[str, dict] = {}
+        for kw in keywords:
+            hits = idx.search(kw, top_k=top_k, exclude_doi=exclude_doi)
+            for h in hits:
+                d = h["doi"]
+                if d == exclude_doi:
+                    continue
+                if d not in doi_best or h["score"] > doi_best[d]["score"]:
+                    doi_best[d] = h
+
+        # 按分数排序
+        sorted_hits = sorted(doi_best.values(), key=lambda x: x["score"], reverse=True)
+        return sorted_hits[:top_k]
+
+    @staticmethod
+    def _parse_l3_keywords(raw: str) -> list[str]:
+        """从 LLM 输出中提取检索关键词（JSON 数组或逗号分隔）。"""
+        if not raw:
+            return []
+        text = raw.strip()
+        # 尝试 JSON 解析
+        try:
+            data = json.loads(text)
+            if isinstance(data, list):
+                return [str(k).strip() for k in data if str(k).strip()]
+            if isinstance(data, dict):
+                kws = data.get("keywords") or data.get("search_terms") or []
+                return [str(k).strip() for k in kws if str(k).strip()]
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # 兜底：按逗号/换行分割
+        parts = re.split(r"[,，\n]+", text)
+        return [p.strip().strip('"').strip("'") for p in parts if p.strip()]
+
+    def _find_related_papers(self, doi: str, top_k: int = 10
+                             ) -> list[dict]:
+        """混合检索相关文献：概念倒排 + 向量 + 引用 + 共被引。
+
+        Returns:
+            [{"doi": "...", "score": 0.8, "connection": "concept:GNN"}, ...]
+        """
+        candidates: dict[str, dict] = {}
+
+        # 通道 1：概念倒排（从 concepts 表）
+        concepts = self.store.concepts_for_doi(doi)
+        if concepts:
+            concept_names = [c["name"] for c in concepts[:7]]
+            # 向量索引混合检索
+            try:
+                import os
+                api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+                if api_key:
+                    from .api import _settings
+                    if getattr(_settings, "vector_impl", "noop") == "kb":
+                        from .vector import KbVectorIndex
+                        idx = KbVectorIndex(self.roots, api_key=api_key)
+                        vec_results = idx.search_by_concepts(
+                            concept_names, top_k=top_k * 2,
+                            store=self.store, exclude_doi=doi)
+                        for r in vec_results:
+                            d = r["doi"]
+                            if d not in candidates:
+                                candidates[d] = {
+                                    "doi": d, "score": 0, "connection": ""}
+                            candidates[d]["score"] = max(
+                                candidates[d]["score"], r["score"])
+                            shared = r.get("shared_concepts", [])
+                            if shared:
+                                candidates[d]["connection"] = (
+                                    f"concept:{shared[0]}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("L3 向量检索失败（继续其他通道）: %s", e)
+
+            # 纯 SQL 概念共现（零成本补充）
+            for name in concept_names:
+                for row in self.store.concept_rows(name):
+                    d = row["paper_doi"]
+                    if d == doi:
+                        continue
+                    if d not in candidates:
+                        candidates[d] = {"doi": d, "score": 0,
+                                         "connection": ""}
+                    candidates[d]["score"] = max(candidates[d]["score"], 0.3)
+                    if not candidates[d]["connection"]:
+                        candidates[d]["connection"] = f"concept:{name}"
+
+        # 通道 2：引用关系
+        try:
+            rows = self.store.citation_peers(doi, limit=top_k)
+            for r in rows:
+                d = r.get("doi", "")
+                if d and d not in candidates:
+                    candidates[d] = {"doi": d, "score": 0.4,
+                                     "connection": "citation"}
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 通道 3：共被引聚类
+        try:
+            meta_obj = self._resolve_meta(doi)
+            cluster = getattr(meta_obj, "cocitation_cluster", 0) or 0
+            if cluster > 0:
+                peers = self.store.cluster_peers(
+                    cluster, exclude_doi=doi, limit=top_k)
+                for p in peers:
+                    d = p.get("doi", "")
+                    if d and d not in candidates:
+                        candidates[d] = {"doi": d, "score": 0.35,
+                                         "connection": "cluster"}
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 按分数排序，取 top_k
+        sorted_candidates = sorted(
+            candidates.values(), key=lambda x: x["score"], reverse=True)
+        return sorted_candidates[:top_k]
+
+    def _compiled_context(self, doi: str, limit_chars: int = 1500) -> str:
+        """读取某篇文献的 L1+L2 编译结果，压缩为上下文。"""
+        folder = self._kb_folder(doi)
+        parts = []
+
+        note_path = folder / "_note.md"
+        if note_path.exists():
+            note_text = note_path.read_text(encoding="utf-8", errors="replace")
+            # 提取关键段落：one_liner + 六维 + 概念标签
+            parts.append(self._extract_note_summary(note_text, limit_chars))
+
+        wiki_path = folder / "_wiki.md"
+        if wiki_path.exists():
+            wiki_text = wiki_path.read_text(encoding="utf-8", errors="replace")
+            parts.append(self._extract_wiki_summary(wiki_text, limit_chars // 2))
+
+        return "\n\n".join(parts) if parts else ""
+
+    @staticmethod
+    def _extract_note_summary(note_text: str, limit: int) -> str:
+        """从 _note.md 提取一句话贡献 + 六维摘要 + 概念标签。"""
+        lines = note_text.split("\n")
+        summary_lines = []
+        in_section = ""
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("## 一句话贡献"):
+                in_section = "one_liner"
+                continue
+            elif stripped.startswith("## 六维总结"):
+                in_section = "six_dim"
+                continue
+            elif stripped.startswith("## 概念标签"):
+                in_section = "concepts"
+                continue
+            elif stripped.startswith("## "):
+                in_section = ""
+                continue
+
+            if in_section and stripped and not stripped.startswith(">"):
+                summary_lines.append(stripped)
+            elif in_section == "one_liner" and stripped.startswith(">"):
+                summary_lines.append(stripped.lstrip("> ").strip())
+
+        result = "\n".join(summary_lines)
+        return result[:limit] if len(result) > limit else result
+
+    @staticmethod
+    def _extract_wiki_summary(wiki_text: str, limit: int) -> str:
+        """从 _wiki.md 提取深度编译摘要（去 frontmatter）。"""
+        lines = wiki_text.split("\n")
+        # 跳过 frontmatter
+        start = 0
+        if lines and lines[0].strip() == "---":
+            for i, line in enumerate(lines[1:], 1):
+                if line.strip() == "---":
+                    start = i + 1
+                    break
+
+        content = "\n".join(lines[start:]).strip()
+        return content[:limit]
+
+    def _bidirectional_cross_refs(self, doi: str,
+                                  related_ctxs: list[dict]) -> None:
+        """双向 cross_refs：在相关文献的 _wiki.md 末尾追加指向本文的 wiki link。"""
+        from .doi import doi_to_dirname
+
+        self_dirname = doi_to_dirname(doi)
+        link_to_self = f"[[{self_dirname}/_note]]"
+
+        for r in related_ctxs:
+            related_doi = r["doi"]
+            wiki_path = self._wiki_path(related_doi)
+            if not wiki_path.exists():
+                continue
+            try:
+                text = wiki_path.read_text(encoding="utf-8", errors="replace")
+                if link_to_self in text:
+                    continue  # 已存在
+                # 追加 cross_ref 段
+                section = f"\n\n## 相关文献\n- {link_to_self}（{r.get('connection', '')}）\n"
+                with open(wiki_path, "a", encoding="utf-8") as f:
+                    f.write(section)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cross_ref 追加失败: %s → %s: %s",
+                               doi, related_doi, e)
 
     # ---------------------------------------------------------- 概念页（惰性聚合）
     def _aggregate_concepts(self, doi: str, concepts: list[dict]) -> int:
-        """记录 L3 概念 → 同名概念 ≥3 文献时生成/更新 _concepts/<slug>.md。"""
+        """记录 L2 概念 → 同名概念 ≥3 文献时生成/更新 _concepts/<slug>.md。"""
         if not concepts:
             return 0
         created = 0
@@ -356,18 +606,61 @@ class Compiler:
 
     # ---------------------------------------------------------- 辅助
     def _index_paper_notes(self, doi: str) -> None:
-        """该篇编译产物（_note/_details/_wiki）入 notes_fts（M4 检索主对象）。"""
+        """该篇编译产物（_note/_wiki）入 notes_fts（M4 检索主对象）。"""
         from .doi import doi_to_dirname
 
         folder = self._kb_folder(doi, create=True)
         files = []
-        for name in ("_note.md", "_details.md", "_wiki.md"):
+        for name in ("_note.md", "_wiki.md"):
             p = folder / name
             if p.exists():
                 files.append({"filename": name,
                               "content": p.read_text(encoding="utf-8", errors="replace")})
         if files:
             self.store.index_notes(doi, files)
+
+    def _maybe_vector_index(self, doi: str, l1_data: dict,
+                            l2_data: dict | None, title: str = "") -> None:
+        """编译后自动更新向量索引（需 vector_impl=kb + embedding API key）。"""
+        try:
+            from .api import _settings
+            if getattr(_settings, "vector_impl", "noop") != "kb":
+                return
+        except Exception:  # noqa: BLE001
+            return
+
+        import os
+        api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+        if not api_key:
+            return
+
+        try:
+            from .vector import KbVectorIndex
+            idx = KbVectorIndex(self.roots, api_key=api_key)
+
+            note_text = ""
+            note_path = self._note_path(doi)
+            if note_path.exists():
+                note_text = note_path.read_text(encoding="utf-8", errors="replace")
+
+            wiki_text = ""
+            wiki_path = self._wiki_path(doi)
+            if wiki_path.exists():
+                wiki_text = wiki_path.read_text(encoding="utf-8", errors="replace")
+
+            concepts = l1_data.get("concepts") or []
+            if l2_data and l2_data.get("concepts"):
+                existing_names = {c.get("name") for c in concepts}
+                for c in l2_data["concepts"]:
+                    if c.get("name") and c["name"] not in existing_names:
+                        concepts.append(c)
+
+            added = idx.index_paper(doi, note_text=note_text, wiki_text=wiki_text,
+                                    concepts=concepts, title=title)
+            if added:
+                logger.info("向量索引已更新: doi=%s added=%d", doi, added)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("向量索引更新失败（不影响编译）: doi=%s err=%s", doi, e)
 
     def _canon(self, key: str) -> str:
         """键归一化（P0-B step4）：DOI / RID / 目录名 / md5 目录 → 同一资源键。
@@ -432,30 +725,44 @@ class Compiler:
         logger.info("编译无 bib 元数据，用 document.json 兜底 title（%s）", doi)
         return meta_for(self.store, doi, d)
 
+    def _resolve_meta_l3(self, doi: str) -> PaperMeta:
+        """L3 轻量元数据解析：优先 papers_meta，其次从 _note.md frontmatter 提取。
+
+        L3 只需要 doi + title（渲染用），不需要 document.json 全文。
+        """
+        meta = self.store.get_meta(doi)
+        if meta is not None:
+            return meta
+        note_path = self._note_path(doi)
+        if note_path.exists():
+            text = note_path.read_text(encoding="utf-8")
+            title = ""
+            for line in text.splitlines():
+                if line.startswith("# "):
+                    title = line[2:].strip()
+                    break
+            return PaperMeta(doi=doi, title=title or doi)
+        return PaperMeta(doi=doi, title=doi)
+
     def _note_path(self, doi: str) -> Path:
         return self._kb_folder(doi) / "_note.md"
-
-    def _details_path(self, doi: str) -> Path:
-        return self._kb_folder(doi) / "_details.md"
 
     def _wiki_path(self, doi: str) -> Path:
         return self._kb_folder(doi) / "_wiki.md"
 
-    def _artifact_path(self, doi: str, level: str) -> Path | None:
-        """该等级的编译主产物单文件（L1=`_note.md` / L2=`_details.md` / L3=`_wiki.md`）。
+    def _relations_path(self, doi: str) -> Path:
+        return self._kb_folder(doi) / "_relations.md"
 
-        三级都各有唯一主产物（`_compile_l1/_compile_l2/_compile_l3` 的写盘目标即上列
-        三文件），故一律按**产物文件**判定，不用"kb 目录是否存在"兜底：kb 目录可能
-        只因 `_ensure_source` 纳入原文层而存在（不等于编译过），拿它当判据会误判。
-        """
+    def _artifact_path(self, doi: str, level: str) -> Path | None:
+        """该等级的编译主产物单文件。"""
         lv = (level or "").strip().upper()
         if lv == "L1":
             return self._note_path(doi)
         if lv == "L2":
-            return self._details_path(doi)
-        if lv == "L3":
             return self._wiki_path(doi)
-        return None  # 未知等级：无产物定义
+        if lv == "L3":
+            return self._relations_path(doi)
+        return None
 
     def _artifact_exists(self, doi: str, level: str) -> bool:
         """done 幂等的第二判据：该等级产物**确实还在磁盘上**。
@@ -506,6 +813,43 @@ class Compiler:
         self.store.upsert_job(doi, level, status="done",
                               done_at=datetime.now().isoformat(timespec="seconds"))
 
+    def _cluster_context(self, meta: PaperMeta, limit: int = 5) -> str:
+        """同共被引聚类的其他文献列表（供 cross_refs 后处理使用）。
+
+        从 papers_meta 查同 cocitation_cluster 的其他文献，按 paper_rank 降序取 top N。
+        无聚类数据时返回空字符串。
+        """
+        cluster = getattr(meta, "cocitation_cluster", 0) or 0
+        if cluster <= 0:
+            return ""
+        rows = self.store.cluster_peers(cluster, exclude_doi=meta.doi, limit=limit)
+        if not rows:
+            return ""
+        parts = []
+        for r in rows:
+            title = r.get("title", "") or "(无标题)"
+            year = r.get("year", "") or ""
+            journal = r.get("journal", "") or ""
+            cited = r.get("times_cited", 0) or 0
+            line = f"- {title}（{journal} {year}，被引 {cited}）"
+            parts.append(line)
+        return "## 同聚类文献（共被引聚类，供对比参考）\n" + "\n".join(parts)
+
+    def _qa_context(self, doi: str, limit_chars: int = 800) -> str:
+        """该文献的用户 QA 卡片（Query→Wiki 反馈循环）。
+
+        读取 kb/<DOI>/cards/ 下 card-qa 类型卡片，提取问题与答案摘要。
+        编译时注入 → LLM 知道用户关心什么，六维总结可侧重这些热点。
+        无 QA 卡片时返回空字符串。
+        """
+        from .cards import read_cards_for_compile
+        kb_dir = self.roots.kb_dir
+        raw = read_cards_for_compile(kb_dir, doi, types=["card-qa"],
+                                     limit_chars=limit_chars)
+        if not raw:
+            return ""
+        return "## 用户关注热点（已有问答，编译时请侧重这些方面）\n" + raw
+
     def _get_preferred_topics(self) -> list[str]:
         """从全局设置读取用户配置的主题表（导入界面设置）。"""
         try:
@@ -514,119 +858,61 @@ class Compiler:
         except Exception:  # noqa: BLE001
             return []
 
-    def _save_ai_scores_and_maybe_l3(self, doi: str,
+    def _save_ai_scores_and_maybe_l2(self, doi: str,
                                       ai_value: float | None,
                                       topic_score: float | None) -> None:
-        """保存 AI 评分到 papers_meta，重算价值分，达标则自动入队 L3。
-
-        设计思路（2026-09-19 用户决策）：
-        - L1+L2 编译时 AI 已读全文，顺手打分零额外成本
-        - 客观分(IF+被引+年份)决定初始 L1/L2 入队
-        - L1+L2 完成后加入 AI 评分，重算总分
-        - 总分 ≥ L3_THRESHOLD → 自动入队 L3（L3 复用缓存的全文，缓存命中率高）
-        - L1+L2 都没过的文献不值得打附加分，也就不进 L3
-        """
+        """保存 AI 评分到 papers_meta，重算价值分，达标则自动入队 L2（深度 wiki）。"""
         try:
             self.store.update_ai_scores(doi, ai_value_score=ai_value,
                                         topic_score=topic_score)
+            self.store.fill_journal_meta(doi)
+            from .api import value_score_for
+            from .score import L2_THRESHOLD
+            new_score = value_score_for(doi)
+            if new_score and new_score.get("score", 0) >= L2_THRESHOLD:
+                l2_job = self.store.get_job(doi, "L2")
+                if l2_job is None or l2_job.get("status") != "done":
+                    self.queue(doi, "L2", value_score=new_score["score"])
+                    logger.info("AI 评分触发 L2 自动升级: %s score=%.2f",
+                                doi, new_score["score"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("AI 评分保存/L2 升级失败（不阻断编译）: doi=%s err=%s", doi, e)
+
+    def _maybe_auto_l3(self, doi: str) -> None:
+        """L2 编译完成后：重算价值分，≥ L3_THRESHOLD 且 ai_value 可用 → 自动入队 L3。"""
+        try:
+            self.store.fill_journal_meta(doi)
             from .api import value_score_for
             from .score import L3_THRESHOLD
             new_score = value_score_for(doi)
-            if new_score and new_score.get("score", 0) >= L3_THRESHOLD:
+            if not new_score:
+                return
+            ai_value = new_score.get("ai_value")
+            if ai_value is None or ai_value <= 0:
+                return
+            if new_score.get("score", 0) >= L3_THRESHOLD:
                 l3_job = self.store.get_job(doi, "L3")
                 if l3_job is None or l3_job.get("status") != "done":
                     self.queue(doi, "L3", value_score=new_score["score"])
-                    logger.info("AI 评分触发 L3 自动升级: %s score=%.2f",
-                                doi, new_score["score"])
+                    logger.info("L2 完成触发 L3 自动升级: %s score=%.2f ai_value=%.2f",
+                                doi, new_score["score"], ai_value)
         except Exception as e:  # noqa: BLE001
-            logger.warning("AI 评分保存/L3 升级失败（不阻断编译）: doi=%s err=%s", doi, e)
+            logger.warning("L3 自动升级失败（不阻断编译）: doi=%s err=%s", doi, e)
 
 
 # ---------------------------------------------------------------- 提示词
 
-# L1 合并请求里承载 L2 详细笔记的 JSON 键（兼容旧形状，便于解析与测试）
-_L2_MD_KEY = "l2_md"
-# 两段式输出的分隔符（**独立一行**）：之前用"把 Markdown 塞进 JSON 字符串"的形状，
-# 实测模型给不全导致整个 JSON 解析失败、连 L1 都丢（2026-09-15 真实链路）。
-_L2_SEP = "<<<L2_MD>>>"
 
-
-def _split_l1_l2(raw: str) -> tuple[str, str]:
-    """把"两段式"输出拆成 (L1 段, L2 Markdown)。
-
-    容忍：缺分隔符（则 L2 为空、由后续 L2 队列项单独编译）、围栏、分隔符前后多余空行。
-    """
-    text = raw or ""
-    idx = text.find(_L2_SEP)
-    if idx < 0:
-        return text, ""
-    return text[:idx], text[idx + len(_L2_SEP):].strip()
-
-
-def _prompt_l1_l2(meta: dict, doc: PaperDoc, journal_meta: str,
-                    topics: list[str] | None = None) -> str:
-    """L1+L2 合并提示词：**一次请求**产出 L1 六维笔记（JSON）+ L2 详细笔记（Markdown）+ AI 评分。
-
-    用户决策 2026-09-16：编译 L1/L2 合并，**对所有供应商一致生效**（不再按 provider 分叉）。
-    为什么能省：两级共用同一段共享全文前缀（`shared_ctx(doc)`，~19k token）⇒ 每篇少发一次全文。
-
-    2026-09-19 新增：AI 顺手评分（零额外成本）——JSON 增加 ai_value(0-5) 和 topic_score(0-1)。
-
-    输出形状（严格 JSON，L2 正文放字符串里）：
-        {"one_liner": "...", ..., "concepts": [...], "ai_value": 3.5, "topic_score": 0.8, "l2_md": "# 详细笔记\\n..."}
-    拼装方式保持"与既有两个构造点同源"：L1 任务文本取自 `_prompt_l1`，L2 任务文本取自 `_prompt_l2`
-    （在 `TASK_MARK` 处取任务部分），**不新造第二套任务描述**。
-    """
-    from .context import split_task
-
-    l1_task = split_task(_prompt_l1(meta, doc, journal_meta))[1]
-    l2_task = split_task(_prompt_l2(meta, doc, "(同一次调用内，请以上面 ① 的输出为准)"))[1]
-    topic_instruction = ""
-    if topics:
-        topic_list = "、".join(topics)
-        topic_instruction = (
-            "\n\n### ③ 主题相关度评分\n"
-            f"用户当前研究方向的主题表：{topic_list}\n"
-            "请评估该论文与这些主题的相关度，输出 topic_score（0-1，0=完全无关，1=高度相关）。\n"
-        )
-    task = (
-        "## 本次任务：论文知识编译（严格按顺序，三部分输出）\n"
-        "先完成 ①，再**基于 ① 的输出**完成 ②（不要重复全景，只补充章节级细节），最后完成 ③。\n\n"
-        "### ① L1 核心笔记\n" + l1_task + "\n\n"
-        "### ② L2 详细笔记（Markdown）\n" + l2_task + "\n\n"
-        "### ③ AI 价值评分\n"
-        "基于你对论文全文阅读，评估其研究价值（0-5 分）：\n"
-        "- 5分：开创性工作，方法/结论有重大突破\n"
-        "- 4分：高质量研究，创新性强，实验充分\n"
-        "- 3分：扎实研究，有一定创新，方法可靠\n"
-        "- 2分：常规研究，创新性有限但方法正确\n"
-        "- 1分：质量较低，方法或结论有明显缺陷\n"
-        "- 0分：无学术价值\n"
-        "输出 ai_value（0-5 的浮点数）。\n"
-        + topic_instruction +
-        "\n## 输出格式（**两段式，务必遵守**）\n"
-        "第一段：①+③ 的 JSON 对象（含 one_liner / concepts / ai_value / topic_score 等全部字段），不要代码围栏。\n"
-        f"然后单独一行输出分隔符：{_L2_SEP}\n"
-        "分隔符之后：② 的 Markdown 正文，**直接写 Markdown，不要放进 JSON、不要转义换行**。\n"
-        f"（分隔符必须是独立一行、内容就是 {_L2_SEP}；Markdown 正文直到结尾都算 ②。）"
-    )
-    return with_task(shared_ctx(doc), task)
-
-
-def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
+def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str,
+               qa_ctx: str = "") -> str:
     """L1 编译 prompt：**共享全文前缀**（header + 原文全文块）在前，任务指令在后。
 
-    一次调用产出整个 _note.md：一行摘要(one_liner) + 六维(带 [Pxxx] 引用) + 概念/标签。
-    全文块来自 paper_context（text_en 干净正文，跳过 References + 尾部杂项），不再依赖 text_zh。
-
-    元数据块由 `frontmatter.meta_block` 统一渲染（2026-09-12 用户反馈修复）：
-    此前只印 标题/期刊/年份/关键词/摘要 —— **缺作者与通信作者标注、缺研究单位、关键词恒空**
-    （papers_meta 的 affiliations/keywords 从未被 DOI 补全写入）；现在作者带 `*` 标注 +
-    研究单位逐条 + 关键词（papers_meta 优先，缺失时用 document.json/首页段落本地兜底）。
+    一次调用产出整个 _note.md：一行摘要(one_liner) + 六维(带 [Pxxx] 引用) + 概念/标签 + AI 评分。
     """
     from .frontmatter import meta_block
 
     shared = shared_ctx(doc)
+    qa_block = ("\n\n" + qa_ctx) if qa_ctx else ""
     task = (
         "你是科研知识编译助手。请依据上方论文全文，把它编译成结构化中文知识笔记。\n"
         "要求：六维每维必须引用论文段落 ID（如 [P001]）；输出严格 JSON：\n"
@@ -635,137 +921,107 @@ def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str) -> str:
         '"limitation": {...}, "concepts": [{"name": "概念名(英文)", "definition": "定义"}], '
         '"tags": ["标签"]}\n'
         "不要输出 JSON 以外的任何内容。\n\n"
+        "基于你对论文全文阅读，评估其研究价值（0-5 分），输出 ai_value（0-5 的浮点数）：\n"
+        "5=开创性 / 4=高质量 / 3=扎实 / 2=常规 / 1=低质量 / 0=无价值\n"
         + meta_block(meta, doc)
         + (f"\n期刊(权威)：{journal_meta}" if journal_meta else "")
+        + qa_block
     )
     return with_task(shared, task)
-
-
-def _l2_sections(doc: PaperDoc) -> list[dict]:
-    """L2 用的章节清单：优先 `doc.sections`，为空时**从段落现聚合**。
-
-    2026-09-12 用户反馈（"判定 L2 但 `_details.md` 没有输出结果"）根因：
-    P14 解析产出的 document.json **没有 `sections` 键**（实测 keys =
-    schema_version/metadata/paragraphs/figures/tables/references/ai_summary/audit），
-    而 `_prompt_l2` 的"章节片段"只从 `doc.sections` 生成 → 恒为"(无可用章节片段)"
-    → LLM 只能回退成拒绝文本；763B 的占位又通过了 `len(md) < 20` 闸门被标记成功
-    （日志实证：L2 那次输入仅 **372 token**，L1 是 23975）。
-    这里在 sections 缺失时按段落 `section` 字段聚合（同一键名 {section,count}），
-    让 PDF 解析链也能拿到章节片段。
-    """
-    secs = list(doc.sections or [])
-    if secs:
-        return secs
-    counts: dict[str, int] = {}
-    for p in doc.body_paras():
-        name = (getattr(p, "section", "") or "").strip() or "(未分节)"
-        counts[name] = counts.get(name, 0) + 1
-    return [{"section": k, "count": v} for k, v in counts.items()]
-
-
-# L2 无效产物的特征词（拒绝文本/占位）：命中即判不合格，触发失败而非静默 done。
-_L2_BAD_MARKERS = ("无可用章节片段", "待补充", "未提供", "无法生成", "无法完成",
-                   "仅有标题", "缺少章节")
-
-
-def _l2_output_ok(md: str) -> bool:
-    """L2 产物是否"像有效产物"：够长 + 至少 3 处段落引用 + 不含拒绝/占位特征词。"""
-    text = (md or "").strip()
-    if len(text) < 20:
-        return False
-    if any(m in text for m in _L2_BAD_MARKERS):
-        return False
-    return len(re.findall(r"\[P\d+\]", text)) >= 3
 
 
 def _prompt_l2(meta: dict, doc: PaperDoc, l1_ctx: str) -> str:
-    """L2 编译 prompt：**与 L1/L3 同一份共享全文前缀在前**，任务指令与摘要片段在后。
+    """L2 深度编译 prompt：共享全文前缀在前，任务在后。
 
-    2026-09-12 用户实测反馈（"L2 只送 1692 token，看不到全文，是否影响理解"）：
-    旧实现不含 `shared_ctx`，L2 只能看到「L1 摘要压缩版 + 章节片段（≤10 章 ×5 段 ×400 字符）」
-    ⇒ 实测仅 1692 token（全文 14834），章节级细节全靠 L1 摘要转述，
-    且**无法继承 L1 已建立的提示词缓存**（两次调用各付一次未命中价）。
-    加共享前缀后：① L2 能看到全文；② 与 L1 同前缀 ⇒ 第二轮几乎全命中缓存
-    （缓存命中输入 $0.006/M vs 未命中 $0.3/M）。
-    """
-    sections = _l2_sections(doc)
-    parts = []
-    allowed = {id(p) for p in context_paragraphs(doc)}   # 与共享前缀同一口径（尾部杂项/References 已剔）
-    for sec in (sections or [])[:10]:
-        if sec.get("count", 0) > 60:
-            continue
-        texts = []
-        for p in doc.body_paras():
-            if _is_ref_section(p.section) or id(p) not in allowed:
-                continue
-            if p.section != sec.get("section"):
-                continue
-            t = (p.text_en or "").strip()[:400]  # 原文 text_en，不再读 text_zh
-            if t:
-                texts.append(f"[{p.para_id}] {t}")
-        texts = texts[:5]
-        if texts:
-            parts.append(f"### {sec.get('section')}\n" + "\n".join(texts))
-    sec_ctx = "\n\n".join(parts) or "(无可用章节片段)"
-    task = (
-        "你是科研笔记助手。以下是某篇论文的 L1 知识编译摘要（已有全景六维）。\n"
-        "现在为每章提炼 2-4 条要点（中文，保留段落 ID 引用 [Pxxx]）。\n"
-        "**已有内容不要重复**，只补充章节级细节。输出 Markdown：\n"
-        "# 详细笔记：<标题>\n\n## 章节要点\n### <章节名>\n- 要点（[P001]）\n...\n\n"
-        f"论文标题：{meta.get('title')}\n\n## L1 摘要（勿重复）\n{l1_ctx or '(无)'}\n\n"
-        f"## 章节片段（原文 text_en）\n{sec_ctx}"
-    )
-    # ← 共享全文前缀（与 L1/L3/翻译/问答字节一致）
-    return with_task(shared_ctx(doc), task)
-
-
-def _prompt_l3(meta: dict, doc: PaperDoc, l1_ctx: str, l2_ctx: str) -> str:
-    """L3 深度编译：共享全文前缀在前（与 L1/翻译同前缀，缓存友好），任务/摘要在后。
-
-    2026-09-19 修复：wiki 章节改为与 L1 六维不重复的分析维度（方法论批判/领域对比/
-    可复现性/转化路径），去掉冗余 meta_block（摘要已在 shared_ctx 中），加大 L1/L2
-    上下文到 1000 字让模型知道哪些内容已覆盖。
+    产出 _wiki.md：方法论批判 / 可复现性 / 应用转化（L1 未覆盖的深度分析维度）。
     """
     shared = shared_ctx(doc)
     task = (
-        "你是科研深度编译专家。基于论文产出深度知识卡（Markdown 结构 + JSON 概念列表）。\n"
-        "⚠️ L1 已覆盖六维摘要（背景/方法/结果/结论/创新/局限），L2 已覆盖章节细节。\n"
-        "你的 wiki **禁止重复**上述内容，只写 L1/L2 未涉及的深度分析。\n"
+        "你是科研深度编译专家。基于论文产出深度知识卡（JSON）。\n"
+        "⚠️ L1 已覆盖六维摘要（背景/方法/结果/结论/创新/局限）。\n"
+        "你的 wiki **禁止重复**上述内容，只写 L1 未涉及的深度分析。\n"
         "输出严格 JSON：\n"
-        '{"summary": "全文 200 字摘要", "wiki": "深度编译 Markdown：## 方法论批判'
-        '（设计缺陷/统计效力/内外部效度）/ ## 与同领域对比（与 3-5 篇同类工作的异同）'
-        '/ ## 可复现性分析（数据/代码/实验条件）/ ## 潜在应用与转化路径'
-        '（正文每条引用段落 ID [P001]）", "concepts": [{"name": "概念名(英文)", "definition": "定义"}], '
-        '"cross_refs": ["同主题相关文献建议"]}\n'
+        '{"wiki": "深度编译 Markdown：## 方法论批判'
+        '（设计缺陷/统计效力/内外部效度）'
+        '/ ## 可复现性分析（数据/代码/实验条件）'
+        '/ ## 潜在应用与转化路径'
+        '（正文每条引用段落 ID [P001]）", '
+        '"concepts": [{"name": "概念名(英文)", "definition": "定义"}]}\n'
         "不要输出 JSON 以外的内容。\n\n"
-        + f"## L1 摘要（已覆盖，勿重复）\n{l1_ctx or '(无)'}\n"
-        f"## L2 摘要（已覆盖，勿重复）\n{l2_ctx or '(无)'}"
+        + f"## L1 摘要（已覆盖，勿重复）\n{l1_ctx or '(无)'}"
     )
     return with_task(shared, task)
+
+
+def _prompt_l1_l2_merged(meta: dict, doc: PaperDoc, journal_meta: str,
+                          qa_ctx: str = "") -> str:
+    """L1+L2 合并编译 prompt：一次调用产出两级知识卡。
+
+    输出 JSON 包含 L1（one_liner/六维/concepts/scores）+ L2（wiki），
+    相比分离调用节省 50% 全文输入 token。
+    """
+    from .frontmatter import meta_block
+
+    shared = shared_ctx(doc)
+    qa_block = ("\n\n" + qa_ctx) if qa_ctx else ""
+    task = (
+        "你是科研知识编译专家。请依据上方论文全文，产出两级结构化中文知识卡（JSON）。\n\n"
+        "## L1 知识卡（基础摘要）\n"
+        "- one_liner: 一句话核心贡献（≤50字）\n"
+        "- background/method/result/conclusion/innovation/limitation: 六维总结\n"
+        "  每维格式：{\"text\": \"内容\", \"paras\": [\"P001\"]}（必须引用段落 ID）\n"
+        "- concepts: 3-7 个核心概念，格式 [{\"name\": \"概念名(英文)\", \"definition\": \"定义\"}]\n"
+        "- tags: 标签列表\n\n"
+        "## L2 深度分析（禁止重复六维摘要）\n"
+        "- wiki: 深度编译 Markdown，包含三个章节：\n"
+        "  ## 方法论批判（设计缺陷/统计效力/内外部效度）\n"
+        "  ## 可复现性分析（数据/代码/实验条件）\n"
+        "  ## 潜在应用与转化路径（引用段落 ID [P001]）\n\n"
+        "## AI 评分\n"
+        "- ai_value: 0-5 研究价值（5=开创性/4=高质量/3=扎实/2=常规/1=低质量/0=无价值）\n"
+        "- topic_score: 0-1 主题相关度\n\n"
+        "输出严格 JSON：\n"
+        '{"one_liner": "...", "background": {"text": "...", "paras": ["P001"]}, '
+        '"method": {...}, "result": {...}, "conclusion": {...}, "innovation": {...}, '
+        '"limitation": {...}, "wiki": "## 方法论批判\\n...\\n## 可复现性分析\\n...\\n## 潜在应用\\n...", '
+        '"concepts": [{"name": "...", "definition": "..."}], "tags": ["..."], '
+        '"ai_value": 4, "topic_score": 0.8}\n'
+        "不要输出 JSON 以外的任何内容。\n\n"
+        + meta_block(meta, doc)
+        + (f"\n期刊(权威)：{journal_meta}" if journal_meta else "")
+        + qa_block
+    )
+    return with_task(shared, task)
+
+
+def _split_l1_l2_merged(data: dict) -> tuple[dict, dict | None]:
+    """拆分合并编译输出为 L1 和 L2 两部分。
+
+    返回 (l1_data, l2_data)，l2_data 可能为 None（如果 wiki 字段缺失）。
+    """
+    l1_keys = {"one_liner", "background", "method", "result",
+               "conclusion", "innovation", "limitation",
+               "concepts", "tags", "ai_value", "topic_score"}
+
+    l1_data = {k: v for k, v in data.items() if k in l1_keys}
+    l2_data = None
+
+    # L2 部分：wiki 字段存在且非空
+    wiki = data.get("wiki")
+    if wiki and isinstance(wiki, str) and len(wiki.strip()) > 50:
+        l2_data = {
+            "wiki": wiki,
+            "concepts": data.get("concepts", []),  # L2 也记录概念
+        }
+
+    return l1_data, l2_data
 
 
 # ---------------------------------------------------------------- 渲染
 
-def _render_note(meta, data: dict, journal_meta: str) -> str:
-    """渲染 `_note.md`（L1 产物）。
-
-    2026-09-12（用户实测反馈"L1 基本信息缺关键词/通讯作者/研究机构"）：提示词侧的
-    `frontmatter.meta_block` 早先已补齐这三项，但**产物模板/渲染没跟上**（且作者被硬截断到 6 位）
-    ⇒ 现在从 `papers_meta` 同一份数据补齐：通信作者、研究单位、关键词，作者全量并给通信作者标 `*`。
-    """
-    authors = [a for a in (meta.authors or []) if a]
-    corr = [c for c in (meta.corresponding or []) if c]
-
-    def _is_corr(a: str) -> bool:
-        return any(a == c or (c and (c in a or a in c)) for c in corr)
-
-    a_line = ", ".join(a + ("*" if _is_corr(a) else "") for a in authors) or "(未知)"
-    corr_line = f"\n- 通信作者：{'；'.join(corr)}" if corr else ""
-    affils = [a for a in (meta.affiliations or []) if a]
-    aff_line = f"\n- 研究单位：{'；'.join(affils)}" if affils else ""
-    keywords = [k for k in (meta.keywords or []) if k]
-    kw_line = f"\n- 关键词：{', '.join(keywords)}" if keywords else ""
-
+def _render_note(meta, data: dict, journal_meta: str = "") -> str:
+    """渲染 `_note.md`（L1 产物）。元数据（作者/期刊/被引等）由翻译 frontmatter 承载，
+    _note.md 只保留知识内容（one_liner + 六维 + 概念标签）。"""
     concepts = "".join(f", {c}" for c in data.get("tags", [])[:8])
     if not concepts:
         concepts = ", paper"
@@ -781,10 +1037,7 @@ def _render_note(meta, data: dict, journal_meta: str) -> str:
     tags = " ".join(f"#{t.replace(' ', '-')}" for t in data.get("tags", [])[:6]) or "(无)"
     return NOTE_TEMPLATE.format(
         doi=meta.doi, concepts=concepts, title=meta.title or "(无标题)",
-        authors=a_line, corr_line=corr_line, aff_line=aff_line, kw_line=kw_line,
-        journal=meta.journal or "",
-        year=meta.year or "", journal_meta=journal_meta or "无指标",
-        cited=meta.times_cited, one_liner=data.get("one_liner", ""),
+        one_liner=data.get("one_liner", ""),
         background=six("background"), method=six("method"),
         result=six("result"), conclusion=six("conclusion"),
         innovation=six("innovation"), limitation=six("limitation"),
@@ -794,10 +1047,106 @@ def _render_note(meta, data: dict, journal_meta: str) -> str:
 def _render_wiki(meta, data: dict) -> str:
     return (f"---\ntype: paper-wiki\ndoi: {meta.doi}\n---\n\n"
             f"# 深度编译：{meta.title}\n\n"
-            f"> {data.get('summary', '')}\n\n"
-            f"{data.get('wiki', '')}\n\n"
-            f"## 跨文献链接\n" +
-            "\n".join(f"- {x}" for x in (data.get("cross_refs") or [])))
+            f"{data.get('wiki', '')}\n")
+
+
+def _prompt_l3_keywords(meta: dict, self_ctx: str) -> str:
+    """L3 第一步 prompt：让 LLM 从编译结果提取检索关键词。
+
+    输出：5-8 个关键词/短语，用于向量检索相关文献。
+    """
+    title = meta.get("title", "")
+    return (
+        "你是科研文献检索专家。根据下方文献的编译结果，"
+        "提取 5-8 个最适合用于检索相关文献的关键词或短语。\n\n"
+        "要求：\n"
+        "- 包含核心概念、方法、应用场景\n"
+        "- 中英文混合（该领域通用术语用英文，特定概念用中文）\n"
+        "- 避免过于宽泛的词（如\u201c深度学习\u201d\u201c神经网络\u201d）\n"
+        "- 优先选择能区分研究方向的精确术语\n\n"
+        f"## 文献：{title}\n"
+        f"DOI: {meta.get('doi', '')}\n\n"
+        f"{self_ctx}\n\n"
+        "直接输出关键词，每行一个，或用 JSON 数组格式。\n"
+    )
+
+
+def _prompt_l3(meta: dict, self_ctx: str,
+               related_ctxs: list[dict]) -> str:
+    """L3 概念关系层 prompt：用编译结果（L1+L2）代替全文，分析跨文献概念关系。
+
+    输入：本文编译结果 + 相关文献编译结果（~20K tokens，省 77% vs 全文）。
+    输出：概念关系图 + 研究簇摘要 + 方法论连接。
+    """
+    related_blocks = []
+    for i, r in enumerate(related_ctxs, 1):
+        block = (f"### 相关文献 {i}（{r['doi']}，"
+                 f"connection={r.get('connection', 'unknown')}）\n"
+                 f"{r['context']}")
+        related_blocks.append(block)
+    related_text = "\n\n".join(related_blocks)
+
+    task = (
+        "你是科研知识关系分析专家。基于下方本文及多篇相关文献的编译结果，"
+        "分析它们之间的概念关系、方法论连接和研究演进脉络。\n\n"
+        "## 本文编译结果\n"
+        f"{self_ctx}\n\n"
+        "## 相关文献编译结果\n"
+        f"{related_text}\n\n"
+        "## 任务\n"
+        "输出严格 JSON：\n"
+        '{"summary": "研究簇整体概述（100-200字）",\n'
+        ' "concept_map": [\n'
+        '   {"concept": "概念名", "papers": ["doi1", "doi2"],\n'
+        '    "evolution": "概念在这些文献中的演进关系"}\n'
+        ' ],\n'
+        ' "methodology_connections": [\n'
+        '   {"from": "doi1", "to": "doi2",\n'
+        '    "relation": "方法继承/改进/对比/互补"}\n'
+        ' ],\n'
+        ' "research_trajectory": "该研究方向的演进趋势（50-100字）"}\n'
+        "不要输出 JSON 以外的任何内容。\n"
+    )
+    return task
+
+
+def _render_relations(meta, data: dict, related_ctxs: list[dict]) -> str:
+    """渲染 `_relations.md`（L3 产物）。"""
+    lines = [
+        f"---\ntype: paper-relations\ndoi: {meta.doi}\n---\n",
+        f"# 概念关系分析：{meta.title}\n",
+        f"## 研究簇概述\n{data.get('summary', '')}\n",
+    ]
+
+    concept_map = data.get("concept_map", [])
+    if concept_map:
+        lines.append("## 概念关系图\n")
+        for cm in concept_map:
+            concept = cm.get("concept", "")
+            papers = cm.get("papers", [])
+            evolution = cm.get("evolution", "")
+            paper_links = ", ".join(f"[[{p}/_note]]" for p in papers[:5])
+            lines.append(f"### {concept}\n"
+                         f"- 相关文献：{paper_links}\n"
+                         f"- 演进：{evolution}\n")
+
+    method_conns = data.get("methodology_connections", [])
+    if method_conns:
+        lines.append("## 方法论连接\n")
+        for mc in method_conns:
+            lines.append(f"- [[{mc.get('from', '')}/_note]] → "
+                         f"[[{mc.get('to', '')}/_note]]："
+                         f"{mc.get('relation', '')}")
+
+    trajectory = data.get("research_trajectory", "")
+    if trajectory:
+        lines.append(f"\n## 研究趋势\n{trajectory}\n")
+
+    lines.append("\n## 相关文献\n")
+    for r in related_ctxs:
+        lines.append(f"- [[{r['doi']}/_note]]（{r.get('connection', '')}）")
+
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------- 工具
@@ -819,6 +1168,50 @@ def _parse_json(raw: str) -> dict:
                 return json.loads(m.group(0))
             except ValueError:
                 return {}
+    return {}
+
+
+def _salvage_l1(text: str) -> dict:
+    """平衡括号抢救：从 malformed 输出中提取首个含 one_liner 的完整 JSON 对象。
+
+    glm 常把 L2 Markdown 塞进 JSON 字符串或尾部多吐杂文本 ⇒ 整段 json.loads 失败、
+    贪婪 \\{.*\\} 也匹配到坏片段；但 one_liner 对象本身往往括号完整，平衡扫描可救回，
+    避免整轮编译判死→worker 整轮重试（烧全量 token）。
+    """
+    if not text:
+        return {}
+    start = text.find("{")
+    while 0 <= start < len(text):
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    frag = text[start:i + 1]
+                    if "one_liner" in frag:
+                        try:
+                            obj = json.loads(frag)
+                            if isinstance(obj, dict) and obj.get("one_liner"):
+                                return obj
+                        except ValueError:
+                            pass
+                    break
+        start = text.find("{", start + 1)
     return {}
 
 

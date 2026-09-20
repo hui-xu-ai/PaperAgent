@@ -100,14 +100,43 @@ def latex_valid(latex: str) -> tuple[bool, str]:
             return False, "%s: %s" % (type(e).__name__, str(e)[:80])
 
 
+def _strip_wrapping_cmds(t: str) -> str:
+    """[局部] 剥离包装命令（\\mathrm{X} → X），支持嵌套花括号。
+
+    正则 ``[^{}]*`` 无法匹配 ``\\mathrm{Co(O{x}/P{x})@P-LIG}`` 这类内嵌花括号的内容，
+    改用手动扫描按深度匹配。
+    """
+    cmd_pat = re.compile(
+        r"\\(?:%s)\s*\{" % "|".join(_STRIP_CMDS))
+    while True:
+        m = cmd_pat.search(t)
+        if not m:
+            break
+        depth = 1
+        start = m.end()
+        i = start
+        while i < len(t) and depth > 0:
+            if t[i] == '{':
+                depth += 1
+            elif t[i] == '}':
+                depth -= 1
+            i += 1
+        if depth == 0:
+            inner = t[start:i - 1]
+            t = t[:m.start()] + inner + t[i:]
+        else:
+            break
+    return t
+
+
 def latex_to_text(latex: str) -> str:
     """[全局] LaTeX → 纯文本（Unicode 近似）：命令映射 + 剥除包装；失败回退 pylatexenc"""
     body = _strip_math_delimiters(latex)
     if not body:
         return ""
     t = body
-    # 包装命令：\mathrm{X} → X
-    t = re.sub(r"\\(?:%s)\s*\{([^{}]*)\}" % "|".join(_STRIP_CMDS), r"\1", t)
+    # 包装命令：\mathrm{X} → X（支持嵌套花括号）
+    t = _strip_wrapping_cmds(t)
     # 已知命令 → Unicode
     for name, uni in sorted(_TEX_TO_UNI.items(), key=lambda x: -len(x[0])):
         if uni:
