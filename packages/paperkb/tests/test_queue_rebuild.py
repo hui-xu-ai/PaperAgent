@@ -113,15 +113,15 @@ def test_done_without_artifact_and_without_doc_skips_no_doc(env):
         "status": "skipped_no_doc", "doi": doi, "level": "L1"}
 
 
-@pytest.mark.parametrize("level,name", [("L2", "_details.md"), ("L3", "_wiki.md")])
-def test_l2_l3_artifact_existence(env, level, name):
-    """L2/L3 各按其主产物（_details.md / _wiki.md）判定。"""
+def test_l2_artifact_existence(env):
+    """L2（原 L3）以 _wiki.md 判定产物存在性。"""
     roots = env
     d = _setup_paper(roots)
+    level = "L2"
     api._need_store().upsert_job(DOI, level, status="done")  # noqa: SLF001
 
     assert api.compile_queue(DOI, level)["status"] == "queued", "产物缺失应重建"
 
-    (d / name).write_text("# 产物\n", encoding="utf-8")
+    (d / "_wiki.md").write_text("# 产物\n", encoding="utf-8")
     api._need_store().upsert_job(DOI, level, status="done")  # noqa: SLF001
     assert api.compile_queue(DOI, level)["status"] == "skipped_done", "产物在应跳过"

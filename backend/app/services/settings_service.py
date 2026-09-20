@@ -72,7 +72,7 @@ except Exception:  # noqa: BLE001 - 包不可用（未 pip install）时兜底�
 KEY_KB_COPY_MODE = "kb_copy_mode"
 KB_COPY_MODES = ("copy", "link")
 # 2026-09-12 批1：删除「知识库纳入清单」kb_include —— 全仓无消费点（kb 产物由 layout 契约固定：
-# _note.md/_details.md/en.md/document.json/images/），勾选框纯装饰（用户拍板删除）。
+# _note.md/_wiki.md/_relations.md/en.md/document.json/images/），勾选框纯装饰（用户拍板删除）。
 
 # AI 检索分级（T05）：L0 自动笔记 / L1 授权片段 / L2 授权全文
 KEY_RETRIEVAL_MODE = "retrieval_mode"

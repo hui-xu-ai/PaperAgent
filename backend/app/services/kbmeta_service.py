@@ -148,6 +148,14 @@ class KbMetaService:
             pass
         return kbapi.translate_paper(doc_json, compact=compact)
 
+    def compile_now(self, doi: str, level: str = "L1", force: bool = False) -> dict:
+        """立即编译（同步；LLM 调用可能较慢）。
+
+        2026-09-19：为并行翻译+编译端点而暴露。
+        """
+        self._ensure()
+        return kbapi.compile_now(doi, level, force)
+
     # ---------------------------------------------------------- 文献阅读日记
     # 数据聚合 + 用户笔记。与 paperkb.api 解耦：直接构造 KBStore(ROOTS)，
     # 不依赖 init_kb 后的 _store 单例（避免与 api.py 并行改动冲突）。

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """用户三问修复的回归测试（2026-09-12 验收轮 2）。
 
-① L1 产物「基本信息」缺 关键词/通讯作者/研究机构（提示词侧早已补齐、**产物模板没跟**）
+① L1 产物模板精简（P2：元数据移至翻译 frontmatter，_note.md 只留一句话+六维+概念标签）
 ② 复核页把"零待复核项"误报成"未走双通道解析"（判据只认 review.json）
 ③ 期刊分区表（决定 L2 的 IF 档）默认要随包可用（首启自动导入）
 """
@@ -15,7 +15,7 @@ import pytest
 from paperkb.models import PaperMeta
 
 
-# ────────────────────────────────────────── ① L1 产物基本信息
+# ────────────────────────────────────────── ① L1 产物精简模板（P2：元数据移至翻译 frontmatter）
 class TestNoteRenderMetadata:
     def _meta(self) -> PaperMeta:
         return PaperMeta(
@@ -29,30 +29,33 @@ class TestNoteRenderMetadata:
             keywords=["Graphene", "Artificial muscle", "Soft robotics"],
         )
 
-    def test_basic_info_contains_corresponding_affiliation_keywords(self):
+    def test_note_has_no_metadata_section(self):
+        """P2：_note.md 不再含作者/单位/期刊/关键词等元数据（已移至翻译 frontmatter）。"""
         from paperkb.compile import _render_note
 
         note = _render_note(self._meta(), {"one_liner": "x", "tags": ["t"]}, "Q1 IF 27.4")
-        assert "## 基本信息" in note
-        assert "通信作者：Jianyi Zheng；Dezhi Wu" in note
-        assert "研究单位：Xiamen University；Pen-Tung Sah Institute" in note
-        assert "关键词：Graphene, Artificial muscle, Soft robotics" in note
+        assert "## 基本信息" not in note
+        assert "通信作者：" not in note
+        assert "研究单位：" not in note
+        assert "关键词：" not in note
 
-    def test_authors_not_truncated_and_corresponding_marked(self):
+    def test_note_still_has_core_sections(self):
+        """精简后仍保留一句话贡献 + 六维总结 + 概念标签。"""
         from paperkb.compile import _render_note
 
-        note = _render_note(self._meta(), {"one_liner": "x"}, "—")
-        head = note.split("## 一句话贡献")[0]
-        assert "Dezhi Wu*" in head, "通信作者要带 * 标注"
-        assert "I Nine" in head, "作者不再硬截断到 6 位（旧实现 [:6] 会丢掉后 5 位）"
+        note = _render_note(self._meta(), {"one_liner": "贡献", "tags": ["t1", "t2"]}, "—")
+        assert "## 一句话贡献" in note
+        assert "## 六维总结" in note
+        assert "## 概念标签" in note
+        assert "贡献" in note
 
     def test_missing_fields_do_not_break_template(self):
         from paperkb.compile import _render_note
 
         bare = PaperMeta(doi="10.1/x", title="T")
         note = _render_note(bare, {}, "")
-        assert "## 基本信息" in note and "(未知)" in note
-        assert "通信作者：" not in note and "研究单位：" not in note
+        assert "## 一句话贡献" in note
+        assert "## 六维总结" in note
 
 
 # ────────────────────────────────────────── ② 复核判据

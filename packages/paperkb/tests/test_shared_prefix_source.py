@@ -10,7 +10,7 @@
 1) `api.shared_doc_json` = 唯一取用入口：kb 优先、未纳入 kb 时回退 library；
 2) kb 副本陈旧（library 更新）时 `sync_source_to_kb` **刷新**派生副本（不再"存在即跳过"）；
 3) 用户手改过的 kb 文件（`kb_edited`）不被刷新覆盖（P2）；
-4) L2 提示词与 L1/L3 共用同一份全文前缀（既看得到全文，又能继承 L1 缓存）。
+4) L2 提示词与 L1 共用同一份全文前缀（既看得到全文，又能继承 L1 缓存）。
 """
 from __future__ import annotations
 
@@ -111,8 +111,8 @@ class TestL2PromptSharesPrefix:
         d = _write_doc(env.library_dir / DIRNAME / "document.json", DOI, "Body paragraph one.")
         doc = read_document(d)
         prompt = _prompt_l2({"title": "Prefix source paper"}, doc, "(L1 ctx)")
-        assert prompt.startswith(shared_ctx(doc)), "L2 必须与 L1/L3 同一份共享全文前缀"
-        assert "(L1 ctx)" in prompt and "章节片段" in prompt
+        assert prompt.startswith(shared_ctx(doc)), "L2 必须与 L1 同一份共享全文前缀"
+        assert "(L1 ctx)" in prompt and "深度编译" in prompt
 
     def test_l2_and_l1_prefix_bytes_identical(self, env: Roots):
         """L2 与 L1 的公共前缀 = shared_ctx（⇒ L2 可继承 L1 建立的提示词缓存）"""

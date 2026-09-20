@@ -41,7 +41,7 @@ def _mk_paper(roots: Roots, doi: str, title: str, body: str) -> None:
     (d / "_note.md").write_text(
         f"# 笔记：{title}\n\n一句话贡献：{body}\n\n概念标签 #soft-robot\n",
         encoding="utf-8")
-    (d / "_details.md").write_text(f"# 详细\n- {body[:100]}\n", encoding="utf-8")
+    (d / "_wiki.md").write_text(f"# 深度编译\n- {body[:100]}\n", encoding="utf-8")
     (d / "document.json").write_text(json.dumps({
         "metadata": {"doi": doi, "title": title},
         "paragraphs": [{"para_id": "P001", "section": "S", "text_en": body}],
@@ -133,7 +133,7 @@ def test_recall_paper_single_doi(env, tmp_path):
 
     hits = api.recall_paper("10.1000/a.1", "IPMC bending")
     assert hits and all(it["doi"] == "10.1000/a.1" for it in hits), hits
-    assert hits[0]["file"] in ("_note.md", "_details.md")
+    assert hits[0]["file"] in ("_note.md", "_wiki.md")
     assert hits[0]["snippet"]
 
     # 该篇无命中词 → 空
@@ -165,7 +165,7 @@ def test_paper_compiled(env, tmp_path):
     conn.execute("DELETE FROM notes_fts WHERE doi='10.1000/c.3'").connection  # noqa
     conn.commit(); conn.close()
     files = api.paper_compiled("10.1000/a.1")
-    assert set(files) == {"_note.md", "_details.md"}
+    assert set(files) == {"_note.md", "_wiki.md"}
     assert api.paper_compiled("10.1000/c.3") == []
 
 
@@ -196,7 +196,7 @@ def test_regenerate_index(env, tmp_path):
     assert r["papers"] == 2
     content = (roots.kb_dir / "_index.md").read_text(encoding="utf-8")
     assert "10.1000/a.1" in content and "10.1000/b.2" in content
-    assert "| L2 |" in content  # _mk_paper 建 _note+_details → 编译状态 L2
+    assert "| L2 |" in content  # _mk_paper 建 _note+_wiki → 编译状态 L2
 
 
 def test_regenerate_index_md5_dir(env, tmp_path):

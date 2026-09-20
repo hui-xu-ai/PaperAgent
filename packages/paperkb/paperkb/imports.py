@@ -339,8 +339,8 @@ def kb_status(roots: Roots) -> list[dict]:
                 "document.json": (d / "document.json").exists(),
                 "images": (d / "images").is_dir(),
                 "note": (d / "_note.md").exists(),
-                "details": (d / "_details.md").exists(),
                 "wiki": (d / "_wiki.md").exists(),
+                "relations": (d / "_relations.md").exists(),
             })
     return out
 

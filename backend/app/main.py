@@ -440,6 +440,15 @@ def _setup_file_logging() -> str:
     return str(log_file)
 
 
+# 2026-09-20：`uvicorn backend.app.main:app` 直启（不经 run() 入口）此前**不挂** root
+# FileHandler ⇒ event_bus/compile/usage 日志全丢控制台 ⇒ 排障时日志加总 < 面板账本。
+# 模块导入期幂等挂一次，两种启动方式都落盘。
+try:
+    _setup_file_logging()
+except Exception:  # noqa: BLE001 - 落盘失败不阻塞启动
+    pass
+
+
 def _desktop_storage_dir() -> Path:
     """WebView2 用户数据（localStorage 等界面偏好）落 `work/desktop_profile`。
 

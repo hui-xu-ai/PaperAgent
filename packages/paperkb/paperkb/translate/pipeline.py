@@ -42,14 +42,18 @@ MAX_WHOLE_CHARS = 400000
 # 跳过共享全文前缀（专用模型无需提示词缓存共享），段落内联到 prompt，分块更小。
 # 2026-09-19 实测（混元 MT-7B via 硅基流动）：**输出侧才是真正的瓶颈**——每批输出 ~1900 token
 # 即截断（服务端/模型硬上限，max_tokens 请求参数无法覆盖），并非 32K 上下文装不下输入。
-# 2026-09-19 优化（Qwen2.5-7B-Instruct 8K 输出）：
+# 2026-09-19 实测安全边界（Qwen2.5-7B-Instruct via 硅基流动）：
+# 日志推断——输出 ≤3000 token 稳定成功（2333/2862/2985/2130），4134 截断。
 # 译文 token ≈ 英文源字符数（1:1），JSON 开销 ~200 token。
-# 8192 - 200(JSON) - 500(余量) ≈ 7500 → 取 5000 保守值（降低截断风险）。
-# 段数 ≤15。超长段落（>COMPACT_UNIT_MAX）由 _split_sentences 切块后逐块翻译拼接。
-COMPACT_MAX_BODY_CHARS = 5000
-COMPACT_MAX_BATCH_PARAS = 15
+# 安全输出 ~2500 token → 正文上限 8000 字符（留 ~500 token 安全余量）。
+# 段数 ≤15（过多段 JSON 结构开销增大）。超长段落（>COMPACT_UNIT_MAX）走句子切块。
+# 2026-09-20 下调（用户反馈：仍有截断补跑重复消耗）：8000→6000、段数 15→12。
+# 完整性保证：_make_batches 只整段入批（size+len(t)>max_body 即开新批，不切段中）；
+# 超长单段（>COMPACT_UNIT_MAX）走 _split_sentences 按句切块。故降阈值不破坏段/句完整。
+COMPACT_MAX_BODY_CHARS = 6000
+COMPACT_MAX_BATCH_PARAS = 12
 COMPACT_MAX_CALLS = 200
-COMPACT_MAX_WHOLE_CHARS = 5000
+COMPACT_MAX_WHOLE_CHARS = 10000
 # 单翻译单元（整段或长段的句子块）英文上限——超过则触发句子级切块。
 COMPACT_UNIT_MAX = 5000
 
@@ -80,6 +84,16 @@ def _reference_cut(paras: list[dict]) -> int | None:
 
 
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+# HTML 标签清理（2026-09-19 用户反馈：译文含 <sup>[21,22]</sup> 等标签无法渲染）
+# 模型有时会在译文中保留原文的 HTML 标签（特别是上标引用），需要清理。
+# 保留 [[MATHn]] 和 [[NOTE]] 等自定义标签，只清理标准 HTML 标签。
+_HTML_TAG_RE = re.compile(r'</?(?:sup|sub|em|strong|b|i|u|span|div|p|br|a|img|table|tr|td|th|ul|ol|li|h[1-6])[^>]*>', re.IGNORECASE)
+
+
+def _strip_html_tags(text: str) -> str:
+    """清理标准 HTML 标签（保留 [[MATHn]] 等自定义标记）。"""
+    return _HTML_TAG_RE.sub('', text or '')
 
 # 模型"拒绝/占位"式译文（批4 防御）：这类文本**不是译文**，绝不能落进 text_zh（否则会
 # 渲染进 zh.md/en_zh.md 污染阅读）。实测来源：目标段落没出现在给模型的全文里 → 模型回
@@ -268,8 +282,7 @@ def _translate_task_compact(paras: list[dict], batch_indices: list[int],
         "1. 保留 [[MATHn]] 公式标签原样，不展开不改写\n"
         "2. 图/表题注按「图 N.」「表 N.」格式翻译\n"
         "3. 术语与前文保持一致\n"
-        "4. 输出严格 JSON 格式：\n"
-        '{"translations": [{"para_id": "P001", "zh": "译文"}, ...]}\n\n'
+        "4. 每段译文以对应段落标记开头，格式：[P001] 译文内容\n\n"
         + ctx_line
         + "待翻译段落：\n\n"
         f"{paras_text}"
@@ -300,6 +313,7 @@ def _apply_translations(data_out: dict, paras: list[dict],
         for pat, repl, _note in KNOWN_FIXES:
             result = re.sub(pat, lambda _mm, _r=repl: _r, result)  # lambda 防转义解析
         result = _strip_control(result)
+        result = _strip_html_tags(result)  # 2026-09-19：清理 <sup> 等 HTML 标签
         if not result.strip() or _is_refusal(result):
             rejected += 1
             continue
@@ -512,6 +526,7 @@ def _translate_oversized(llm, paras: list[dict], targets: list[int],
         for pat, repl, _n in KNOWN_FIXES:
             full = re.sub(pat, lambda _m, _r=repl: _r, full)
         full = _strip_control(full)
+        full = _strip_html_tags(full)  # 2026-09-19：清理 <sup> 等 HTML 标签
         if full.strip() and not _is_refusal(full):
             paras[idx]["text_zh"] = full
             translated += 1

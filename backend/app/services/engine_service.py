@@ -604,11 +604,35 @@ class EngineService:
         en_zh   ← render_variant("translated")  英上中下双语对照
         (D16：六维总结并入 L1 编译 _note.md，summary.md 停生成——避免重复 LLM/文件冗余)
         """
+        import re
         from paperparse.core.markdown_render import render_variant
 
+        # 2026-09-19: clean HTML tags from variants
+        def _clean_html(md):
+            def _s(m):
+                inner = m.group(1)
+                if inner.startswith('^{') or inner.startswith('_{'):
+                    return inner
+                return '^{' + inner + '}'
+            def _b(m):
+                inner = m.group(1)
+                if inner.startswith('^{') or inner.startswith('_{'):
+                    return inner
+                return '_{' + inner + '}'
+            md = re.sub(r'<sup>([^<]*)</sup>', _s, md)
+            md = re.sub(r'<sub>([^<]*)</sub>', _b, md)
+            md = re.sub(r'</?(?:em|strong|b|i|u|span|div|p|br|a|img|table|tr|td|th|ul|ol|li|h[1-6])[^>]*>', '', md)
+            # 2026-09-19 fix: 展平嵌套上标
+            md = re.sub(r'\^\{\^\{([^}]+)\}\}', r'^{\1}', md)
+            md = re.sub(r'_\{_\{([^}]+)\}\}', r'_{\1}', md)
+            # 2026-09-20 fix: 裸露 ^{...} 包裹 $...$（已在 $ 或 { 内的不动）
+            md = re.sub(r'(?<![$\{])\^\{([^}]+)\}(?![$\}])', r'$^{\1}$', md)
+            md = re.sub(r'(?<![$\{])_\{([^}]+)\}(?![$\}])', r'$_{\1}$', md)
+            return md
+
         files = {
-            "zh.md": render_variant(doc, "zh", frontmatter=frontmatter),
-            "en_zh.md": render_variant(doc, "translated", frontmatter=frontmatter),
+            "zh.md": _clean_html(render_variant(doc, "zh", frontmatter=frontmatter)),
+            "en_zh.md": _clean_html(render_variant(doc, "translated", frontmatter=frontmatter)),
         }
         kb_dir.mkdir(parents=True, exist_ok=True)
         paths: dict[str, str] = {}

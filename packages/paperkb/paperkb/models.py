@@ -52,6 +52,13 @@ class PaperMeta(BaseModel):
                                                             # 空 = 由 rid 前缀推导（layout.kind_for）
     ai_value_score: float | None = None                     # AI 价值评分（0-5，L1+L2 编译时产出）
     topic_score: float | None = None                        # 主题匹配评分（0-1，L1+L2 编译时产出）
+    # paperlit 元数据（sync_lit_meta 同步；缺失时保持默认值）
+    paper_rank: float = 0.0                                 # PaperRank（引用图谱 PageRank 变体）
+    cocitation_cluster: int = 0                             # 共被引聚类 ID
+    impact_factor: float = 0.0                              # 期刊影响因子
+    quartile: str = ""                                      # JCR 分区（Q1/Q2/Q3/Q4）
+    library_citations: int = 0                              # 库内被引次数
+    source_main: str = ""                                   # 主数据来源（wos/openalex/…）
 
     @property
     def citation_count(self) -> int:

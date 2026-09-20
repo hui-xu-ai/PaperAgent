@@ -113,7 +113,7 @@ def test_score_with_journals(store, tmp_path):
     # Q1 + 中科院 1 区（+1）→ if 分 5.0（journals.db 联查）
     from paperkb.api import _score_meta
     meta = _meta()
-    r = _score_meta(meta, None, None)
+    r = _score_meta(meta)
     assert r["parts"]["if"]["value"] == 5.0
     assert r["parts"]["if"]["available"] is True
     assert r["score"] >= 4.0, f"Q1+1区 应高价值: {r}"

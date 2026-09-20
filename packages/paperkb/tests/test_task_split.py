@@ -131,19 +131,19 @@ def test_l1_l2_translate_share_byte_identical_system_prefix(tmp_path):
     assert hashlib.md5(l1_sys.encode()).hexdigest() == \
         hashlib.md5(canonical.encode()).hexdigest()
     # 任务部分不含 marker，且确实带上了各自的任务文本
-    for user_part, needle in ((_l1_user, "科研知识编译助手"), (_l2_user, "科研笔记助手"),
+    for user_part, needle in ((_l1_user, "科研知识编译助手"), (_l2_user, "科研深度编译专家"),
                               (tr_user, "## 翻译任务")):
         assert TASK_MARK not in user_part
         assert needle in user_part
 
 
-def test_l3_system_prefix_also_shared():
-    """L3 与 L1/L2/翻译同一份共享前缀（改造点之一）。"""
-    from paperkb.compile import _prompt_l3
+def test_l2_system_prefix_also_shared():
+    """L2 与 L1/翻译同一份共享前缀（改造点之一）。"""
+    from paperkb.compile import _prompt_l2
     from paperkb.context import shared_ctx
 
     doc = _mk_doc()
-    sys_part, user_part = split_task(_prompt_l3(_meta(), doc, "L1CTX", "L2CTX"))
+    sys_part, user_part = split_task(_prompt_l2(_meta(), doc, "L1CTX"))
     assert sys_part == shared_ctx(doc)
     assert "科研深度编译专家" in user_part and TASK_MARK not in user_part
 

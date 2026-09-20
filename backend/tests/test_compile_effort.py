@@ -3,7 +3,7 @@
 
 背景（2026-09-12 用户决策 + 服务端实测）：
 - `deepseek-flash` 是思考型模型，思考 token 计入 completion 并按输出价计费
-  （实测 L2 输出 9,673 token，而产物 `_details.md` 仅 3,019 字符 ⇒ 约 7k 是思考）；
+  （实测 L2 输出 9,673 token，而产物 `_wiki.md` 仅 3,019 字符 ⇒ 约 7k 是思考）；
 - 服务端**拒绝字面 "auto"**（实测 400 unknown variant `auto`）⇒「自动」只能以**不传参**实现；
 - 服务端接受 `none/minimal/low/medium/high`；
 - 此前 `compile=high` 的映射**从未生效**：`kbmeta_service.KbLlm` 把 context 折成 `engine`

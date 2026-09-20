@@ -75,22 +75,24 @@ def test_l1_done_upgrades_to_l2_by_value():
     assert fake.enqueued == [("10.a/1", "L2")]   # L1 完成且价值分 L2 → 入队 L2
 
 
-def test_l1_done_upgrades_when_value_l3():
+def test_l1_done_upgrades_when_value_l2():
+    """L1 完成且价值分达到 L2 门槛 → 入队 L2（深度 wiki）。"""
     fake = FakeCompile()
     fake.add_queued("10.a/2", "L1")
-    fake.values["10.a/2"] = {"level": "L3", "score": 4.5}
+    fake.values["10.a/2"] = {"level": "L2", "score": 4.5}
     r = _worker(fake).process_one()
     assert r["level"] == "L1"
-    assert fake.enqueued == [("10.a/2", "L2")]   # 价值分 L3 也先走 L2 链
+    assert fake.enqueued == [("10.a/2", "L2")]
 
 
-def test_l2_done_upgrades_to_l3_when_value_l3():
+def test_no_upgrade_when_l2_is_final():
+    """L2 是最高级，不再升级。"""
     fake = FakeCompile()
     fake.add_queued("10.a/3", "L2")
-    fake.values["10.a/3"] = {"level": "L3", "score": 4.5}
+    fake.values["10.a/3"] = {"level": "L2", "score": 4.5}
     r = _worker(fake).process_one()
     assert r["level"] == "L2"
-    assert fake.enqueued == [("10.a/3", "L3")]
+    assert fake.enqueued == []   # L2 是最终级，不升级
 
 
 def test_no_upgrade_when_value_level_l1():
@@ -102,12 +104,13 @@ def test_no_upgrade_when_value_level_l1():
     assert fake.enqueued == []                   # 价值分 L1 → 停在 L1
 
 
-def test_no_upgrade_when_l2_and_value_l2():
+def test_no_upgrade_when_value_level_l1_only():
+    """价值分只达到 L1 → 停在 L1。"""
     fake = FakeCompile()
-    fake.add_queued("10.a/5", "L2")
-    fake.values["10.a/5"] = {"level": "L2", "score": 3.0}
+    fake.add_queued("10.a/5", "L1")
+    fake.values["10.a/5"] = {"level": "L1", "score": 2.0}
     _worker(fake).process_one()
-    assert fake.enqueued == []                   # L2 完成仅 L3 价值才升级
+    assert fake.enqueued == []   # 价值分 L1 → 停在 L1
 
 
 def test_failed_item_no_upgrade():

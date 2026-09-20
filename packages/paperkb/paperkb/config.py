@@ -79,7 +79,8 @@ class KbSettings:
     journal_year: int | None = None     # journals.db 查询年份（None=最新）
     # 价值评分权重（M2 使用）
     score_weights: dict = field(default_factory=lambda: {
-        "if": 0.25, "cited": 0.20, "ai_value": 0.30, "topic": 0.15, "year": 0.10,
+        "if": 0.20, "cited": 0.15, "ai_value": 0.25, "topic": 0.15, "year": 0.10,
+        "paper_rank": 0.10, "lib_cited": 0.05,
     })
     # 用户研究方向主题表（导入界面设置；AI 编译时据此打主题相关度分）
     preferred_topics: list[str] = field(default_factory=list)

@@ -5,11 +5,12 @@
     _index.md                 总索引（★由 paperkb regenerate_index 统一重建）
     <DOI>/                    按 DOI 建文件夹（无 DOI → run_<runid>）
       _note.md                一级：核心知识卡（★paperkb Compiler L1 生成）
-      _details.md             二级：章节提炼（★paperkb Compiler L2 生成）
+      _wiki.md                二级：深度编译（★paperkb Compiler L2 生成）
+      _relations.md           三级：概念关系（★paperkb Compiler L3 生成）
       en.md/en_zh.md/zh.md/summary.md   变体/原文层（paperkb/engine 直写 kb，单一来源）
       document.json / images/ / source.pdf   原文层副本（paperkb 同步）
 
-R1（2026-08-26 架构整改）：本服务不再生成 _note.md/_details.md/_index.md——
+R1（2026-08-26 架构整改）：本服务不再生成 _note.md/_wiki.md/_index.md——
 一级/二级笔记与索引一律由 paperkb（Compiler + regenerate_index）产出，
 旧 V04 的 _build_note/_build_details/generate/backfill/_index_row/_update_index 已删除。
 本服务只保留：文件树、安全读写、图片路径、目录管理、原文层同步（_link_originals）。

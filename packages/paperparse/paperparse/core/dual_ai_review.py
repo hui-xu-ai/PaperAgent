@@ -405,7 +405,11 @@ def _synthesize_once(batch: list, provider, paper: str, with_local: bool,
     got: dict = {}
     for attempt in range(2):
         _sys_prompt = _SYSTEM_SYNTH_SHORT if short else _SYSTEM_SYNTH
-        _max = 1024 if short else 4096
+        # 2026-09-20：short 模式 1024→4096。实测硅基流动 glm 对
+        # {"thinking":{"type":"disabled"}} 不生效→模型仍输出长篇推理→撞 1024 截断
+        # →无 JSON→同输入重试/降半批（in=1036 重发 4 次）。提到 4096 让"推理+JSON"
+        # 一次装下，消灭截断重试（重发整段输入才是主要浪费）。
+        _max = 4096 if short else 8192
         _extra = _THINKING_OFF_BODY if (short and no_thinking) else None
         try:
             msgs = [{"role": "system", "content": _sys_prompt},

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""M3 单测：编译系统（L1/L2/L3/队列/概念聚合）+ 卡片（FakeLLM，不调真实 API）。"""
+"""M3 单测：编译系统（L1/L2/队列/概念聚合）+ 卡片（FakeLLM，不调真实 API）。"""
 from __future__ import annotations
 
 import json
@@ -22,13 +22,6 @@ L1_JSON = json.dumps({
     "limitation": {"text": "需进一步验证", "paras": []},
     "concepts": [{"name": "IPMC actuator", "definition": "离子聚合物金属复合材料致动器"}],
     "tags": ["soft-robotics", "3D-printing"],
-}, ensure_ascii=False)
-
-L3_JSON = json.dumps({
-    "summary": "本文开发可编程 3D 打印 IPMC",
-    "wiki": "## 研究设计\n采用 FFF。\n## 核心结论\n弯曲角 169°。",
-    "concepts": [{"name": "IPMC actuator", "definition": "离子聚合物金属复合材料致动器"}],
-    "cross_refs": ["同主题：ADV MATER 2023"],
 }, ensure_ascii=False)
 
 
@@ -87,7 +80,7 @@ def test_compile_l1(env, tmp_path):
     assert "PLA 增强 PFSR" in text            # one_liner
     assert "[P001]" in text                    # 段落引用
     assert "#soft-robotics" in text            # 概念标签
-    assert "SCIENCE CHINA-MATERIALS" in text   # 元数据
+    # P2：元数据不再写入 _note.md（由翻译 frontmatter 承载）
     # ctx 与 job 状态
     assert api._need_store().get_ctx("10.1000/ipmc.1", "L1")
     assert api._need_store().get_job("10.1000/ipmc.1", "L1")["status"] == "done"
@@ -101,33 +94,45 @@ def test_compile_l1(env, tmp_path):
 
 
 def test_compile_l2_injects_l1_ctx(env, tmp_path):
+    """新 L2（原 L3）产出 _wiki.md，prompt 须注入 L1 摘要以避免重复。"""
     roots = env
     _setup_paper(roots)
     from paperkb import llm as llm_mod
     fake: FakeLLM = llm_mod.get_llm()
     fake._responses.append(L1_JSON)  # noqa: SLF001
     api.compile_now("10.1000/ipmc.1", "L1")
-    # 2026-09-12：L2 新增产物质量闸门（需 ≥3 处段落引用、不含占位/拒绝特征词），
-    # 故假响应按"有效 L2 产物"形态给出。
-    fake._responses.append(
-        "# 详细笔记：3D printing\n\n## 章节要点\n### Introduction\n"
-        "- 要点一（[P001]）\n- 要点二（[P002]）\n- 要点三（[P003]）\n")
+    # 新 L2 产出 _wiki.md（JSON 格式）
+    l2_json = json.dumps({
+        "wiki": "## 方法论批判\n分析。\n## 可复现性分析\n数据。\n## 潜在应用\n应用（[P001]）（[P002]）（[P005]）",
+        "concepts": [{"name": "IPMC actuator", "definition": "离子聚合物金属复合材料致动器"}],
+    }, ensure_ascii=False)
+    fake._responses.append(l2_json)
     r = api.compile_now("10.1000/ipmc.1", "L2")
     assert r["status"] == "done"
     ctx, prompt = fake._calls[-1]
-    assert "L1 摘要（勿重复）" in prompt or "已有" in prompt
+    assert "L1 摘要" in prompt or "已覆盖" in prompt
 
 
-def test_compile_l3_concepts(env, tmp_path):
+def test_compile_l2_concepts(env, tmp_path):
+    """L2 编译产出 concepts，3 篇同概念应聚合生成概念页。"""
     roots = env
     _setup_paper(roots, "10.1000/ipmc.1")
     _setup_paper(roots, "10.1000/ipmc.2")
     _setup_paper(roots, "10.1000/ipmc.3")
     from paperkb import llm as llm_mod
     fake: FakeLLM = llm_mod.get_llm()
+    # 先做 L1
     for doi in ("10.1000/ipmc.1", "10.1000/ipmc.2", "10.1000/ipmc.3"):
-        fake._responses.append(L3_JSON)
-        api.compile_now(doi, "L3")
+        fake._responses.append(L1_JSON)
+        api.compile_now(doi, "L1")
+    # 再做 L2（原 L3）
+    l2_json = json.dumps({
+        "wiki": "## 方法论批判\n分析。",
+        "concepts": [{"name": "IPMC actuator", "definition": "离子聚合物金属复合材料致动器"}],
+    }, ensure_ascii=False)
+    for doi in ("10.1000/ipmc.1", "10.1000/ipmc.2", "10.1000/ipmc.3"):
+        fake._responses.append(l2_json)
+        api.compile_now(doi, "L2")
     # 概念页：3 篇同概念 → 生成
     page = roots.kb_dir / "_concepts" / "ipmc-actuator.md"
     assert page.exists(), "3 文献同概念应聚合生成概念页"
@@ -140,7 +145,7 @@ def test_queue_and_process(env, tmp_path):
     q = api.compile_queue("10.1000/ipmc.1")   # 无 level → 按价值分
     assert q["status"] in ("queued", "skipped_done")
     r = api.compile_process(limit=5)
-    assert r and r[0]["level"] in ("L1", "L2", "L3")
+    assert r and r[0]["level"] in ("L1", "L2")
     jobs = api.compile_status()
     assert jobs and jobs[0]["paper_doi"] == "10.1000/ipmc.1"
 

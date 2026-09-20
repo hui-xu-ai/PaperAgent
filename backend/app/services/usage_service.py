@@ -59,6 +59,11 @@ class UsageService:
                                     int(prompt_tokens or 0),
                                     int(completion_tokens or 0),
                                     int(cache_hit_tokens or 0), cost)
+        # 2026-09-20：账本镜像日志。实测 event_bus 未接线时 usage 事件全丢 ⇒ 信息面板
+        # 日志加总 < 面板总价（用户反复对不上）。logger 直落文件，保证每条扣费可核对。
+        logger.info("usage/llm_call %s [%s]: 输入 %s（缓存命中 %s） 输出 %s 约 ¥%.4f",
+                    context, model, prompt_tokens, cache_hit_tokens,
+                    completion_tokens, cost)
         if self.event_bus:
             self.event_bus.publish(
                 "info", "usage", "llm_call",

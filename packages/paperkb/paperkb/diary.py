@@ -30,7 +30,7 @@ _FULL_SCAN = 1_000_000
 _DIARY_DIRNAME = "_diary"
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # 视为「已编译」的 kb 目录内产物文件名（D16：summary.md 不再是编译产物，六维在 _note.md）
-_COMPILED_MARKERS = ("_note.md", "_details.md", "_wiki.md")
+_COMPILED_MARKERS = ("_note.md", "_wiki.md", "_relations.md")
 
 
 # ------------------------------------------------------------------ 工具

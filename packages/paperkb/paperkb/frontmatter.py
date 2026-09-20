@@ -223,4 +223,23 @@ def meta_block(meta, doc=None, abstract_chars: int = 4000) -> str:
         lines.append("关键词：" + _fmt_list(keywords, ", "))
     abstract = (_get(meta, "abstract", "") or _get(doc, "abstract", "") or "")[:abstract_chars]
     lines.append(f"摘要：{abstract}")
+    # 文献计量数据（paperlit 同步；缺失时不显示）
+    times_cited = _get(meta, "times_cited", 0) or 0
+    impact_factor = _get(meta, "impact_factor", 0) or 0
+    quartile = _get(meta, "quartile", "") or ""
+    paper_rank = _get(meta, "paper_rank", 0) or 0
+    lib_citations = _get(meta, "library_citations", 0) or 0
+    biblio_parts = []
+    if times_cited:
+        biblio_parts.append(f"被引 {times_cited}")
+    if impact_factor:
+        biblio_parts.append(f"JIF {impact_factor:.1f}")
+    if quartile:
+        biblio_parts.append(quartile)
+    if paper_rank > 0:
+        biblio_parts.append(f"PaperRank {paper_rank:.4f}")
+    if lib_citations:
+        biblio_parts.append(f"库内被引 {lib_citations}")
+    if biblio_parts:
+        lines.append("文献计量：" + " | ".join(biblio_parts))
     return "\n".join(lines)

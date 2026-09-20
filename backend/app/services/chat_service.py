@@ -576,7 +576,7 @@ class ChatService:
         "`library/<父目录>/attachments/{si,review,data}/`；无父资源的零散资料放独立根 "
         "`attachments/<RID>/`。附件**不是**独立文献，不进知识库列表。\n"
         "3) `library/` = 解析库（document.json / en.md / images，PDF 解析产物）；"
-        "`knowledge_base/` = 知识库（编译产物 `_note.md/_details.md/_wiki.md`、用户笔记、"
+        "`knowledge_base/` = 知识库（编译产物 `_note.md/_wiki.md/_relations.md`、用户笔记、"
         "QA 卡片、综述报告 `_reports/`）。两者不是副本关系，内容层不要混引。\n"
         "4) 引用：用 `[[DOI目录]]` 标注正文来源；引用附件内容时注明是「该文献的支撑信息/"
         "审稿意见」。无编号资源用其 RID（`nd-…`/`book__…`）标注以免歧义。")

@@ -118,30 +118,3 @@ def test_render_frontmatter_omits_empty_fields():
     assert "期刊" not in out and "影响因子" not in out and "被引" not in out
     assert "created:" not in out
     assert "source: pdf" in out
-
-# 为什么不用 JSON 承载 L2：2026-09-15 真实链路实测——让模型把长 Markdown 塞进 JSON 字符串时
-# 它给不全 ⇒ 整个 JSON 解析失败 ⇒ **连 L1 都丢**（比旧行为更坏）。改两段式后 L1 独立可解析。
-
-def test_split_l1_l2_with_separator():
-    from paperkb.compile import _L2_SEP, _split_l1_l2
-
-    l1, l2 = _split_l1_l2('{"one_liner":"x"}\n' + _L2_SEP + '\n# 详细笔记\n- 要点 [P001]')
-    assert '{"one_liner"' in l1
-    assert l2.startswith("# 详细笔记")
-    assert _L2_SEP not in l2
-
-
-def test_split_l1_l2_without_separator_keeps_l1():
-    """缺分隔符 ⇒ L2 为空、L1 仍完好（由后续 L2 队列项单独编译），**不许丢 L1**。"""
-    from paperkb.compile import _split_l1_l2
-
-    l1, l2 = _split_l1_l2('{"one_liner":"x"}')
-    assert '{"one_liner"' in l1
-    assert l2 == ""
-
-
-def test_split_l1_l2_garbage_is_safe():
-    from paperkb.compile import _split_l1_l2
-
-    l1, l2 = _split_l1_l2("模型没按要求输出")
-    assert l1 == "模型没按要求输出" and l2 == ""

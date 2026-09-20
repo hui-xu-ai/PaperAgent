@@ -258,7 +258,7 @@ class TestT9ShortSchema:
         out = synthesize([_conf_item()], provider=p, paper="adma")
         call = p.calls[0]
         assert call["system"] == _SYSTEM_SYNTH_SHORT
-        assert call["max_tokens"] == 1024
+        assert call["max_tokens"] == 4096
         assert call["extra_body"] == {"thinking": {"type": "disabled"}}
         assert out[0].action == "replace" and out[0].suggested_text == "CoO$_x$@LIG"
         assert out[0].verdict == "paddleocr"
@@ -270,7 +270,7 @@ class TestT9ShortSchema:
         synthesize([_conf_item()], provider=p, paper="adma")
         call = p.calls[0]
         assert call["system"] == _SYSTEM_SYNTH
-        assert call["max_tokens"] == 4096 and call["extra_body"] is None
+        assert call["max_tokens"] == 8192 and call["extra_body"] is None
 
     def test_parse_short_and_long_forms(self):
         short = _parse_suggestions('[{"id":2,"a":"k"},{"id":3,"a":"i","t":"f"}]')
