@@ -52,7 +52,8 @@ class KbMetaService:
             if self._roots is None:
                 raise RuntimeError(
                     "KbMetaService 未注入 Roots（请经 container.get_kbapi() 获取）")
-            kbapi.init_kb(self._roots)
+            from paperkb.config import KbSettings
+            kbapi.init_kb(self._roots, KbSettings(vector_impl="kb"))
             self._ready = True
             logger.info("paperkb 初始化完成（db=%s）", self._roots.main_db)
         # 注入 LLM（backend llm_service 适配 paperkb.LLMClient；动态解析，无需传引用）

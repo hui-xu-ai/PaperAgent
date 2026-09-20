@@ -1004,12 +1004,20 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
         agg = jobs.get(mkey) or {}
         compiled = [lv for lv in _KB_LEVELS if lv in agg.get("compiled", [])]
         queued = [lv for lv in _KB_LEVELS if lv in agg.get("queued", [])]
+        has_error = bool(agg.get("error", ""))
         if cs == "done" and not compiled:
             continue
         if cs == "none" and compiled:
             continue
+        if cs == "failed" and not has_error:
+            continue
         if cs in ("l1", "l2", "l3") and cs.upper() not in compiled:
             continue
+        # "可升级L3"筛选：L2已编译但L3未编译，且价值分>=L3_THRESHOLD
+        if cs == "l2":
+            from .score import L3_THRESHOLD
+            if "L2" not in compiled or "L3" in compiled or value < L3_THRESHOLD:
+                continue
         m_quartile = getattr(m, "quartile", "") or ""
         if quartile and m_quartile not in [q.strip() for q in quartile.split(",")]:
             continue

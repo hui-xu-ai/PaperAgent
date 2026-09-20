@@ -688,8 +688,7 @@ def kbmeta_sync_lit_meta() -> dict:
 @router.post("/fill-journal-meta")
 def kbmeta_fill_journal_meta() -> dict:
     """批量补全缺失的 IF/分区：从 journals.db 按 ISSN/期刊名查找并写入 papers_meta。"""
-    from packages.paperkb.paperkb.api import fill_journal_meta_batch
-    return fill_journal_meta_batch()
+    return container.get_kbapi().fill_journal_meta_batch()
 
 
 @router.post("/cleanup-stale")

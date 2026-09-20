@@ -574,12 +574,8 @@ class KBStore:
             return False
         try:
             from .journals import JournalsDB
-            from .config import data_dir
-            jdb_path = data_dir() / "reference" / "journals.db"
-            if not jdb_path.exists():
-                return False
-            jdb = JournalsDB(str(jdb_path))
-            info = jdb.lookup_issn(row["eissn"] or "", row["issn"] or "")
+            jdb = JournalsDB(self.roots)
+            info = jdb.lookup_issn(row["issn"] or "", row["eissn"] or "")
             if info is None and row["journal"]:
                 info = jdb.lookup(row["journal"])
             if info is None:

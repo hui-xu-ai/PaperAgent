@@ -220,8 +220,19 @@ class Compiler:
         self._mark_done(doi, "L1")
         self._index_paper_notes(doi)
 
-        # 保存 L2 产物（如果存在）
+        # 向量索引（编译后自动更新）
+        self._maybe_vector_index(doi, l1_data, l2_data, title=meta.title)
+
+        # AI 评分保存（无论 L2 是否完成都要保存）
+        ai_value = l1_data.get("ai_value")
+        topic_score = l1_data.get("topic_score")
         l2_done = False
+        l2_queued = False
+        if ai_value is not None or topic_score is not None:
+            self._save_ai_scores_and_maybe_l2(
+                doi, ai_value, topic_score if self._get_preferred_topics() else None)
+
+        # 保存 L2 产物（如果存在）
         if l2_data and l2_data.get("wiki"):
             try:
                 wiki.write_text(_render_wiki(meta, l2_data), encoding="utf-8")
@@ -233,19 +244,13 @@ class Compiler:
                 self._aggregate_concepts(doi, concepts)
                 l2_done = True
                 logger.info("L1+L2 合并编译成功: doi=%s", doi)
+                # L2 完成 → 检查是否自动升级 L3（AI评分已保存，可以正确计算value_score）
+                self._maybe_auto_l3(doi)
             except Exception as e:  # noqa: BLE001
                 logger.warning("L2 产物保存失败（L1 不受影响）: doi=%s err=%s", doi, e)
-
-        # 向量索引（编译后自动更新）
-        self._maybe_vector_index(doi, l1_data, l2_data, title=meta.title)
-
-        # AI 评分 + L2 自动升级逻辑（如果 L2 已在合并编译中完成，不再重复入队）
-        ai_value = l1_data.get("ai_value")
-        topic_score = l1_data.get("topic_score")
-        l2_queued = False
+        
+        # 如果L2没有在合并编译中完成，检查是否需要入队
         if not l2_done and (ai_value is not None or topic_score is not None):
-            self._save_ai_scores_and_maybe_l2(
-                doi, ai_value, topic_score if self._get_preferred_topics() else None)
             l2_queued = True
 
         return {"status": "done", "doi": doi, "level": "L1",
@@ -389,6 +394,10 @@ class Compiler:
         if not raw:
             return []
         text = raw.strip()
+        # 去掉 ```json ... ``` 标记
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
         # 尝试 JSON 解析
         try:
             data = json.loads(text)
@@ -399,9 +408,21 @@ class Compiler:
                 return [str(k).strip() for k in kws if str(k).strip()]
         except (json.JSONDecodeError, ValueError):
             pass
-        # 兜底：按逗号/换行分割
-        parts = re.split(r"[,，\n]+", text)
-        return [p.strip().strip('"').strip("'") for p in parts if p.strip()]
+        # 兜底：按逗号/换行分割，过滤掉非关键词字符
+        parts = re.split(r"[,，\n\[\]]+", text)
+        keywords = []
+        for p in parts:
+            p = p.strip().strip('"').strip("'").strip()
+            # 去掉序号（1. 2. 等）
+            p = re.sub(r"^\d+[\.\)]\s*", "", p)
+            # 去掉标题标记（# 等）
+            p = re.sub(r"^#+\s*", "", p)
+            # 过滤掉空字符串和纯符号
+            if p and not re.match(r'^[\s\[\]{}"\'`,]+$', p):
+                # 过滤掉明显的标题/说明文字
+                if not re.search(r'(检索|关键词|提取|搜索|关键词提取)', p, re.IGNORECASE):
+                    keywords.append(p)
+        return keywords
 
     def _find_related_papers(self, doi: str, top_k: int = 10
                              ) -> list[dict]:
@@ -887,8 +908,11 @@ class Compiler:
             new_score = value_score_for(doi)
             if not new_score:
                 return
-            ai_value = new_score.get("ai_value")
-            if ai_value is None or ai_value <= 0:
+            parts = new_score.get("parts", {})
+            ai_value_info = parts.get("ai_value", {})
+            ai_value = ai_value_info.get("value") if ai_value_info else None
+            ai_available = ai_value_info.get("available", False) if ai_value_info else False
+            if not ai_available or ai_value is None or ai_value <= 0:
                 return
             if new_score.get("score", 0) >= L3_THRESHOLD:
                 l3_job = self.store.get_job(doi, "L3")
