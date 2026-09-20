@@ -8,9 +8,9 @@ const $ = (id) => document.getElementById(id);
 
 const IDS = {
   yearMin: 'lg-f-year-min', yearMax: 'lg-f-year-max',
-  libcit: 'lg-f-libcit', libcitVal: 'lg-f-libcit-val',
-  cited: 'lg-f-cited', citedVal: 'lg-f-cited-val',
-  if: 'lg-f-if', ifVal: 'lg-f-if-val',
+  libcit: 'lg-f-libcit', libcitNum: 'lg-f-libcit-num',
+  cited: 'lg-f-cited', citedNum: 'lg-f-cited-num',
+  if: 'lg-f-if', ifNum: 'lg-f-if-num',
   quartile: 'lg-f-quartile',
   inkb: 'lg-f-inkb', exref: 'lg-f-exref',
   limit: 'lg-f-limit', limitVal: 'lg-f-limit-val',
@@ -34,11 +34,11 @@ export function readFilters() {
   if (ymin != null) p.year_min = ymin;
   if (ymax != null) p.year_max = ymax;
 
-  const libcit = _num($(IDS.libcit).value);
+  const libcit = _num($(IDS.libcitNum).value);
   if (libcit) p.min_library_citations = libcit;
-  const cited = _num($(IDS.cited).value);
+  const cited = _num($(IDS.citedNum).value);
   if (cited) p.min_times_cited = cited;
-  const iff = _num($(IDS.if).value);
+  const iff = _num($(IDS.ifNum).value);
   if (iff) p.min_impact_factor = iff;
 
   // 分区：勾选子集才发；全选/全不选 → 省略（全选=不过滤，全不选无意义按不过滤处理）。
@@ -96,8 +96,11 @@ export function resetFilters() {
   $(IDS.yearMin).value = '';
   $(IDS.yearMax).value = '';
   $(IDS.libcit).value = 0;
+  $(IDS.libcitNum).value = 0;
   $(IDS.cited).value = 0;
+  $(IDS.citedNum).value = 0;
   $(IDS.if).value = 0;
+  $(IDS.ifNum).value = 0;
   for (const b of $(IDS.quartile).querySelectorAll('input[type=checkbox]')) b.checked = true;
   $(IDS.inkb).checked = false;
   $(IDS.exref).checked = false;
@@ -108,21 +111,34 @@ export function resetFilters() {
   for (const r of citSourceRadios) r.checked = (r.value === 'filtered');
   // 孤立节点默认隐藏
   $(IDS.exisol).checked = true;
-  syncLabels();
 }
 
-/** 同步滑杆旁的数值标签。 */
-export function syncLabels() {
-  $(IDS.libcitVal).textContent = $(IDS.libcit).value;
-  $(IDS.citedVal).textContent = $(IDS.cited).value;
-  $(IDS.ifVal).textContent = $(IDS.if).value;
-  $(IDS.limitVal).textContent = $(IDS.limit).value;
+/** 同步滑杆和数字输入框（双向）。 */
+export function syncRangeInputs() {
+  // 库内被引
+  $(IDS.libcit).addEventListener('input', () => {
+    $(IDS.libcitNum).value = $(IDS.libcit).value;
+  });
+  $(IDS.libcitNum).addEventListener('input', () => {
+    $(IDS.libcit).value = $(IDS.libcitNum).value;
+  });
+  // 文献被引
+  $(IDS.cited).addEventListener('input', () => {
+    $(IDS.citedNum).value = $(IDS.cited).value;
+  });
+  $(IDS.citedNum).addEventListener('input', () => {
+    $(IDS.cited).value = $(IDS.citedNum).value;
+  });
+  // 影响因子
+  $(IDS.if).addEventListener('input', () => {
+    $(IDS.ifNum).value = $(IDS.if).value;
+  });
+  $(IDS.ifNum).addEventListener('input', () => {
+    $(IDS.if).value = $(IDS.ifNum).value;
+  });
 }
 
-/** 绑定滑杆 input 事件 → 实时刷新数值标签。 */
+/** 绑定滑杆 input 事件 → 实时同步数字输入框。 */
 export function bindLiveLabels() {
-  for (const [rangeId] of [[IDS.libcit], [IDS.cited], [IDS.if], [IDS.limit]]) {
-    const el = $(rangeId);
-    el.addEventListener('input', syncLabels);
-  }
+  syncRangeInputs();
 }

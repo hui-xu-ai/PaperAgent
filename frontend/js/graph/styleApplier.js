@@ -84,9 +84,9 @@ function _computeNodeSize(node, sizeBase, citationSource) {
     citeCount = node.filtered_citations || 0;
   }
   node.cite_count = citeCount; // 保存供标签使用
-  // 对数缩放，避免过大节点
-  const rawSize = 2 + Math.log2(1 + citeCount) * 1.5;
-  return Math.max(1, rawSize * sizeBase);
+  // pow(0.6) 缩放：高被引节点更大、低被引节点更小，视觉差异更明显
+  const rawSize = 1.2 + Math.pow(citeCount, 0.6) * 1.8;
+  return Math.max(1.2, rawSize * sizeBase);
 }
 
 /** 计算节点标签。 */

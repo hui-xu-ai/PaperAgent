@@ -94,8 +94,14 @@ class GraphController {
     try {
       const params = { ...filters.readFilters(), limit: 1, preview: true };
       const data = await api.getNetwork(params);
-      const count = data.meta?.matched_nodes || 0;
-      this.panel.setMessage(`过滤后约 ${count} 个节点${data.meta?.truncated ? '（已截断）' : ''}`);
+      // 优先使用 actual_nodes（排除孤立节点后的数量），否则用 matched_nodes
+      const count = data.meta?.actual_nodes ?? data.meta?.matched_nodes ?? 0;
+      const truncated = data.meta?.truncated || false;
+      const hasIsolated = data.meta?.matched_nodes !== data.meta?.actual_nodes;
+      let msg = `过滤后约 ${count} 个节点`;
+      if (hasIsolated) msg += `（已排除孤立节点）`;
+      if (truncated) msg += `，按排序保留 Top-N`;
+      this.panel.setMessage(msg);
     } catch (e) {
       this.panel.setMessage('预览失败：' + e.message);
     }

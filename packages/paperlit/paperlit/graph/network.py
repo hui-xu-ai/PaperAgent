@@ -176,10 +176,25 @@ def build_network(store: LitStore, *,
             if in_kb_only:
                 conn.execute("DROP TABLE IF EXISTS temp.kb")
             truncated = matched > limit
+            # 预览模式：如果排除孤立节点，需要计算实际连通节点数
+            actual_nodes = matched
+            if exclude_isolated:
+                # 快速估算：查询有引用关系的节点数
+                isolated_count = conn.execute("""
+                    SELECT COUNT(*) FROM papers p
+                    WHERE {where_sql}
+                    AND p.doi NOT IN (
+                        SELECT DISTINCT citing_doi FROM citations
+                        UNION
+                        SELECT DISTINCT cited_doi FROM citations
+                    )
+                """.format(where_sql=where_sql.replace("WHERE ", "")), params).fetchone()[0]
+                actual_nodes = matched - isolated_count
             return {
                 "nodes": [], "edges": [],
-                "meta": {"matched_nodes": matched, "returned_nodes": 0,
-                         "returned_edges": 0, "truncated": truncated},
+                "meta": {"matched_nodes": matched, "actual_nodes": actual_nodes,
+                         "returned_nodes": 0, "returned_edges": 0,
+                         "truncated": truncated},
             }
 
         # 取 Top-N 节点（按 sort_col 降序；year 文本排序对 4 位数等价数值序）。
