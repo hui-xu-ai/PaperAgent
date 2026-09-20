@@ -125,6 +125,8 @@
             <button class="btn small" id="kb-sync-btn" title="重新扫描磁盘：与你手改过的文件（在资源管理器里增删/移动）对齐，并列出不一致项">🔄 同步磁盘</button>
             <!-- 2026-09-12 用户需求：移除到回收站（产物全保留、退出检索）+ 主界面一键恢复 -->
             <button class="btn small" id="kb-trash-btn" title="回收站：已移出知识库的文献（产物全部保留、不再被检索）。可在此恢复。">🗑 回收站 <span id="kb-trash-count"></span></button>
+            <!-- 2026-09-19：清理幽灵记录（kb 目录已删除但数据库仍有记录） -->
+            <button class="btn small" id="kb-cleanup-btn" title="清理幽灵记录：删除 kb 目录已不存在但数据库仍有元数据/编译任务的条目">🧹 清理幽灵</button>
           </div>
           <div class="kb-sync-info muted" id="kb-sync-info"></div>
         </div>
@@ -542,10 +544,10 @@
                   <option value="full">允许全文阅读（授权后注入全文，截断）</option>
                 </select>
                 <span class="hint" id="retrieval-desc">授权越大越耗 token：仅笔记最省，全文最贵。L0 全局检索固定只读
-                  <code>_note.md</code> / <code>_details.md</code>。</span>
+                  <code>_note.md</code> / <code>_wiki.md</code>。</span>
               </label>
             </fieldset>
-            <p class="muted">固定生成：<code>_note.md</code> / <code>_details.md</code>（一级/二级笔记）+
+            <p class="muted">固定生成：<code>_note.md</code> / <code>_wiki.md</code>（L1/L2 编译产物）+
               原文层 <code>en.md</code> / <code>document.json</code> / <code>images/</code>
               （由数据布局契约固定，不再提供勾选）。</p>
           </section>
@@ -733,7 +735,7 @@
     </div>
   </div>
 
-  <!-- ══════════ 知识库管理（M5：导入/编译/元数据/问答/期刊）══════════ -->
+  <!-- ══════════ 知识库管理（总览 + 文献管理）══════════ -->
   <div class="modal-mask" id="kb-admin-modal" style="display:none">
     <div class="modal kb-admin-modal">
       <div class="modal-header">
@@ -743,80 +745,85 @@
       <div class="settings-body">
         <div class="settings-nav">
           <button class="stab active" data-stab="overview"><span class="snav-ico">📊</span>总览</button>
-          <button class="stab" data-stab="compile"><span class="snav-ico">⚙️</span>编译管理</button>
-          <button class="stab" data-stab="meta"><span class="snav-ico">📄</span>元数据</button>
-          <button class="stab" data-stab="journals"><span class="snav-ico">🏛️</span>期刊</button>
+          <button class="stab" data-stab="papers"><span class="snav-ico">📄</span>文献管理</button>
         </div>
         <div class="settings-pages">
-          <!-- 总览（P4：统计 + 帮助） -->
+          <!-- 总览 -->
           <div class="stab-page" id="kba-overview" style="display:block">
             <section class="scard wide" id="kba-overview-content"><div class="kba-msg">加载知识库总览…</div></section>
           </div>
 
-          <!-- 编译管理 -->
-          <div class="stab-page" id="kba-compile" style="display:none">
+          <!-- 文献管理 -->
+          <div class="stab-page" id="kba-papers" style="display:none">
             <section class="scard wide">
-              <h4>⚙️ 编译队列（L1 全做 / L2 中上 / L3 高价值；结果链增量防重复）</h4>
-              <div class="form-actions">
-                <button class="btn small primary" id="kba-queue-all">按价值分批量入队</button>
-                <button class="btn small" id="kba-compile-process">处理队列 1 项</button>
-                <button class="btn small" id="kba-compile-process5">处理 5 项</button>
-                <button class="btn small" id="kba-jobs-refresh">刷新</button>
-                <button class="btn small" id="kba-fts-rebuild">重建 FTS 索引</button>
+              <!-- 搜索栏 -->
+              <div class="kba-search-bar">
+                <input id="kba-papers-search" placeholder="搜索标题 / DOI / 作者" class="kba-search-input">
+                <button class="btn small" id="kba-papers-go">搜索</button>
               </div>
-              <div id="kba-compile-msg" class="kba-result"></div>
-              <table class="kba-table">
-                <thead><tr><th>DOI</th><th>级别</th><th>状态</th><th>价值分</th><th>错误</th><th>完成时间</th></tr></thead>
-                <tbody id="kba-jobs-body"></tbody>
+              <!-- 快捷芯片 -->
+              <div class="kba-chips" id="kba-papers-chips">
+                <button class="chip active" data-filter="all">全部</button>
+                <button class="chip" data-filter="compiled">已编译</button>
+                <button class="chip" data-filter="failed">编译失败</button>
+                <button class="chip" data-filter="l3">可升级 L3</button>
+              </div>
+              <!-- 筛选器 -->
+              <div class="kba-filters">
+                <select id="kba-filter-quartile" class="kba-filter-select" title="分区">
+                  <option value="">全部分区</option>
+                  <option value="Q1">Q1</option>
+                  <option value="Q2">Q2</option>
+                  <option value="Q3">Q3</option>
+                  <option value="Q4">Q4</option>
+                </select>
+                <select id="kba-filter-year" class="kba-filter-select" title="年份">
+                  <option value="">全部年份</option>
+                  <option value="2024">2024+</option>
+                  <option value="2020">2020+</option>
+                  <option value="2015">2015+</option>
+                  <option value="2010">2010+</option>
+                </select>
+                <select id="kba-filter-score" class="kba-filter-select" title="价值分">
+                  <option value="">全部价值分</option>
+                  <option value="7">≥ 7 (高价值)</option>
+                  <option value="5">≥ 5</option>
+                  <option value="3">≥ 3</option>
+                </select>
+                <select id="kba-filter-if" class="kba-filter-select" title="影响因子">
+                  <option value="">全部 IF</option>
+                  <option value="10">IF ≥ 10</option>
+                  <option value="5">IF ≥ 5</option>
+                  <option value="3">IF ≥ 3</option>
+                </select>
+              </div>
+              <!-- 批量操作栏 -->
+              <div class="kba-batch-bar" id="kba-batch-bar" style="display:none">
+                <label class="kba-select-all"><input type="checkbox" id="kba-select-all"> 全选</label>
+                <span id="kba-selected-count" class="kba-selected-count">已选 0 篇</span>
+                <button class="btn small primary" id="kba-batch-retry">批量重试编译</button>
+                <button class="btn small" id="kba-batch-l3">批量 L3 分析</button>
+              </div>
+              <!-- 结果消息 -->
+              <div id="kba-papers-msg" class="kba-result"></div>
+              <!-- 表格 -->
+              <table class="kba-table kba-papers-table">
+                <thead>
+                  <tr>
+                    <th class="kba-col-check"><input type="checkbox" id="kba-check-all"></th>
+                    <th>标题</th>
+                    <th>期刊 / 年</th>
+                    <th>IF</th>
+                    <th>分区</th>
+                    <th>价值分</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="kba-papers-body"></tbody>
               </table>
-            </section>
-          </div>
-
-          <!-- 元数据 -->
-          <div class="stab-page" id="kba-meta" style="display:none">
-            <section class="scard wide">
-              <h4>📄 元数据浏览 / 检索（papers_meta=bib 权威）</h4>
-              <div class="form-grid kba-search-row">
-                <label>搜索 <input id="kba-meta-search" placeholder="标题 / 作者 / 期刊 / 关键词（Enter 搜索，空=全部）"></label>
-                <button class="btn small" id="kba-meta-go">搜索</button>
-              </div>
-              <div class="form-actions">
-                <button class="btn small primary" id="kba-backfill">补齐全部 kb 原文层四件</button>
-                <span class="muted">扫 library 自动纳入知识库（冻结原则：不覆盖已有内容）</span>
-              </div>
-              <div id="kba-meta-msg" class="kba-result"></div>
-              <table class="kba-table">
-                <thead><tr><th>标题</th><th>期刊 / 年</th><th>价值分</th><th>知识库原文层</th><th>操作</th></tr></thead>
-                <tbody id="kba-meta-body"></tbody>
-              </table>
-              <div id="kba-meta-detail" class="kba-detail"></div>
-            </section>
-          </div>
-
-          <!-- 期刊 -->
-          <div class="stab-page" id="kba-journals" style="display:none">
-            <section class="scard wide">
-              <h4>🏛️ 期刊表导入（JCR/中科院分区 xlsx → journals.db，可更新）</h4>
-              <div class="form-grid">
-                <label>xlsx 文件路径 <input id="kba-journals-path" placeholder="JCR 表格 .xlsx（只回摘要，不 dump 全文）"></label>
-              </div>
-              <div class="form-actions">
-                <button class="btn small" id="kba-journals-preview">预览</button>
-                <button class="btn small primary" id="kba-journals-import">确认导入（upsert）</button>
-                <button class="btn small" id="kba-journals-stats">统计</button>
-              </div>
-              <div id="kba-journals-result" class="kba-result"></div>
-            </section>
-            <section class="scard wide">
-              <h4>🛠 期刊名人工纠正（bib 写法与表内标准名不匹配时绑定）</h4>
-              <div class="form-grid">
-                <label>DOI <input id="kba-ov-doi" placeholder="10.xxxx/yyy"></label>
-                <label>期刊标准名 <input id="kba-ov-name" placeholder="journals.db 中的标准名称"></label>
-              </div>
-              <div class="form-actions">
-                <button class="btn small primary" id="kba-ov-save">保存纠正</button>
-              </div>
-              <div id="kba-ov-result" class="kba-result"></div>
+              <!-- 分页 -->
+              <div class="kba-pager" id="kba-papers-pager"></div>
             </section>
           </div>
         </div>

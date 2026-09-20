@@ -382,8 +382,8 @@ const KB_FILES = [
   { name: 'zh.md', label: '🇨🇳 中文' },
   { name: '__images__', label: '🖼 图片' },
   { name: '_note.md', label: '📝 笔记(L1)' },
-  { name: '_details.md', label: '📑 详解(L2)' },
-  { name: '_wiki.md', label: '🧠 深度(L3)' },
+  { name: '_wiki.md', label: '📑 深度(L2)' },
+  { name: '_relations.md', label: ' 概念关系(L3)' },
 ];
 const readerState = { dir: null, file: null, content: '', editing: false, source: 'kb', libFile: null, paperId: null };
 let kbFileSetCache = {};   // dir -> Set(顶层文件名)（存在性过滤用，缓存整棵目录树一次）

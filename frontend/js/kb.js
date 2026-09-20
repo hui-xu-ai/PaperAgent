@@ -42,6 +42,9 @@ function bindKbSearch() {
   if (tm) tm.addEventListener('click', (e) => { if (e.target.id === 'trash-modal') tm.style.display = 'none'; });
   bindTrashModal();
   refreshTrashCount();
+  // 2026-09-19：清理幽灵记录（kb 目录已删除但数据库仍有记录）
+  const cb = $('kb-cleanup-btn');
+  if (cb) cb.addEventListener('click', cleanupStaleRecords);
   // T7：悬停预览弹窗——进入弹窗不关闭，离开行/弹窗 200ms 后消失；列表滚动时收起
   const pop = $('kbl-preview');
   if (pop) {
@@ -237,6 +240,36 @@ async function syncKbDisk() {
   }
 }
 
+/* 2026-09-19：清理幽灵记录——删除 kb 目录已不存在但数据库仍有元数据/编译任务的条目。 */
+async function cleanupStaleRecords() {
+  const info = $('kb-sync-info');
+  const btn = $('kb-cleanup-btn');
+  if (!(await askConfirm('确定要清理幽灵记录吗？\n\n将删除 kb 目录已不存在但数据库仍有元数据/编译任务的条目。\n此操作不可撤销。'))) return;
+  if (info) info.textContent = '清理中…';
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/kb-meta/cleanup-stale', { method: 'POST' });
+    const removed = Number(r.removed_meta || 0) + Number(r.removed_jobs || 0);
+    const kept = Number(r.kept || 0);
+    if (info) {
+      const ts = new Date().toLocaleTimeString();
+      if (removed === 0) {
+        info.textContent = `✅ ${ts} 无幽灵记录：${kept} 条元数据均正常。`;
+      } else {
+        info.textContent = `🧹 ${ts} 已清理 ${removed} 条幽灵记录（删除元数据 ${r.removed_meta} 条、编译任务 ${r.removed_jobs} 条），保留 ${kept} 条。`;
+      }
+    }
+    kbView.chips = null;
+    await loadKbList();
+    loadKbCompile();
+    if (kbView.mode === 'tree') loadKbTree();
+  } catch (e) {
+    if (info) info.textContent = '❌ 清理失败：' + (e && e.message ? e.message : e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 /* T7：知识库列表行悬停预览——显示标题/期刊/年/价值分/等级/原文层四件/编译状态 + 单篇 kb 操作 + 知识库问答入口 */
 let kblpHideTimer = null;
 
@@ -252,14 +285,13 @@ function scheduleKbPreviewHide() {
 }
 
 /* T7：单篇 kb 后台操作统一执行器（弹窗与详情模态共用） */
-/* 2026-09-12 用户反馈：已完成 L1 的篇仍显示「编译L1」，点了没反应（后端返回 skipped_done）。
-   三级产物（paperkb/compile.py）：L1=`_note.md` 六维笔记 / L2=`_details.md` 详解 /
-   L3=`_wiki.md` + `_concepts/`（**"按 wiki 知识库标准编译"就是这一级**）。 */
+/* 2026-09-20 两级编译 + L3 概念关系层：
+   L1=`_note.md` 六维笔记 / L2=`_wiki.md` 深度编译 / L3=`_relations.md` 概念关系。 */
 const KB_LEVELS = ['L1', 'L2', 'L3'];
 const KB_LEVEL_TIP = {
-  L1: '生成六维笔记 _note.md',
-  L2: '生成详解 _details.md（在 L1 基础上展开）',
-  L3: '生成 wiki 知识库 _wiki.md + _concepts/（"按 wiki 标准编译"= 这一级）',
+  L1: '\u751f\u6210\u516d\u7ef4\u7b14\u8bb0 _note.md',
+  L2: '\u751f\u6210\u6df1\u5ea6\u7f16\u8bd1 _wiki.md\uff08\u65b9\u6cd5\u8bba\u6279\u5224 + \u53ef\u590d\u73b0\u6027 + \u5e94\u7528\u8f6c\u5316\uff09',
+  L3: '\u751f\u6210\u6982\u5ff5\u5173\u7cfb _relations.md\uff08\u8de8\u6587\u732e\u6982\u5ff5\u5173\u7cfb\u5206\u6790\uff09',
 };
 
 function kbNextLevel(it) {
@@ -270,8 +302,8 @@ function kbNextLevel(it) {
 function kbCompileBtnHtml(it) {
   const next = kbNextLevel(it);
   if (!next) {
-    return '<button class="btn small" disabled title="三级编译已全部完成'
-      + '（L1 _note.md / L2 _details.md / L3 _wiki.md）">✓ 三级已编译完成</button>';
+    return '<button class="btn small" disabled title="\u4e09\u7ea7\u7f16\u8bd1\u5df2\u5168\u90e8\u5b8c\u6210'
+      + '\uff08L1 _note.md / L2 _wiki.md / L3 _relations.md\uff09">\u2713 \u4e09\u7ea7\u5df2\u7f16\u8bd1\u5b8c\u6210</button>';
   }
   return `<button class="btn small" data-op="compile" data-level="${next}" `
     + `title="${KB_LEVEL_TIP[next]}">编译${next}</button>`;
@@ -611,14 +643,13 @@ async function kbDelete(dir, file) {
 
 /* ─── 知识库管理 M5（从 app.js 合并） ─── */
 
-/* ══════════ 知识库管理（M5：导入/编译/元数据/问答/期刊）══════════ */
-const kbaState = { scores: [], kbMap: {} };
-
-function doiDir(doi) {
-  /* 复刻 paperkb.doi_to_dirname（目录名=DOI 规范化）——仅用于匹配 kb 状态展示 */
-  return String(doi || '').replace(/[/:]/g, '_').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
-    .replace(/[^\w.\-]/g, '_').slice(0, 120) || 'paper';
-}
+/* ══════════ 知识库管理（2-tab：总览 + 文献管理）══════════ */
+const kbaPapersState = {
+  page: 1, pageSize: 50, total: 0, items: [],
+  selected: new Set(),
+  chip: 'all',
+  sort: 'value',
+};
 
 function bindKbAdmin() {
   $('kb-admin-btn').addEventListener('click', openKbAdmin);
@@ -626,255 +657,258 @@ function bindKbAdmin() {
   document.querySelectorAll('#kb-admin-modal .stab').forEach(btn => {
     btn.addEventListener('click', () => setKbaTab(btn.dataset.stab));
   });
-  // 编译（写操作 → guardBtn 防连点；刷新任务列表为只读，不接）
-  $('kba-queue-all').addEventListener('click', (e) => guardBtn(e.currentTarget, () => kbaQueueAll(), '入队中…'));
-  $('kba-compile-process').addEventListener('click', (e) => guardBtn(e.currentTarget, () => kbaProcess(1), '处理中…'));
-  $('kba-compile-process5').addEventListener('click', (e) => guardBtn(e.currentTarget, () => kbaProcess(5), '处理中…'));
-  $('kba-jobs-refresh').addEventListener('click', kbaJobs);
-  $('kba-fts-rebuild').addEventListener('click', (e) => guardBtn(e.currentTarget, () => kbaFtsRebuild(), '重建中…'));
-  // 元数据
-  $('kba-meta-go').addEventListener('click', () => kbaMetaList(true));
-  $('kba-meta-search').addEventListener('keydown', e => { if (e.key === 'Enter') kbaMetaList(true); });
-  $('kba-backfill').addEventListener('click', (e) => guardBtn(e.currentTarget, () => kbaBackfill(), '补齐中…'));
-  // 期刊（preview/stats 为只读查询，不接防重）
-  $('kba-journals-preview').addEventListener('click', () => kbaJournals('preview'));
-  $('kba-journals-import').addEventListener('click', (e) => guardBtn(e.currentTarget, () => kbaJournals('import'), '导入中…'));
-  $('kba-journals-stats').addEventListener('click', kbaJournalStats);
-  $('kba-ov-save').addEventListener('click', (e) => guardBtn(e.currentTarget, () => kbaOverride(), '保存中…'));
+  const on = (id, fn, opts) => { const el = $(id); if (el) el.addEventListener(opts?.ev || 'click', fn); };
+  on('kba-papers-search', (e) => { if (e.key === 'Enter') { kbaPapersState.page = 1; kbaPapersList(); } }, { ev: 'keydown' });
+  on('kba-papers-go', () => { kbaPapersState.page = 1; kbaPapersList(); });
+  document.querySelectorAll('#kba-papers-chips .chip').forEach(c => {
+    c.addEventListener('click', () => {
+      document.querySelectorAll('#kba-papers-chips .chip').forEach(x => x.classList.remove('active'));
+      c.classList.add('active');
+      kbaPapersState.chip = c.dataset.filter;
+      kbaPapersState.page = 1;
+      kbaPapersList();
+    });
+  });
+  ['kba-filter-quartile', 'kba-filter-year', 'kba-filter-score', 'kba-filter-if'].forEach(id => {
+    on(id, () => { kbaPapersState.page = 1; kbaPapersList(); }, { ev: 'change' });
+  });
+  on('kba-check-all', (e) => kbaToggleSelectAll(e.currentTarget.checked));
+  on('kba-select-all', (e) => kbaToggleSelectAll(e.currentTarget.checked));
+  on('kba-batch-retry', (e) => guardBtn(e.currentTarget, () => kbaBatchRetry(), '\u7f16\u8bd1\u4e2d\u2026'));
+  on('kba-batch-l3', (e) => guardBtn(e.currentTarget, () => kbaBatchL3(), 'L3\u4e2d\u2026'));
 }
 
 function setKbaTab(tab) {
   document.querySelectorAll('#kb-admin-modal .stab').forEach(b => b.classList.toggle('active', b.dataset.stab === tab));
-  ['overview', 'compile', 'meta', 'journals'].forEach(p => {
-    $('kba-' + p).style.display = p === tab ? '' : 'none';
+  ['overview', 'papers'].forEach(p => {
+    const el = $('kba-' + p);
+    if (el) el.style.display = p === tab ? '' : 'none';
   });
   if (tab === 'overview') kbaOverview();
-  if (tab === 'compile') kbaJobs();
-  if (tab === 'meta') kbaMetaList(false);
-  if (tab === 'journals') kbaJournalStats();
+  if (tab === 'papers') kbaPapersList();
 }
 
 async function kbaOverview() {
   const box = $('kba-overview-content');
-  box.innerHTML = '<div class="kba-msg">加载知识库总览…</div>';
+  box.innerHTML = '<div class="kba-msg">\u52a0\u8f7d\u77e5\u8bc6\u5e93\u603b\u89c8\u2026</div>';
   try {
     const s = await api('/api/kb-meta/stats');
-    const esc = escapeHtml;
-    const sc = s.scale, cp = s.compile, ms = s.missing;
-    const link = (arr, fn) => arr && arr.length
-      ? '<ul class="kba-list">' + arr.slice(0, 30).map(fn).join('') +
-        (arr.length > 30 ? '<li class="muted">…共 ' + arr.length + ' 条</li>' : '') + '</ul>'
-      : '<span class="muted">无</span>';
-    box.innerHTML = `
-      <h4>🏛️ 知识库架构（卡帕西 LLM Wiki：文档→编译→链接→问答→回灌）</h4>
-      <div class="kba-detail ov-arch">输入（bib/JCR/PDF/md）→ 存储（kb/ 自包含四件）→ 编译（L0 元数据 → L1 → L2 → L3 → 概念/主题）→ 检索（编译产物 FTS5）→ 问答（≤8k 注入）→ 回灌（_qa）</div>
-      <h4>📈 规模与编译完成度</h4>
-      <div class="kba-stats-grid">
-        <div class="kba-stat"><b>${sc.meta_count}</b><span>元数据篇(bib)</span></div>
-        <div class="kba-stat"><b>${sc.library_papers}</b><span>解析库(library)</span></div>
-        <div class="kba-stat"><b>${sc.kb_papers}</b><span>知识库(kb)</span></div>
-        <div class="kba-stat"><b>${cp.l1_done}</b><span>L1 完成</span></div>
-        <div class="kba-stat"><b>${cp.l2_done}</b><span>L2 完成</span></div>
-        <div class="kba-stat"><b>${cp.l3_done}</b><span>L3 完成</span></div>
-      </div>
-      <div class="kba-detail" style="margin-top:8px">编译队列：待处理 <b>${cp.queued}</b> · 编译中 <b>${cp.processing}</b> · 失败 <b>${cp.failed}</b></div>
-      <h4>⚠️ 缺失 / 待补</h4>
-      <div class="kba-detail">
-        <p><b>缺 bib 元数据</b>（需 WOS 补 bib 后才能编译）：${link(ms.missing_meta, d => '<li>' + esc(d) + '</li>')}</p>
-        <p><b>未纳入知识库</b>（library 有但 kb 无）：${link(ms.not_in_kb, d => '<li>' + esc(d) + '</li>')}</p>
-        <p><b>已纳入未编译</b>：${link(ms.uncompiled, d => '<li>' + esc(d) + '</li>')}</p>
-      </div>
-      <h4>📚 各级编译含义（帮助）</h4>
-      <div class="kba-detail">
-        <p><b>L0 元数据</b>：bib 导入（DOI 权威，0 token），可后补（WOS 检索式批量）。</p>
-        <p><b>L1 知识编译</b>：一次调用输出「一句话贡献 + 六维（背景/方法/结果/结论/创新/局限）+ 概念标签 + 段落引用」→ _note.md（全做）。</p>
-        <p><b>L2 章节要点</b>：注入 L1 压缩版，只补充章节级细节 → _details.md（中上价值）。</p>
-        <p><b>L3 深度 wiki</b>：概念网络 + 批判性分析 + 跨文献链接 → _wiki.md + 概念页（高价值）。</p>
-        <p><b>概念页 _concepts</b>：≥3 篇引用同概念自动聚合；<b>主题 MOC _topics</b>、<b>问答回灌 _qa</b> 为飞轮扩展。</p>
-      </div>`;
-  } catch (e) { box.innerHTML = kbaErr(e); }
+    const sc = s.scale, cp = s.compile;
+    box.innerHTML =
+      '<h4>\u{1f4c8} \u89c4\u6a21\u4e0e\u7f16\u8bd1\u5b8c\u6210\u5ea6</h4>' +
+      '<div class="kba-stats-grid">' +
+      '<div class="kba-stat"><b>' + sc.meta_count + '</b><span>\u5143\u6570\u636e\u7bc7(bib)</span></div>' +
+      '<div class="kba-stat"><b>' + sc.library_papers + '</b><span>\u89e3\u6790\u5e93(library)</span></div>' +
+      '<div class="kba-stat"><b>' + sc.kb_papers + '</b><span>\u77e5\u8bc6\u5e93(kb)</span></div>' +
+      '<div class="kba-stat"><b>' + cp.l1_done + '</b><span>L1 \u5b8c\u6210</span></div>' +
+      '<div class="kba-stat"><b>' + cp.l2_done + '</b><span>L2 \u5b8c\u6210</span></div>' +
+      '<div class="kba-stat"><b>' + cp.l3_done + '</b><span>L3 \u5b8c\u6210</span></div>' +
+      '</div>' +
+      '<div class="kba-detail" style="margin-top:8px">\u7f16\u8bd1\u961f\u5217\uff1a\u5f85\u5904\u7406 <b>' + cp.queued +
+      '</b> \u00b7 \u7f16\u8bd1\u4e2d <b>' + cp.processing + '</b> \u00b7 \u5931\u8d25 <b>' + cp.failed + '</b></div>' +
+      '<div class="kba-tools-section">' +
+      '<h4>\u{1f6e0} \u7d22\u5f15\u7ef4\u62a4</h4>' +
+      '<div class="form-actions">' +
+      '<button class="btn small" id="kba-fts-rebuild">\u91cd\u5efa FTS \u7d22\u5f15</button>' +
+      '<button class="btn small" id="kba-vector-rebuild">\u91cd\u5efa\u5411\u91cf\u7d22\u5f15</button>' +
+      '</div>' +
+      '<div id="kba-compile-msg" class="kba-result"></div>' +
+      '</div>' +
+      '<h4>\u{1f4d6} \u5404\u7ea7\u7f16\u8bd1\u542b\u4e49</h4>' +
+      '<div class="kba-detail">' +
+      '<p><b>L1 \u77e5\u8bc6\u7b14\u8bb0</b>\uff1a\u5165\u5e93\u81ea\u52a8\u89e6\u53d1\uff0c\u8f93\u51fa _note.md\uff08\u4e00\u53e5\u8bdd\u8d21\u732e + \u516d\u7ef4\u7b14\u8bb0 + \u6982\u5ff5\u6807\u7b7e\uff09\u3002</p>' +
+      '<p><b>L2 \u6df1\u5ea6\u7f16\u8bd1</b>\uff1a\u65b9\u6cd5\u8bba\u6279\u5224 + \u53ef\u590d\u73b0\u6027 + \u5e94\u7528\u8f6c\u5316 \u2192 _wiki.md\u3002</p>' +
+      '<p><b>L3 \u6982\u5ff5\u5173\u7cfb</b>\uff1a\u8de8\u6587\u732e\u6982\u5ff5\u5173\u7cfb\u5206\u6790 \u2192 _relations.md\uff08\u7701 77% token\uff09\u3002</p>' +
+      '</div>';
+  } catch (e) { box.innerHTML = kbaErr(e); return; }
+  const fb = $('kba-fts-rebuild');
+  if (fb) fb.addEventListener('click', (e) => guardBtn(e.currentTarget, () => kbaFtsRebuild(), '\u91cd\u5efa\u4e2d\u2026'));
+  const vb = $('kba-vector-rebuild');
+  if (vb) vb.addEventListener('click', (e) => guardBtn(e.currentTarget, () => kbaVectorRebuild(), '\u91cd\u5efa\u4e2d\u2026'));
 }
 
 async function openKbAdmin() {
   $('kb-admin-modal').style.display = 'flex';
-  // 打开时按当前激活 tab 加载对应数据（总览默认；若上次停在编译/元数据则恢复）
   const active = document.querySelector('#kb-admin-modal .stab.active');
   setKbaTab(active ? active.dataset.stab : 'overview');
   try {
     const st = await api('/api/kb-meta/status');
-    $('kba-status').textContent = '· 元数据 ' + st.meta_count + ' 篇';
-  } catch (e) { $('kba-status').textContent = '· ' + e.message; }
+    $('kba-status').textContent = '\u00b7 \u5143\u6570\u636e ' + st.meta_count + ' \u7bc7';
+  } catch (e) { $('kba-status').textContent = '\u00b7 ' + e.message; }
 }
 
 function kbaOut(id, html) { $(id).innerHTML = html; }
-function kbaErr(e) { return '<div class="kba-err">⚠ ' + escapeHtml(e.message || String(e)) + '</div>'; }
+function kbaErr(e) { return '<div class="kba-err">\u26a0 ' + escapeHtml(e.message || String(e)) + '</div>'; }
 
-/* ---------------- 编译 ---------------- */
-async function kbaQueueAll() {
-  kbaOut('kba-compile-msg', '<div class="kba-msg">批量入队中…</div>');
+/* ---------------- 文献管理 tab ---------------- */
+async function kbaPapersList() {
+  const body = $('kba-papers-body');
+  if (!body) return;
+  body.innerHTML = '<tr><td colspan="8" class="muted">\u52a0\u8f7d\u4e2d\u2026</td></tr>';
+  const ps = new URLSearchParams({
+    page: kbaPapersState.page, page_size: kbaPapersState.pageSize, sort: 'value',
+  });
+  const q = ($('kba-papers-search') || {}).value || '';
+  if (q.trim()) ps.set('q', q.trim());
+  const chip = kbaPapersState.chip;
+  if (chip === 'compiled') ps.set('compile_status', 'done');
+  else if (chip === 'failed') ps.set('compile_status', 'failed');
+  else if (chip === 'l3') ps.set('compile_status', 'l2');
+  const quartile = ($('kba-filter-quartile') || {}).value || '';
+  if (quartile) ps.set('quartile', quartile);
+  const year = ($('kba-filter-year') || {}).value || '';
+  if (year) ps.set('year_from', year);
+  const scoreMin = ($('kba-filter-score') || {}).value || '';
+  if (scoreMin) ps.set('score_min', scoreMin);
+  const minIf = ($('kba-filter-if') || {}).value || '';
+  if (minIf) ps.set('min_if', minIf);
   try {
-    const r = await api('/api/kb-meta/compile/queue-all', { method: 'POST' });
-    kbaOut('kba-compile-msg', '<div class="kba-ok">✅ 入队：' + escapeHtml(JSON.stringify(r)) + '</div>');
-    kbaJobs();
-  } catch (e) { kbaOut('kba-compile-msg', kbaErr(e)); }
+    const r = await api('/api/kb-meta/kb/list?' + ps.toString());
+    kbaPapersState.items = r.items || [];
+    kbaPapersState.total = r.total || 0;
+    kbaPapersState.selected.clear();
+    const ca = $('kba-check-all'); if (ca) ca.checked = false;
+    kbaPapersRender();
+  } catch (e) { body.innerHTML = '<tr><td colspan="8">' + escapeHtml(e.message) + '</td></tr>'; }
 }
 
-async function kbaProcess(n) {
-  kbaOut('kba-compile-msg', '<div class="kba-msg">处理队列 ' + n + ' 项中…（LLM 调用可能较慢）</div>');
-  try {
-    const r = await api('/api/kb-meta/compile/process', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ limit: n })
+function kbaPapersRender() {
+  const body = $('kba-papers-body');
+  if (!body) return;
+  const items = kbaPapersState.items;
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="8" class="muted">\u65e0\u5339\u914d\u6587\u732e\uff08\u5171 ' + kbaPapersState.total + ' \u7bc7\uff09</td></tr>';
+    kbaPapersUpdatePager();
+    return;
+  }
+  const rows = items.map(it => {
+    const compiled = it.compiled || [];
+    const top = compiled.slice().sort().pop() || '';
+    const hasError = !!it.last_error;
+    const hasL3 = compiled.includes('L3');
+    let stClass = 'st-none', stText = '\u672a\u7f16\u8bd1';
+    if (hasError) { stClass = 'st-fail'; stText = '\u5931\u8d25'; }
+    else if (hasL3) { stClass = 'st-l3'; stText = 'L3 \u5b8c\u6210'; }
+    else if (top === 'L2') { stClass = 'st-l2'; stText = 'L2 \u5b8c\u6210'; }
+    else if (top === 'L1') { stClass = 'st-l1'; stText = 'L1 \u5b8c\u6210'; }
+    const doi = escapeHtml(it.doi || '');
+    const checked = kbaPapersState.selected.has(it.doi) ? ' checked' : '';
+    const ifVal = it.impact_factor ? Number(it.impact_factor).toFixed(1) : '\u2014';
+    const qVal = it.quartile || '\u2014';
+    const scoreVal = it.value_score != null ? Number(it.value_score).toFixed(1) : '\u2014';
+    let actions = '';
+    if (hasError) actions = '<button class="btn small" data-act="retry" data-doi="' + doi + '">\u91cd\u8bd5</button>';
+    else if (!hasL3) actions = '<button class="btn small" data-act="l3" data-doi="' + doi + '">\u5347\u7ea7L3</button>';
+    else actions = '<span class="muted">\u2014</span>';
+    return '<tr>' +
+      '<td><input type="checkbox" data-doi="' + doi + '"' + checked + '></td>' +
+      '<td title="' + escapeHtml(it.title || '') + '">' + escapeHtml(shortTitle(it.title || it.doi || '', 50)) +
+        '<div class="muted" style="font-size:11px">' + doi + '</div></td>' +
+      '<td>' + escapeHtml(it.journal || '\u2014') + '<div class="muted" style="font-size:11px">' + escapeHtml(it.year || '') + '</div></td>' +
+      '<td>' + ifVal + '</td>' +
+      '<td>' + escapeHtml(qVal) + '</td>' +
+      '<td>' + scoreVal + '</td>' +
+      '<td><span class="kba-status-chip ' + stClass + '">' + stText + '</span></td>' +
+      '<td>' + actions + '</td></tr>';
+  }).join('');
+  body.innerHTML = rows;
+  body.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) kbaPapersState.selected.add(cb.dataset.doi);
+      else kbaPapersState.selected.delete(cb.dataset.doi);
+      kbaUpdateBatchBar();
     });
-    const brief = r.map(j => escapeHtml((j.doi || '') + ' ' + (j.level || '') + '→' + (j.status || ''))).join('<br>') || '（队列已空）';
-    kbaOut('kba-compile-msg', '<div class="kba-ok">✅ 处理完成：' + r.length + ' 项<br>' + brief + '</div>');
-    kbaJobs();
-  } catch (e) { kbaOut('kba-compile-msg', kbaErr(e)); }
+  });
+  body.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.addEventListener('click', () => kbaSingleAction(btn.dataset.act, btn.dataset.doi));
+  });
+  kbaPapersUpdatePager();
+  kbaUpdateBatchBar();
 }
 
-async function kbaJobs() {
+function kbaPapersUpdatePager() {
+  const pg = $('kba-papers-pager');
+  if (!pg) return;
+  const pages = Math.max(1, Math.ceil(kbaPapersState.total / kbaPapersState.pageSize));
+  pg.innerHTML = '<button class="btn small" id="kba-pager-prev"' + (kbaPapersState.page <= 1 ? ' disabled' : '') + '>\u2039 \u4e0a\u4e00\u9875</button>' +
+    '<span class="muted">\u7b2c ' + kbaPapersState.page + ' / ' + pages + ' \u9875\uff0c\u5171 ' + kbaPapersState.total + ' \u7bc7</span>' +
+    '<button class="btn small" id="kba-pager-next"' + (kbaPapersState.page >= pages ? ' disabled' : '') + '>\u4e0b\u4e00\u9875 \u203a</button>';
+  const prev = $('kba-pager-prev');
+  if (prev) prev.addEventListener('click', () => { if (kbaPapersState.page > 1) { kbaPapersState.page--; kbaPapersList(); } });
+  const next = $('kba-pager-next');
+  if (next) next.addEventListener('click', () => { if (kbaPapersState.page < pages) { kbaPapersState.page++; kbaPapersList(); } });
+}
+
+function kbaToggleSelectAll(checked) {
+  if (checked) kbaPapersState.items.forEach(it => { if (it.doi) kbaPapersState.selected.add(it.doi); });
+  else kbaPapersState.selected.clear();
+  const body = $('kba-papers-body');
+  if (body) body.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = checked; });
+  kbaUpdateBatchBar();
+}
+
+function kbaUpdateBatchBar() {
+  const bar = $('kba-batch-bar');
+  if (!bar) return;
+  const n = kbaPapersState.selected.size;
+  bar.style.display = n > 0 ? '' : 'none';
+  const label = $('kba-selected-count');
+  if (label) label.textContent = '\u5df2\u9009 ' + n + ' \u7bc7';
+}
+
+async function kbaBatchRetry() {
+  const dois = [...kbaPapersState.selected];
+  if (!dois.length) return;
   try {
-    const jobs = await api('/api/kb-meta/compile/jobs');
-    const rows = jobs.map(j =>
-      '<tr><td>' + escapeHtml(j.paper_doi || j.doi || '') + '</td><td>' + escapeHtml(j.level || '') + '</td>' +
-      '<td>' + escapeHtml(j.status || '') + '</td><td>' + (j.value_score != null ? Number(j.value_score).toFixed(2) : '') + '</td>' +
-      '<td class="muted">' + escapeHtml((j.error || '').slice(0, 60)) + '</td>' +
-      '<td>' + escapeHtml((j.done_at || j.started_at || '').slice(0, 19)) + '</td></tr>').join('');
-    $('kba-jobs-body').innerHTML = rows || '<tr><td colspan="6" class="muted">暂无编译任务（先导入内容并批量入队）</td></tr>';
-  } catch (e) { $('kba-jobs-body').innerHTML = '<tr><td colspan="6">' + escapeHtml(e.message) + '</td></tr>'; }
+    const r = await api('/api/kb-meta/compile/batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dois, action: 'retry' }),
+    });
+    alert('\u2705 \u91cd\u8bd5\u5b8c\u6210\uff1a\u6210\u529f ' + r.success + ' / \u5931\u8d25 ' + r.failed + ' / \u8df3\u8fc7 ' + r.skipped);
+    kbaPapersList();
+  } catch (e) { alert('\u274c ' + e.message); }
+}
+
+async function kbaBatchL3() {
+  const dois = [...kbaPapersState.selected];
+  if (!dois.length) return;
+  try {
+    const r = await api('/api/kb-meta/compile/batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dois, action: 'l3' }),
+    });
+    alert('\u2705 L3 \u5b8c\u6210\uff1a\u6210\u529f ' + r.success + ' / \u5931\u8d25 ' + r.failed + ' / \u8df3\u8fc7 ' + r.skipped);
+    kbaPapersList();
+  } catch (e) { alert('\u274c ' + e.message); }
+}
+
+async function kbaSingleAction(action, doi) {
+  try {
+    const act = action === 'retry' ? 'retry' : 'l3';
+    const r = await api('/api/kb-meta/compile/batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dois: [doi], action: act }),
+    });
+    if (r.failed) alert('\u274c \u5931\u8d25');
+    else alert('\u2705 \u5b8c\u6210');
+    kbaPapersList();
+  } catch (e) { alert('\u274c ' + e.message); }
 }
 
 async function kbaFtsRebuild() {
-  kbaOut('kba-compile-msg', '<div class="kba-msg">重建 FTS 索引中…</div>');
+  kbaOut('kba-compile-msg', '<div class="kba-msg">\u91cd\u5efa FTS \u7d22\u5f15\u4e2d\u2026</div>');
   try {
     const r = await api('/api/kb-meta/fts/rebuild', { method: 'POST' });
-    kbaOut('kba-compile-msg', '<div class="kba-ok">✅ 重建完成：' + escapeHtml(JSON.stringify(r)) + '</div>');
+    kbaOut('kba-compile-msg', '<div class="kba-ok">\u2705 \u91cd\u5efa\u5b8c\u6210\uff1a' + escapeHtml(JSON.stringify(r)) + '</div>');
   } catch (e) { kbaOut('kba-compile-msg', kbaErr(e)); }
 }
 
-/* ---------------- 元数据 ---------------- */
-async function kbaMetaList(force) {
-  const q = $('kba-meta-search').value.trim();
+async function kbaVectorRebuild() {
+  kbaOut('kba-compile-msg', '<div class="kba-msg">\u91cd\u5efa\u5411\u91cf\u7d22\u5f15\u4e2d\uff08\u8017\u65f6\u8f83\u957f\uff09\u2026</div>');
   try {
-    let papers, kb;
-    if (force && q) {
-      papers = await api('/api/kb-meta/search?q=' + encodeURIComponent(q));
-      kb = await api('/api/kb-meta/kb/status');
-    } else {
-      const [s, k] = await Promise.all([api('/api/kb-meta/scores'), api('/api/kb-meta/kb/status')]);
-      papers = s; kb = k;
-    }
-    kbaState.scores = papers;
-    kbaState.kbMap = {};
-    kb.forEach(d => { kbaState.kbMap[d.dir] = d; });
-    if (!papers.length) { $('kba-meta-body').innerHTML = '<tr><td colspan="5" class="muted">暂无元数据（先导入 bib，或扫描缺失 DOI 补）</td></tr>'; return; }
-    const rows = papers.map(p => {
-      const d = doiDir(p.doi);
-      const k = kbaState.kbMap[d];
-      const kbBadge = k
-        ? '<span class="kba-badge ok">✓ ' + ['document.json', 'en.md'].filter(f => k[f]).length + '/2 文</span>' +
-          (k['source.pdf'] ? '' : ' <span class="kba-badge warn">无PDF</span>') +
-          (k['images'] ? '' : ' <span class="kba-badge warn">无图</span>') +
-          (k.note ? ' <span class="kba-badge ok">_note</span>' : '')
-        : '<span class="kba-badge">未纳入</span>';
-      return '<tr><td title="' + escapeHtml(p.title || '') + '">' + escapeHtml(shortTitle(p.title, 52)) +
-        '<div class="muted" style="font-size:11px">' + escapeHtml(p.doi || '') + '</div></td>' +
-        '<td>' + escapeHtml(p.journal || '') + '<div class="muted" style="font-size:11px">' + escapeHtml(p.year || '') + (p.times_cited ? ' · 被引 ' + p.times_cited : '') + '</div></td>' +
-        '<td>' + (p.score != null ? Number(p.score).toFixed(2) : '-') + '<div class="muted" style="font-size:11px">' + escapeHtml(p.level || '') + '</div></td>' +
-        '<td>' + kbBadge + '</td>' +
-        '<td class="kba-actions"><button class="btn small" data-act="detail" data-doi="' + escapeHtml(p.doi) + '">详情</button></td></tr>';
-    }).join('');
-    $('kba-meta-body').innerHTML = rows;
-    // 委托：行内操作
-    $('kba-meta-body').querySelectorAll('button[data-act]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (btn.dataset.act === 'detail') kbaMetaDetail(btn.dataset.doi);
-      });
-    });
-  } catch (e) { $('kba-meta-body').innerHTML = '<tr><td colspan="5">' + escapeHtml(e.message) + '</td></tr>'; }
-}
-
-async function kbaBackfill() {
-  $('kba-meta-msg').innerHTML = '<div class="kba-msg">补齐 kb 原文层中…（扫 library 全部文献）</div>';
-  try {
-    const r = await api('/api/kb-meta/backfill', { method: 'POST' });
-    const lines = (r.done || []).map(d =>
-      '✅ ' + escapeHtml(d.doi) + ' 复制 ' + escapeHtml((d.copied || []).join(',')) +
-      (d.verify ? ' · 校验一致' : '')).join('<br>');
-    const skip = (r.skipped || []).map(s => '⏭ ' + escapeHtml(s.doi) + '（已存在）').join('<br>');
-    const fail = (r.failed || []).map(f => '⚠ ' + escapeHtml(f.doi) + ' ' + escapeHtml(f.error || '')).join('<br>');
-    $('kba-meta-msg').innerHTML = '<div class="kba-ok">✅ 补齐完成：' + r.count + ' 篇' +
-      (lines ? '<br>' + lines : '') + (skip ? '<br>' + skip : '') + (fail ? '<br>' + fail : '') + '</div>';
-    kbaMetaList(false);
-  } catch (e) { $('kba-meta-msg').innerHTML = kbaErr(e); }
-}
-
-async function kbaMetaDetail(doi) {
-  const box = $('kba-meta-detail');
-  box.innerHTML = '<div class="kba-msg">加载详情…</div>';
-  try {
-    const [p, c, s] = await Promise.all([
-      api('/api/kb-meta/paper?doi=' + encodeURIComponent(doi)),
-      api('/api/kb-meta/citations?doi=' + encodeURIComponent(doi)),
-      api('/api/kb-meta/source/status?doi=' + encodeURIComponent(doi))
-    ]);
-    const refs = (c.references || c.cited || []).slice(0, 15).map(r =>
-      '<li>' + escapeHtml((r.cited_brief || r.brief || '') + (r.cited_doi ? ' · ' + r.cited_doi : '')) + '</li>').join('');
-    const citing = (c.citing || []).slice(0, 10).map(r => '<li>' + escapeHtml(r.citing_doi || '') + '</li>').join('');
-    const src = (b) => b && b.exists
-      ? '✓ ' + ['source.pdf', 'en.md', 'document.json'].filter(f => b[f]).join(', ') + (b.images ? ' + images/' : '')
-      : '—';
-    box.innerHTML =
-      '<h4>' + escapeHtml(p.title || doi) + '</h4>' +
-      '<p class="muted">' + escapeHtml((p.authors || []).join(', ')) + '</p>' +
-      '<p><b>期刊：</b>' + escapeHtml(p.journal || '') + ' · ' + escapeHtml(p.year || '') +
-      ' · ISSN ' + escapeHtml(p.issn || '') + ' · 被引 ' + (p.times_cited ?? 0) +
-      (p.journal_override ? ' · 期刊纠正：' + escapeHtml(p.journal_override) : '') + '</p>' +
-      (p.abstract ? '<details><summary>摘要</summary><p class="muted">' + escapeHtml(p.abstract.slice(0, 900)) + '</p></details>' : '') +
-      '<div class="kba-detail-grid">' +
-      '<div><b>library 原文层：</b>' + escapeHtml(src(s.library)) + '</div>' +
-      '<div><b>kb 原文层：</b>' + escapeHtml(src(s.kb)) + '</div>' +
-      '</div>' +
-      (refs ? '<details><summary>引用的文献（' + (c.references || c.cited || []).length + '）</summary><ul>' + refs + '</ul></details>' : '') +
-      (citing ? '<details><summary>被引用（' + (c.citing || []).length + '）</summary><ul>' + citing + '</ul></details>' : '') +
-      '<div class="form-actions"><button class="btn small" id="kba-detail-close">收起</button></div>';
-    $('kba-detail-close').addEventListener('click', () => { box.innerHTML = ''; });
-  } catch (e) { box.innerHTML = kbaErr(e); }
-}
-
-/* ---------------- 期刊 ---------------- */
-async function kbaJournals(mode) {
-  const path = $('kba-journals-path').value.trim();
-  if (!path) { $('kba-journals-result').innerHTML = '<div class="kba-err">请输入 xlsx 路径</div>'; return; }
-  $('kba-journals-result').innerHTML = '<div class="kba-msg">' + (mode === 'preview' ? '解析中…（只回摘要）' : '导入中…（upsert 幂等）') + '</div>';
-  try {
-    const r = await api('/api/kb-meta/journals/' + mode, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path })
-    });
-    $('kba-journals-result').innerHTML = '<div class="kba-ok">' + escapeHtml(JSON.stringify(r)) + '</div>';
-    if (mode === 'import') kbaJournalStats();
-  } catch (e) { $('kba-journals-result').innerHTML = kbaErr(e); }
-}
-
-async function kbaJournalStats() {
-  try {
-    const s = await api('/api/kb-meta/journals/stats');
-    $('kba-journals-result').innerHTML = '<div class="kba-ok">🏛️ ' + escapeHtml(JSON.stringify(s)) + '</div>';
-  } catch (e) { $('kba-journals-result').innerHTML = kbaErr(e); }
-}
-
-async function kbaOverride() {
-  const doi = $('kba-ov-doi').value.trim();
-  const name = $('kba-ov-name').value.trim();
-  if (!doi || !name) { $('kba-ov-result').innerHTML = '<div class="kba-err">DOI 与期刊标准名都要填</div>'; return; }
-  try {
-    const r = await api('/api/kb-meta/journals/override', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ doi, journal_name: name })
-    });
-    $('kba-ov-result').innerHTML = '<div class="kba-ok">✅ 已纠正 → ' + escapeHtml(r.journal_override) + '（新评分 ' + (r.score && r.score.score != null ? Number(r.score.score).toFixed(2) : '?') + '）</div>';
-  } catch (e) { $('kba-ov-result').innerHTML = kbaErr(e); }
+    const r = await api('/api/kb-meta/vector/rebuild', { method: 'POST' });
+    kbaOut('kba-compile-msg', '<div class="kba-ok">\u2705 \u5411\u91cf\u7d22\u5f15\u91cd\u5efa\u5b8c\u6210\uff1a' + escapeHtml(JSON.stringify(r)) + '</div>');
+  } catch (e) { kbaOut('kba-compile-msg', kbaErr(e)); }
 }
 
 

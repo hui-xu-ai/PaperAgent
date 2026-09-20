@@ -792,7 +792,7 @@ async function saveParse() {
 // 2026-09-12 批1：删除「纳入清单」勾选框（KB_INCLUDE_OPTIONS / renderKbInclude /
 // kbIncludeChecked）以及「AI 检索文件清单」勾选框（renderRetrievalInclude）——
 // 两组都是"存而不读"的装饰控件（后端 kb_include / retrieval_include 已同步删除）。
-// kb 产物由数据布局契约固定：_note.md / _details.md / en.md / document.json / images/。
+// kb 产物由数据布局契约固定：_note.md / _wiki.md / _relations.md / en.md / document.json / images/。
 
 /* 2026-09-13：kb tab 主保存（复制方式 + 检索权限 + 编译思考档三个端点顺序提交，写回 #kb-result） */
 async function saveKbSettings() {

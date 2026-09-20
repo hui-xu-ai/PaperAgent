@@ -920,6 +920,44 @@ body[data-theme="paper"] {  /* 纸质 · 豆绿护眼 */
 .kba-ask-input { width: 100%; resize: vertical; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; background: var(--input, #fff); color: inherit; }
 .kba-answer { white-space: pre-wrap; }
 .kba-cite { background: var(--primary-soft); color: var(--primary); border-radius: 4px; padding: 0 4px; font-weight: 600; }
+
+/* KB Admin - 文献管理 Tab */
+.kba-search-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+.kba-search-input { flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font: inherit; background: var(--input, #fff); color: inherit; }
+.kba-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.kba-chips .chip { border: 1px solid var(--border); border-radius: 14px; padding: 3px 12px; font-size: 12px; cursor: pointer; background: transparent; color: inherit; transition: all .15s; }
+.kba-chips .chip:hover { border-color: var(--primary); color: var(--primary); }
+.kba-chips .chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.kba-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.kba-filter-select { border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; background: var(--input, #fff); color: inherit; cursor: pointer; }
+.kba-batch-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--panel-2, rgba(127,127,127,.06)); border-radius: 8px; margin-bottom: 10px; }
+.kba-select-all { display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; }
+.kba-selected-count { font-size: 12px; color: var(--muted); }
+.kba-papers-table th { white-space: nowrap; }
+.kba-papers-table .kba-col-check { width: 32px; text-align: center; }
+.kba-papers-table td:first-child { text-align: center; }
+.kba-papers-table .kba-title-cell { max-width: 280px; }
+.kba-papers-table .kba-title-text { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kba-papers-table .kba-title-doi { display: block; font-size: 10px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kba-papers-table .kba-journal-cell { white-space: nowrap; }
+.kba-papers-table .kba-year { color: var(--muted); font-size: 11px; }
+.kba-status-chip { display: inline-block; border-radius: 10px; padding: 2px 8px; font-size: 11px; font-weight: 500; }
+.kba-status-chip.st-done { background: #dcfce7; color: #166534; }
+.kba-status-chip.st-l1 { background: #dbeafe; color: #1e40af; }
+.kba-status-chip.st-l2 { background: #dcfce7; color: #166534; }
+.kba-status-chip.st-l3 { background: #fef3c7; color: #92400e; }
+.kba-status-chip.st-fail { background: #fee2e2; color: #991b1b; }
+.kba-status-chip.st-none { background: var(--panel-2, rgba(127,127,127,.08)); color: var(--muted); }
+.kba-pager { display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 0; }
+.kba-pager button { border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer; background: transparent; color: inherit; }
+.kba-pager button:disabled { opacity: .4; cursor: default; }
+.kba-pager .kba-page-info { font-size: 12px; color: var(--muted); }
+.kba-tools-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.kba-tools-section h5 { font-size: 13px; margin: 0 0 8px; color: var(--muted); }
+.kba-failed-list { margin: 8px 0; padding: 0; list-style: none; }
+.kba-failed-list li { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
+.kba-failed-list .kba-fail-doi { font-family: ui-monospace, Consolas, monospace; color: var(--primary); cursor: pointer; }
+.kba-failed-list .kba-fail-err { color: #dc2626; font-size: 11px; }
 .kba-hit { padding: 2px 0; color: var(--muted); }
 .kba-search-row { grid-template-columns: 1fr auto; align-items: end; }
 

@@ -668,19 +668,29 @@ async function importPaperToKb(paperId, withTranslate) {
   const p = getPaper(paperId);
   if (!p || !p.doi) return;
   const doi = p.doi;
-  const how = withTranslate ? '纳入知识库 + 编译 L1 + 翻译' : '纳入知识库并编译 L1（不翻译）';
+  const how = withTranslate ? '纳入知识库 + 并行（翻译+编译 L1）' : '纳入知识库并编译 L1（不翻译）';
   if (!(await askConfirm(`将文献「${shortTitle(p.filename || p.title, 40)}」${how}？`))) return;
   try {
     await api('/api/kb-meta/source/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doi, force: false }) });
-    await api('/api/kb-meta/compile/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doi, level: 'L1' }) });
+
     if (withTranslate && p.status === 'parsed') {
-      await api(`/api/papers/${paperId}/translate-now`, { method: 'POST' });
+      // 2026-09-19：并行执行翻译+编译（共享全文前缀缓存命中）
+      const docJson = `knowledge_base/${doi.replace(/\//g, '_')}/document.json`;
+      await api('/api/kb-meta/translate-compile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_json: docJson, doi, level: 'L1' })
+      });
+    } else {
+      // 不翻译时只排队编译
+      await api('/api/kb-meta/compile/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doi, level: 'L1' }) });
     }
+
     p._kb = p._kb || { in_kb: false, compiled: [] };   // 2026-09-12 修：旧版 `if (p._kb)` 在未查过时是空操作
     p._kb.in_kb = true;                                // 本地缓存置为已纳入 → 卡片导入按钮消失
     p._kbChecked = true; p._kbCheckedAt = Date.now();
     appendEvent({ ts: new Date().toLocaleTimeString(), level: 'info', source: 'task',
-                  message: `论文[${paperId}] 已纳入知识库并排队编译 L1${withTranslate ? '（附带翻译）' : ''}` });
+                  message: `论文[${paperId}] 已纳入知识库并${withTranslate ? '并行执行（翻译+编译 L1）' : '排队编译 L1'}` });
     await loadPapers();
     await loadKbList();
   } catch (err) { alert('导入知识库失败：' + err.message); }
