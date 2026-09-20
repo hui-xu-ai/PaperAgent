@@ -114,7 +114,9 @@ def build_network(store: LitStore, *,
                   sort_by: str = "library_citations",
                   limit: int = DEFAULT_NODE_LIMIT,
                   kb_dois: set[str] | None = None,
-                  preview: bool = False) -> dict:
+                  preview: bool = False,
+                  citation_source: str = "filtered",
+                  exclude_isolated: bool = True) -> dict:
     """导出引用网络（节点 + 边）。
 
     Args:
@@ -130,6 +132,11 @@ def build_network(store: LitStore, *,
         sort_by: 截断时的保留优先级（library_citations/times_cited/paper_rank/impact_factor/year）。
         limit: 节点上限（超过则按 sort_by 取 Top-N，meta.truncated=True）。
         kb_dois: 用户知识库 DOI 集合（标记 in_kb；由上层注入，paperlit 不依赖 paperkb）。
+        citation_source: 被引来源（wos/library/filtered，默认 filtered）。
+            - wos: 使用 times_cited（WoS 数据库被引）
+            - library: 使用 library_citations（库内被引）
+            - filtered: 动态计算筛选集内被引（入度）
+        exclude_isolated: 排除孤立节点（度数为0，默认 True）。
 
     Returns:
         {"nodes": [...], "edges": [{"source","target"}...], "meta": {...}}
@@ -137,6 +144,9 @@ def build_network(store: LitStore, *,
     limit = max(1, min(int(limit), MAX_NODE_LIMIT))
     sort_col = _SORT_COLUMNS.get(sort_by, "library_citations")
     kb_dois = kb_dois or set()
+    # 校验被引来源参数
+    if citation_source not in ("wos", "library", "filtered"):
+        citation_source = "filtered"
 
     where, params = _build_node_filter(
         year_min=year_min, year_max=year_max,
@@ -211,6 +221,30 @@ def build_network(store: LitStore, *,
             edges = [{"source": e["source"], "target": e["target"]}
                      for e in edge_rows]
             conn.execute("DROP TABLE IF EXISTS temp.selected")
+
+        # 计算筛选后被引（filtered_citations = 筛选集内入度）
+        if citation_source == "filtered" and edges:
+            filtered_cit: dict[str, int] = {}
+            for e in edges:
+                filtered_cit[e["target"]] = filtered_cit.get(e["target"], 0) + 1
+            for n in nodes:
+                n["filtered_citations"] = filtered_cit.get(n["id"], 0)
+        elif citation_source == "filtered":
+            # 无边时所有节点 filtered_citations = 0
+            for n in nodes:
+                n["filtered_citations"] = 0
+
+        # 排除孤立节点（度数=0，即无入边也无出边）
+        if exclude_isolated and edges:
+            connected = set()
+            for e in edges:
+                connected.add(e["source"])
+                connected.add(e["target"])
+            nodes = [n for n in nodes if n["id"] in connected]
+        elif exclude_isolated and not edges:
+            # 无边时所有节点都是孤立的
+            nodes = []
+
         if in_kb_only:
             conn.execute("DROP TABLE IF EXISTS temp.kb")
 
@@ -221,6 +255,8 @@ def build_network(store: LitStore, *,
         "truncated": matched > len(nodes),
         "limit": limit,
         "sort_by": sort_col,
+        "citation_source": citation_source,
+        "exclude_isolated": exclude_isolated,
     }
     logger.info("build_network: %d/%d nodes, %d edges (sort=%s)",
                 len(nodes), matched, len(edges), sort_col)

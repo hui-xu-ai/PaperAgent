@@ -153,7 +153,10 @@ class GraphController {
     if (!this._loaded || !this.renderer) return;
 
     // 1. 应用样式（计算 renderSize/renderColor/renderLabel）
-    applyStyles(this.data, this.currentStyle);
+    // 合并过滤选项中的被引来源到样式选项
+    const filterOpts = filters.readFilters();
+    const styleWithCitSource = { ...this.currentStyle, citationSource: filterOpts.citation_source || 'filtered' };
+    applyStyles(this.data, styleWithCitSource);
 
     // 2. 转换为渲染格式
     const renderData = this.data.toRenderFormat();
@@ -174,7 +177,9 @@ class GraphController {
     if (!this.renderer || !this._loaded) return;
 
     // 1. 重新应用样式
-    applyStyles(this.data, this.currentStyle);
+    const filterOpts = filters.readFilters();
+    const styleWithCitSource = { ...this.currentStyle, citationSource: filterOpts.citation_source || 'filtered' };
+    applyStyles(this.data, styleWithCitSource);
 
     // 2. 转换为渲染格式
     const renderData = this.data.toRenderFormat();

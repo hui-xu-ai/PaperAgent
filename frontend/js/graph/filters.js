@@ -15,6 +15,7 @@ const IDS = {
   inkb: 'lg-f-inkb', exref: 'lg-f-exref',
   limit: 'lg-f-limit', limitVal: 'lg-f-limit-val',
   sort: 'lg-f-sort', yearRange: 'lg-year-range',
+  citSource: 'lg-f-cit-source', exisol: 'lg-f-exisol',
 };
 
 const DEFAULTS = { limit: 2000, sort: 'library_citations' };
@@ -47,6 +48,13 @@ export function readFilters() {
 
   if ($(IDS.inkb).checked) p.in_kb_only = true;
   if ($(IDS.exref).checked) p.exclude_references = true;
+
+  // 被引来源
+  const citSourceRadio = $(IDS.citSource).querySelector('input[type=radio]:checked');
+  if (citSourceRadio) p.citation_source = citSourceRadio.value;
+
+  // 孤立节点过滤
+  if (!$(IDS.exisol).checked) p.exclude_isolated = false;
 
   const limit = _num($(IDS.limit).value);
   p.limit = limit || DEFAULTS.limit;
@@ -95,6 +103,11 @@ export function resetFilters() {
   $(IDS.exref).checked = false;
   $(IDS.limit).value = DEFAULTS.limit;
   $(IDS.sort).value = DEFAULTS.sort;
+  // 被引来源默认选 filtered
+  const citSourceRadios = $(IDS.citSource).querySelectorAll('input[type=radio]');
+  for (const r of citSourceRadios) r.checked = (r.value === 'filtered');
+  // 孤立节点默认隐藏
+  $(IDS.exisol).checked = true;
   syncLabels();
 }
 

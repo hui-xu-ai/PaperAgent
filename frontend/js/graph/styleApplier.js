@@ -72,11 +72,20 @@ function _getColorForIF(ifValue, palette) {
   return scale[scale.length - 1].color;
 }
 
-/** 计算节点大小（基于库内被引次数）。 */
-function _computeNodeSize(node, sizeBase) {
-  const libCit = node.library_citations || 0;
+/** 计算节点大小（基于被引次数，根据 citationSource 选择字段）。 */
+function _computeNodeSize(node, sizeBase, citationSource) {
+  let citeCount;
+  if (citationSource === 'wos') {
+    citeCount = node.times_cited || 0;
+  } else if (citationSource === 'library') {
+    citeCount = node.library_citations || 0;
+  } else {
+    // filtered: 使用后端计算的 filtered_citations
+    citeCount = node.filtered_citations || 0;
+  }
+  node.cite_count = citeCount; // 保存供标签使用
   // 对数缩放，避免过大节点
-  const rawSize = 2 + Math.log2(1 + libCit) * 1.5;
+  const rawSize = 2 + Math.log2(1 + citeCount) * 1.5;
   return Math.max(1, rawSize * sizeBase);
 }
 
@@ -84,7 +93,7 @@ function _computeNodeSize(node, sizeBase) {
 function _computeNodeLabel(node, labelMode) {
   switch (labelMode) {
     case 'year_cited':
-      return `${node.year || '?'} · ${node.times_cited || 0}`;
+      return `${node.year || '?'} · ${node.cite_count || 0}`;
     case 'title':
       const title = node.title || node.id;
       return title.length > 30 ? title.slice(0, 27) + '...' : title;
@@ -109,6 +118,7 @@ export function applyStyles(dataModel, styleOpts) {
     showEdges = true,
     edgeColor = '#8890a0',
     edgeWidth = 0.3,
+    citationSource = 'filtered',
   } = styleOpts;
 
   // 计算 IF 最大值（用于颜色归一化，如果需要）
@@ -116,7 +126,7 @@ export function applyStyles(dataModel, styleOpts) {
 
   // 应用节点样式
   dataModel.nodes.forEach(node => {
-    node.renderSize = _computeNodeSize(node, sizeBase);
+    node.renderSize = _computeNodeSize(node, sizeBase, citationSource);
     node.renderColor = _getColorForIF(node.impact_factor || 0, palette);
     node.renderLabel = _computeNodeLabel(node, labelMode);
   });

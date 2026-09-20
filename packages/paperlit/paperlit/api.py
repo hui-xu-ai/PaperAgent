@@ -329,7 +329,9 @@ def graph_network(*, year_min: int | None = None, year_max: int | None = None,
                   sort_by: str = "library_citations",
                   limit: int = 5000,
                   kb_dois: set[str] | None = None,
-                  preview: bool = False) -> dict:
+                  preview: bool = False,
+                  citation_source: str = "filtered",
+                  exclude_isolated: bool = True) -> dict:
     """导出引用网络（节点 + 边），服务端过滤。见 graph.network.build_network。"""
     from .graph import build_network
     store = _require_store()
@@ -341,7 +343,8 @@ def graph_network(*, year_min: int | None = None, year_max: int | None = None,
         quartiles=quartiles, cluster=cluster,
         exclude_references=exclude_references, in_kb_only=in_kb_only,
         sort_by=sort_by, limit=limit, kb_dois=kb_dois,
-        preview=preview,
+        preview=preview, citation_source=citation_source,
+        exclude_isolated=exclude_isolated,
     )
 
 

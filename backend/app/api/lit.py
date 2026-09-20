@@ -397,6 +397,8 @@ def graph_network(
     sort_by: str = Query("library_citations"),
     limit: int = Query(5000, ge=1, le=100000),
     preview: bool = Query(False, description="仅返回匹配节点数，不构建完整网络"),
+    citation_source: str = Query("filtered", description="被引来源：wos/library/filtered"),
+    exclude_isolated: bool = Query(True, description="排除孤立节点（度数为0）"),
 ) -> dict:
     """引用网络（节点 + 边），服务端过滤。节点上限 limit（按 sort_by 取 Top-N）。"""
     try:
@@ -410,7 +412,8 @@ def graph_network(
             quartiles=qlist, cluster=cluster,
             exclude_references=exclude_references, in_kb_only=in_kb_only,
             sort_by=sort_by, limit=limit, kb_dois=_get_kb_dois(),
-            preview=preview,
+            preview=preview, citation_source=citation_source,
+            exclude_isolated=exclude_isolated,
         )
     except Exception as e:
         _handle_error(e, "graph/network")

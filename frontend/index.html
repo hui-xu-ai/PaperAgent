@@ -1482,6 +1482,18 @@
                 <option value="year">年份</option>
               </select>
             </div>
+            <div class="lg-field">
+              <label>被引来源（决定节点大小）</label>
+              <div class="lg-chips" id="lg-f-cit-source">
+                <label class="lg-chip"><input type="radio" name="cit-source" value="filtered" checked>筛选后被引</label>
+                <label class="lg-chip"><input type="radio" name="cit-source" value="library">库内被引</label>
+                <label class="lg-chip"><input type="radio" name="cit-source" value="wos">WoS被引</label>
+              </div>
+              <div class="lg-hint">筛选后被引=当前图谱内被引次数（推荐）</div>
+            </div>
+            <div class="lg-field">
+              <label class="lg-check"><input type="checkbox" id="lg-f-exisol" checked>隐藏孤立节点（无引用关系）</label>
+            </div>
             <div class="lg-actions">
               <button class="btn small" id="lg-preview">预览节点数</button>
               <button class="btn small primary" id="lg-apply">计算布局</button>

@@ -62,16 +62,28 @@ export function labelFor(node, mode = 'year_cited') {
     const t = node.title || node.id;
     return t.length > 28 ? t.slice(0, 27) + '…' : t;
   }
-  // year_cited：年份 + 库内被引
+  // year_cited：年份 + 被引（使用节点上的 cite_count 字段，由 dataModel 根据用户选择设置）
   const y = node.year || '—';
-  return `${y} · 引${node.library_citations || 0}`;
+  return `${y} · 引${node.cite_count || 0}`;
 }
 
 /** 把原始节点数组加工出 size/color/label（就地补充视觉字段）。 */
 export function decorateNodes(nodes, opts = {}) {
-  const { ifMax = 10, palette = 'viridis', sizeBase = 1.0, labelMode = 'year_cited' } = opts;
+  const { ifMax = 10, palette = 'viridis', sizeBase = 1.0, labelMode = 'year_cited',
+          citationSource = 'filtered' } = opts;
   for (const n of nodes) {
-    n.size = sizeForCitations(n.library_citations, sizeBase);
+    // 根据用户选择确定被引字段
+    let citeField;
+    if (citationSource === 'wos') {
+      citeField = n.times_cited || 0;
+    } else if (citationSource === 'library') {
+      citeField = n.library_citations || 0;
+    } else {
+      // filtered: 使用后端计算的 filtered_citations
+      citeField = n.filtered_citations || 0;
+    }
+    n.cite_count = citeField;
+    n.size = sizeForCitations(citeField, sizeBase);
     n.color = colorForImpact(n.impact_factor, ifMax, palette);
     n.label = labelFor(n, labelMode);
   }
