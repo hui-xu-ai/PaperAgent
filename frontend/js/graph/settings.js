@@ -75,6 +75,7 @@ export function layoutSettings(layout) {
     scalingRatio: 30 * (layout.scaling || 1),
     gravity: 0.8 * (layout.gravity || 1),
     strongGravityMode: false,
+    spacing: layout.spacing || 5,
   };
 }
 

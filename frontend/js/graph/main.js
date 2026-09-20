@@ -223,11 +223,18 @@ class GraphController {
       this._iters = 0;
       this.paused = false;
 
+      // 传递节点大小信息（用于防重叠斥力计算）
+      const nodeSizes = {};
+      for (const n of this.data.nodes) {
+        nodeSizes[n.id] = n.renderSize || n.size || 2;
+      }
+
       this.worker.postMessage({
         type: 'init',
         ids: this.data.ids,
         edges: this.data.edges.map(e => ({ source: e.source, target: e.target })),
         clusters: this.data.clusters,
+        nodeSizes: nodeSizes,
         settings: settings.layoutSettings(this.currentLayoutOpts),
         randomize: !!randomize,
       });
