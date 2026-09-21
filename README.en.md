@@ -31,21 +31,24 @@ A single-user, local-first **AI reading / translation / knowledge-base managemen
 
 ## UI at a glance
 
-**Overall UI**: left = sessions + paper library (type chips / search syntax sugar / attachment entry points), middle = reading and notes (compiled output is directly readable, and you can ask follow-up questions in place),
-right = multi-tab reader for source / translation / images / notes; the status bar at the bottom shows live token usage and cache hits.
+**Overall UI**: left = chat and knowledge-base Q&A (compiled output is directly readable, and you can ask follow-up questions in place),
+right = multi-tab reader for source / translation / images / notes (Source / PDF / Bilingual / Chinese / Images / Notes L1·L2·L3);
+the top nav leads to Knowledge base / AI search / Bibliometric graph / Settings, and the status bar shows live token usage and cache hits.
 
-![GUI overview](assets/screenshots/gui-overview.png)
+![Overall UI](assets/screenshots/文献AI阅读功能.png)
 
-**Paper reading**: PDF source and Chinese translation side by side (images are extracted automatically and can be browsed separately), formulas and tables preserved; switch between Source / Bilingual / Chinese / Images / Notes (L1·L2·L3).
+**Knowledge base and AI search**: the knowledge-base tab manages papers by compile progress (L1/L2/L3) / journal / year / value score.
+Ask a question in plain language and the answer comes back with DOI, authors, year, journal and abstract highlights, each verifiable against the source.
 
-![Paper reading](assets/screenshots/reading.png)
+![Knowledge-base Q&A and AI search](assets/screenshots/AI检索功能.png)
+
+**Bibliometric graph**: the in-library citation network in 2D or 3D, nodes coloured by impact factor and sized by in-library citations,
+with a detail panel showing DOI / quartile / IF / citation count.
+
+![Bibliometric graph](assets/screenshots/文献计量图谱.png)
 
 **Recognition review**: on the left is the source PDF (uncertain regions are boxed in red; page turning / zooming / middle-drag panning are supported), on the right is dual-channel difference arbitration —
 for each difference you pick one of A/B/C/D, and **only the affected paragraph is changed**; once done, translation is automatically ready. When there are zero differences you can still browse the source directly.
-
-| Difference arbitration | Zero differences (source still readable) |
-|---|---|
-| ![Difference arbitration](assets/screenshots/review-arbitration.png) | ![Zero differences](assets/screenshots/review-no-diff.png) |
 
 The frontend is a **pure static single page** (no framework, no build step); the backend is FastAPI, and the algorithmic capability lives in two editable-install packages, `paperparse` / `paperkb`.
 
