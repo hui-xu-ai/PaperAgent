@@ -1212,6 +1212,9 @@ def _prompt_l3(meta: dict, self_ctx: str,
         "你是科研知识关系分析专家。基于下方本文及多篇相关文献的编译结果，"
         "分析它们之间的概念关系、方法论连接和研究演进脉络。\n\n"
         + _NO_LATEX_RULE + "\n"
+        "## 引用约定\n"
+        "相关文献已按【相关文献 N（DOI）】编号；分析中提及某篇时写成「文献N（DOI）」"
+        "（N 与编号一致、DOI 原样写出），便于与文末列表对应并便于检索定位。\n\n"
         "## 本文编译结果\n"
         f"{self_ctx}\n\n"
         "## 相关文献编译结果\n"
@@ -1266,8 +1269,9 @@ def _render_relations(meta, data: dict, related_ctxs: list[dict]) -> str:
         lines.append(f"\n## 研究趋势\n{trajectory}\n")
 
     lines.append("\n## 相关文献\n")
-    for r in related_ctxs:
-        lines.append(f"- [[{r['doi']}/_note]]（{r.get('connection', '')}）")
+    for i, r in enumerate(related_ctxs, 1):
+        # 编号与 _prompt_l3 的「相关文献 N」一致：正文「文献N」可精确落到本列表
+        lines.append(f"{i}. [[{r['doi']}/_note]]（{r.get('connection', '')}）")
 
     return "\n".join(lines) + "\n"
 
