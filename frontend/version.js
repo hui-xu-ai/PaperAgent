@@ -5,4 +5,4 @@
  *   - 后端 /api/version 读的正是**本文件**（随包发出的那份），因此"前后端打歪"能被发现；
  *   - GUI「关于」同时显示前端版本与后端版本，不一致会标红提示。
  */
-window.PAPERAGENT_FRONTEND_VERSION = "1.2.0";
+window.PAPERAGENT_FRONTEND_VERSION = "1.3.0";

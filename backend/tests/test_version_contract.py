@@ -467,13 +467,21 @@ class TestReleaseVersionContract:
         assert html.index("/version.js") < html.index("/app.js"), "version.js 必须在 app.js 之前"
 
     def test_about_page_shows_frontend_and_backend_versions(self):
-        """用户要求：GUI 里能看到**前端版本**与**后端库版本**。"""
+        """用户要求：GUI 里能看到**前端版本**与**后端库版本**。
+
+        2026-09-21：前端已拆为 app.js + js/*.js 多模块，关于页的 `/api/version` 随
+        「设置中心」搬进了 js/settings.js —— 原先只读 frontend/app.js 会误报缺版本。
+        改为扫**全部前端脚本**（app.js + js/ 递归），这才是"关于页能取到版本"的真实判据。
+        """
         html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
         for el in ("about-version", "about-frontend", "about-engine", "about-kb",
                    "about-dataformat", "about-mismatch"):
             assert f'id="{el}"' in html, f"关于页缺少版本元素 #{el}"
-        js = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
-        assert "/api/version" in js, "关于页必须从 /api/version 取全组件版本"
+        scripts = [ROOT / "frontend" / "app.js",
+                   *sorted((ROOT / "frontend" / "js").rglob("*.js"))]
+        blob = "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                         for p in scripts if p.is_file())
+        assert "/api/version" in blob, "关于页必须从 /api/version 取全组件版本"
 
     def test_library_pyproject_matches_module_version(self):
         """库元数据可信：pyproject 版本 == 模块 __version__（打包/诊断都读它）。"""

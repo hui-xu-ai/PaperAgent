@@ -199,5 +199,15 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows 控制台默认 GBK：判据里的 ✗/✓ 会让 print 直接抛 UnicodeEncodeError，
+    # 把「指纹不一致」的结论连同 diff 清单一起吞掉 —— 实测在 build_release.ps1 [5/5] 里
+    # 只看到一个语焉不详的「解析回归闸门未通过」，diff 一条都没打出来。
+    # 注意 `os.environ["PYTHONIOENCODING"]` 对本进程无效（stdout writer 早已建好），
+    # 必须 reconfigure 才真正生效。
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 - 非 TTY/被重定向时忽略
+            pass
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     raise SystemExit(main())

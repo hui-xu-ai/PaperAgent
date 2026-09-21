@@ -12,23 +12,34 @@ PaperAgent/
 │  ├─ chat/chat.db           会话 + 消息 + 答案缓存（**不可再生**）
 │  ├─ diary/diary.db         文献日记（当前实现写文件，库占位）
 │  ├─ biblio/biblio.db       文献元数据 + 文献库导入记录（论文/别名/引用/编译队列/FTS）
+│  ├─ literature/lit.db      文献计量库（PaperRank/共被引聚类/IF 补全；AI 检索侧主源）
 │  ├─ reference/journals.db  JCR 分区 + 中科院分区（可重新导入 xlsx）
 │  ├─ vector/                派生索引（可重建）：kb_index.db 元数据 + kb_vectors/ 段文件 + query_cache.db
-│  └─ _migrated/             一次性迁移的旧库归档（可删）
-├─ knowledge_base/       ★ 知识资产（**必须备份**）：每篇一个目录（编译产物/卡片/_qa/_index）
-│  ├─ <RID>/                 en.md · document.json · source.pdf · images/ · _note/_details/_wiki · cards/
-│  ├─ _qa/  _global/         全局问答卡
+│  ├─ _backups/              版本迁移前的库快照（`VACUUM INTO`，升级前自动写，见 backup.py）
+│  └─ _migrated/             一次性布局迁移的旧库归档（工具按需创建，可删）
+├─ knowledge_base/       ★ 知识资产（**必须备份**）：每篇一个目录
+│  ├─ <RID>/                 en.md · document.json · source.pdf · images/ · zh.md · en_zh.md
+│  │                            + 编译产物 _note.md(L1) / _wiki.md(L2) / _relations.md(L3)
+│  │                            + cards/ 用户卡片（**按需创建**，永不被系统覆盖）
+│  ├─ _concepts/             概念页（3+ 文献惰性聚合）
+│  ├─ _reports/              综述/报告落盘（kb_write_report 写入，**按需创建**）
+│  ├─ _global/cards/         全局问答卡片（不绑定单篇，**按需创建**）
 │  ├─ _index.md              知识库索引
 │  ├─ .trash/                回收站（移出知识库的篇目）
 │  └─ .obsidian/             Obsidian vault 配置（外部应用；**不属于知识内容**，可删可重建）
-├─ library/              ◐ 解析库（**可选备份**，可重解析再生）：document.json/en.md/images/译文变体
+├─ library/              ◐ 解析库（**可选备份**，可重解析再生）：document.json · en.md ·
+│                          source.pdf · mineru_full.md · images/ · work/ · qa_report.json
 ├─ work/                 ✕ 可随时清理：scratch/（探针报告）· upload/（上传暂存，解析后即删）·
 │                          tmp_export/（引擎暂存）· mineru_cache|mineru_backup/（离线复现用缓存）· pytest-tmp-*/
 ├─ logs/                 ✕ 可清理：paperagent.log（10MB×3 轮转）
 ├─ 用户提供的文献/          ★ 用户原始资料（**只读**，不入库）
-├─ attachments/          ★ 零散用户资料（无父资源的 SI/审稿意见；不入版本库）
-└─ rules/ docs/ feedback/ tools/ backend/ frontend/ packages/ .dsh-memory/
+├─ attachments/          ★ 零散用户资料（无父资源的 SI/审稿意见；**按需创建**，不入版本库）
+└─ rules/ docs/ feedback/ tools/ backend/ frontend/ packages/ assets/ release/ tests/ .dsh-memory/
 ```
+
+**「按需创建」的含义**：标了这一条的目录**不是预置结构**，只有用户真正写了对应内容才出现
+（`cards/` 由 `cards.py` 在首次写卡片时 mkdir）。做迁移/清点/备份时不要假定它存在；
+反过来也不能把它当垃圾清掉。**尚未实现的**：`_topics/`（主题 MOC，见 `KNOWLEDGE-BASE.md` §7）。
 
 ## 2. 五个数据库各放什么（表 → 库）
 
@@ -51,10 +62,14 @@ PaperAgent/
 
 | 动作 | 覆盖范围 |
 |---|---|
-| 必须备份 | `data/`（五库）+ `knowledge_base/`（知识资产）+ `用户提供的文献/` + `attachments/` |
+| 必须备份 | `data/`（五库 + `manifest.json` + `_backups/`）+ `knowledge_base/`（知识资产）+ `用户提供的文献/` + `attachments/` |
 | 可选备份 | `library/`（重解析可再生，但要花 API 钱）· `data/vector/`（向量索引可由 knowledge_base 编译产物重建，但要花 embedding 钱） |
 | 随时可清 | `work/`（含 upload/tmp_export/pytest-tmp/mineru 缓存）· `logs/` · `data/_migrated/` · `__pycache__` |
 | 不入版本库 | `data/` `library/` `knowledge_base/` `work/` `logs/` `input/` `*.db` `用户提供的文献/` `attachments/`（见 `.gitignore`） |
+
+> 备份口径与 `docs/VERSIONING.md` §5 一致：**只 `data/` 里的一部分库 = 不够**。
+> 早前本表曾写「迁移三件套 = kb + biblio + journals」，**已废弃**——`chat.db`（会话不可再生）
+> 与 `system/app.db`（设置/Key）都不能丢。
 
 清理命令示例（PowerShell）：
 ```powershell

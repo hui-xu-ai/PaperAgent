@@ -14,9 +14,13 @@
     _MEIPASS/icon.ico                       → 程序/托盘图标（**与托盘同一份文件**）
     _MEIPASS/share/paperparse_skill/*       → 算法包资源（asset_root() 的 wheel 回退路径
                                                sys.prefix(= _MEIPASS) 正好命中）
-    _MEIPASS/app/plugins/obsidian_notes/*   → 内置插件（从文件系统加载，必须显式收集）
     exe同目录/.env, data/, logs/, work/     → 可写数据（APP_DATA_DIR）
 禁止进包：data/ knowledge_base/ library/ work/ logs/ 用户提供的文献/（运行期生成或用户资产）
+
+⚠️ 2026-09-21：内置 Obsidian 演示插件已删除（c819f49），spec 里指向
+`app/plugins/obsidian_notes/plugin.yaml` 的 datas 与 hiddenimport **曾是遗漏**，
+导致 PyInstaller 报 "Unable to find ... when adding binary and data files"、构建直接失败。
+新增/删除内置插件时必须同步改本文件的 datas + hiddenimports。
 """
 from pathlib import Path
 
@@ -44,11 +48,6 @@ datas = [
     (str(PACKAGE_ROOT / "memory"), "share/paperparse_skill/memory"),
     (str(PACKAGE_ROOT / "SKILL.md"), "share/paperparse_skill"),
     (str(PACKAGE_ROOT / "SKILL.advanced.md"), "share/paperparse_skill"),
-    # 内置插件资源（V08：动态加载需显式收集；plugin.py 从文件系统加载，不能只靠 hiddenimports）
-    (str(BACKEND / "app" / "plugins" / "obsidian_notes" / "plugin.yaml"),
-     "app/plugins/obsidian_notes"),
-    (str(BACKEND / "app" / "plugins" / "obsidian_notes" / "plugin.py"),
-     "app/plugins/obsidian_notes"),
 ]
 
 # 期刊分区/影响因子（用户 2026-09-12 拍板）：**包里直接放已解析好的 db**（首启毫秒级拷贝，
@@ -82,8 +81,6 @@ hiddenimports = [
     "PIL",
     "PIL.Image",
     "PIL.ImageDraw",
-    # 内置插件（动态导入，静态分析漏）
-    "app.plugins.obsidian_notes.plugin",
     # 算法包（api.py 内部延迟 import 的模块，静态分析易漏）
     "paperparse",
     "paperparse.api",

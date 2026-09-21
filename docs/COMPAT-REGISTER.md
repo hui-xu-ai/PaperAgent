@@ -8,7 +8,14 @@
 
 | # | 位置 | 是什么 | 为什么存在 | 移除条件 | 验证方式 |
 |---|---|---|---|---|---|
-| — | — | **当前无待清理项** ✅（A1/A2/A5 已于 2026-09-12 全部清理，见 §C C7/C8/C9） | — | — | — |
+| A1 | `packages/paperkb/paperkb/db.py`（`init_schema` 末尾两段 `ALTER TABLE papers_meta ADD COLUMN`） | 内联「试探式补列」：① `ai_value_score`/`topic_score`（2026-09-19 加）② paperlit 元数据 6 列 `paper_rank`/`cocitation_cluster`/`impact_factor`/`quartile`/`library_citations`/`source_main`（2026-09-19 加） | **纯兼容旧库**：这两组列**已在** `PAPERS_META_DDL`（DDL 单一来源）里，新建库由 DDL 直接建出，ALTER 只对 2026-09-19 之前建的旧库生效 | **v1.4.0**（最迟 2027-06-30） | 收编进 `migrations/0005_meta_score_lit_cols.py`（幂等 + `verify()` + 台账登记），删除 db.py 这两段后 `test_alter_table_only_in_migration_layer` 转绿 |
+
+> **A1 为什么现在不动**（2026-09-21 说明）：把它搬进迁移层意味着**新增一条迁移 ⇒ 按
+> `docs/VERSIONING.md` §1 `DATA_FORMAT` 3→4**，连带要冻结新的黄金夹具、重跑升级演练，
+> 并改变用户的升级路径（首启多一次备份 + 迁移）。这是一个**独立于本版发布**的决定，
+> 故先按 §D 规则登记成本行（未登记的兼容分支 = 违规），留待下一版处理。
+> 现状影响：`test_alter_table_only_in_migration_layer` 自 2026-09-19 起一直是红的
+> —— 它是唯一一条"守卫指向真实债务"的失败，**其余失败是测试与代码漂移**。
 
 ## B. 长期保留（属"接口/契约"，不设移除期限，但不得扩散）
 

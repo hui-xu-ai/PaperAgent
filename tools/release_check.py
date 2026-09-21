@@ -125,20 +125,29 @@ def check_compat_register() -> list[str]:
         if section not in text:
             bad.append(f"登记表缺 {section} 段")
     today = date.today().isoformat()
+    # 「移除条件」在 §A 表里的列序号：# | 位置 | 是什么 | 为什么存在 | 移除条件 | 验证方式
+    # 2026-09-21 修 off-by-one：原先取 cells[3]（=「为什么存在」列），把说明文字里的日期
+    # 当成移除条件 —— §A 只有占位行时被掩盖，登记第一条真债务立刻误报"已到期"。
+    # 现在按表头定位列名，找不到才退回索引 4。
+    cond_idx = 4
+    for ln in text.splitlines():
+        if ln.startswith("|") and "移除条件" in ln:
+            cond_idx = [c.strip() for c in ln.strip("|").split("|")].index("移除条件")
+            break
     pending = 0
     for ln in text.splitlines():
         if not ln.startswith("|") or ln.startswith("|---") or "| # |" in ln:
             continue
         cells = [c.strip() for c in ln.strip("|").split("|")]
-        if len(cells) < 5 or cells[0] in ("—", "-", ""):
+        if len(cells) <= cond_idx or cells[0] in ("—", "-", ""):
             continue
-        cond = cells[3]
+        cond = cells[cond_idx]
         if re.fullmatch(r"\D*\d{4}-\d{2}-\d{2}", cond) or "20" in cond:
             pending += 1
             m = re.search(r"(\d{4}-\d{2}-\d{2})", cond)
             if m and m.group(1) < today:
                 bad.append(f"§A 待清理项「{cells[1][:60]}」移除条件已到期（{m.group(1)}）")
-    print(f"    OK 结构齐备（§A 待清理行 {pending} 条）")
+    print(f"    OK 结构齐备（§A 待清理行 {pending} 条，移除条件列 #{cond_idx}）")
     return bad
 
 
