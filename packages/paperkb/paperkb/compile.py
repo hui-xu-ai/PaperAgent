@@ -691,12 +691,16 @@ class Compiler:
                 "distinct": len(cnt), "pages": created}
 
     def _render_concept_page(self, name: str) -> str:
+        from .doi import doi_to_dirname
+
         rows = self.store.concept_rows(name)
         lines = [f"---\ntype: concept\ntags: [concept]\n---\n",
                  f"# 概念：{name}\n",
                  "## 定义（多文献聚合）\n"]
         for r in rows:
-            lines.append(f"- **[[{r['paper_doi']}/_note|{r['paper_doi']}]]**：{r['definition']}")
+            # 目录名形式（DOI 的 "/" → "_"），否则 Obsidian 死链
+            lines.append(f"- **[[{doi_to_dirname(r['paper_doi'])}/_note"
+                         f"|{r['paper_doi']}]]**：{r['definition']}")
         return "\n".join(lines) + "\n"
 
     # ---------------------------------------------------------- 辅助
@@ -1245,17 +1249,18 @@ def _render_relations(meta, data: dict, related_ctxs: list[dict]) -> str:
     self_dir = doi_to_dirname(meta.doi)
 
     def _ref(p: str) -> str:
-        """引用项 → wikilink 目标（目录名）。
+        """引用项 → Obsidian wikilink 目标（**目录名**：DOI 的 "/" 已转为 "_"）。
 
-        兼容模型写法：裸 DOI / 「文献N（DOI）」（L3 引用约定）/「本文」（指自身）。
+        兼容模型写法：裸 DOI / 目录名 / 「文献N（DOI）」/「本文」（指自身）。
+        必须输出目录名——`[[10.1016/j.snb.../_note]]` 在 Obsidian 是死链。
         """
         s = (p or "").strip()
         m = re.search(r"(10\.\d{4,9}/[^\s（）()]+)", s)
         if m:
-            return m.group(1)
+            return doi_to_dirname(m.group(1))
         if s.startswith("本文"):
             return self_dir
-        return s
+        return doi_to_dirname(s)
 
     lines = [
         f"---\ntype: paper-relations\ndoi: {meta.doi}\n---\n",
@@ -1289,8 +1294,9 @@ def _render_relations(meta, data: dict, related_ctxs: list[dict]) -> str:
 
     lines.append("\n## 相关文献\n")
     for i, r in enumerate(related_ctxs, 1):
-        # 编号与 _prompt_l3 的「相关文献 N」一致：正文「文献N」可精确落到本列表
-        lines.append(f"{i}. [[{r['doi']}/_note]]（{r.get('connection', '')}）")
+        # 编号与 _prompt_l3 的「相关文献 N」一致；目标用目录名（DOI 的 "/" → "_"）
+        lines.append(f"{i}. [[{doi_to_dirname(r['doi'])}/_note]]"
+                     f"（{r.get('connection', '')}）")
 
     return "\n".join(lines) + "\n"
 
