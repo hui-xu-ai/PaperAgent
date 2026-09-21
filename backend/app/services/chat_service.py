@@ -779,9 +779,14 @@ class ChatService:
         except Exception as e:  # noqa: BLE001
             logger.warning("知识库检索失败: %s", e)
             retrieved = []
-        context = "\n\n".join(
-            f"[{it['doi']}/{it.get('file') or 'meta'}] {it.get('snippet') or ''}"
-            for it in retrieved)[:8000]
+        # 检索片段拼注入上下文：按边界裁剪（旧实现 [:8000] 会把最后一条片段切进句中）
+        from paperkb.textseg import boundary_trim
+
+        context = boundary_trim(
+            "\n\n".join(
+                f"[{it['doi']}/{it.get('file') or 'meta'}] {it.get('snippet') or ''}"
+                for it in retrieved),
+            8000)
         system = self._kb_system_prompt("qa")
         extra = self._system_extra()
         if extra:

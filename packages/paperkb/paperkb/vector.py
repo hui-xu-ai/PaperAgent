@@ -64,6 +64,16 @@ def _md5(text: str) -> str:
     return hashlib.md5((text or "").encode("utf-8")).hexdigest()
 
 
+def _body_of(text: str) -> str:
+    """索引与回读**共用**的正文口径（去 frontmatter + 去首尾空白）。
+
+    必须共用一个函数：块偏移 `start/end` 是在这个串上算的，回读时若少一次
+    `.strip()`（frontmatter 后常跟空行），偏移整体错位 1 字符 ⇒ 每个块的 md5
+    都对不上，命中块永远返回空（实测踩过）。
+    """
+    return strip_frontmatter(text or "").strip()
+
+
 class VectorIndex(Protocol):
     def add_document(self, doi: str, text: str) -> None: ...
     def search(self, query: str, top_k: int = 10) -> list[dict]: ...
@@ -158,7 +168,7 @@ class KbVectorIndex:
 
         for ptype, text in (("note", note_text), ("wiki", wiki_text),
                             ("relations", relations_text)):
-            body = strip_frontmatter(text or "").strip()
+            body = _body_of(text)
             if len(body) <= MIN_PASSAGE_CHARS:
                 continue
             provided.add(ptype)
@@ -376,7 +386,7 @@ class KbVectorIndex:
         if path is None:
             return ""
         try:
-            body = strip_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
+            body = _body_of(path.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             return ""
         start, end = int(meta.get("start") or -1), int(meta.get("end") or -1)
@@ -387,6 +397,22 @@ class KbVectorIndex:
             logger.info("块偏移与索引不符（文件已变）: %s", key)
             return ""
         return chunk
+
+    def prune_unreadable(self) -> int:
+        """摘除"产物文件已不在"的块（返回删除块数）。
+
+        场景：文献目录被外部删除/移出（不经回收站流程）→ 向量仍在，语义检索照样召回，
+        但命中块读不回原文（只会得到空片段）。这里做一次对账，把读不回的一律摘掉。
+        """
+        drop = [k for k, m in self._key_meta.items()
+                if m.get("ptype") in _PTYPE_FILE and self._passage_path(m) is None]
+        if not drop:
+            return 0
+        removed = self._remove_keys(drop)
+        self._save_meta()
+        self._save_vectors()
+        logger.info("向量索引清理不可读块: %d（剩余 %d）", removed, self.size)
+        return removed
 
     def _passage_path(self, meta: dict) -> Path | None:
         from .doi import doi_to_dirname
@@ -541,3 +567,51 @@ def build_vector_index(roots: Roots, impl: str = "noop",
     if impl == "kb":
         return KbVectorIndex(roots, api_key=api_key)
     raise ValueError(f"未知向量实现: {impl!r}（支持 noop / kb）")
+
+
+def _key_aliases(key: str) -> set[str]:
+    """资源键的几种写法归一（DOI / RID `doi-…` / 目录名）。"""
+    from .doi import dirname_to_doi, doi_to_dirname
+
+    out = {key}
+    if key.startswith("doi-"):
+        out.add(key[4:])
+    try:
+        out.add(doi_to_dirname(key))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        back = dirname_to_doi(key)
+        if back:
+            out.add(back)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def drop_papers_from_index(roots: Roots, keys: list[str]) -> int:
+    """把若干资源（DOI/RID/目录名任一写法）从向量索引里摘除，返回删除的块数。
+
+    纯本地操作（**不调 embedding**）：文献移入回收站/删除后，若不摘除，语义检索仍会
+    召回它，且命中块读不回原文（文件已不在）→ 空片段、"有引用无证据"。
+    """
+    from .doi import doi_to_dirname
+
+    aliases: set[str] = set()
+    for k in keys or []:
+        if k:
+            aliases |= _key_aliases(k)
+    if not aliases:
+        return 0
+    idx = KbVectorIndex(roots)
+    drop = [k for k, m in idx._key_meta.items()
+            if (m.get("doi") in aliases)
+            or (doi_to_dirname(m.get("doi") or "") in aliases)]
+    if not drop:
+        return 0
+    removed = idx._remove_keys(drop)
+    idx._save_meta()
+    idx._save_vectors()
+    logger.info("向量索引摘除: keys=%s 删除块=%d 剩余=%d", sorted(aliases)[:3],
+                removed, idx.size)
+    return removed

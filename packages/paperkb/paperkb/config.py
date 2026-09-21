@@ -73,7 +73,7 @@ class Roots:
 @dataclass
 class KbSettings:
     """知识库行为设置（可配；初期默认值）。"""
-    vector_impl: str = "noop"           # noop（初期）| 未来: sqlite-vec / chroma
+    vector_impl: str = "noop"           # noop | kb（KbVectorIndex：块级 bge-m3 向量）
     fts_enabled: bool = True            # meta_fts 索引开关
     fulltext_fts: bool = False          # en.md 全文索引（可选，M4）
     journal_year: int | None = None     # journals.db 查询年份（None=最新）

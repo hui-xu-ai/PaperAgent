@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import layout
 from .doi import doi_to_dirname, is_doi, make_rid
+from .textseg import boundary_trim
 
 # 文本抽取上限（防超大 PDF/日志把索引撑爆）
 TEXT_MAX_CHARS = 200_000
@@ -175,8 +176,14 @@ def resolve_attachment(roots, rid: str, rel: str) -> Path | None:
     return None
 
 
-def read_attachment(roots, rid: str, rel: str, max_chars: int = 20000) -> dict:
-    """读附件文本片段（受白名单约束；二进制返回可读说明而非乱码）。"""
+def read_attachment(roots, rid: str, rel: str, max_chars: int = 20000,
+                    offset: int = 0) -> dict:
+    """读附件文本片段（受白名单约束；二进制返回可读说明而非乱码）。
+
+    `offset`：起始字符位置（**支持续读**——旧实现只能看前 max_chars 字，长 SI 后段
+    永远读不到）；切点按行/句边界收尾，不把句子拦腰截断。
+    返回 `next_offset`（=0 表示已到末尾）。
+    """
     p = resolve_attachment(roots, rid, rel)
     if p is None:
         return {"ok": False, "error": f"附件不存在或路径未被允许: {rel}"}
@@ -185,8 +192,13 @@ def read_attachment(roots, rid: str, rel: str, max_chars: int = 20000) -> dict:
         return {"ok": False, "error": f"非文本附件（{p.suffix or '未知类型'}），无法按文本读取",
                 "path": rel, "size": p.stat().st_size}
     n = max(200, int(max_chars or 20000))
+    off = max(0, int(offset or 0))
+    seg = text[off:]
+    piece = seg if len(seg) <= n else boundary_trim(seg, n)
+    end = off + len(piece)
     return {"ok": True, "rid": rid, "path": rel, "chars": len(text),
-            "truncated": len(text) > n, "text": text[:n]}
+            "offset": off, "next_offset": end if end < len(text) else 0,
+            "truncated": end < len(text), "text": piece}
 
 
 # ---------------------------------------------------------------- 文本抽取（零 API 成本）

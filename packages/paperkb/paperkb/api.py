@@ -1376,12 +1376,17 @@ def kb_attachment_import(rid: str, kind: str, filename: str, data: bytes,
                                  store=store, index=index)
 
 
-def kb_attachment_read(rid: str, rel_path: str, max_chars: int = 20000) -> dict:
-    """读附件文本片段（A4；**白名单路径校验**，只允许该资源 attachments 内的相对路径）。"""
+def kb_attachment_read(rid: str, rel_path: str, max_chars: int = 20000,
+                       offset: int = 0) -> dict:
+    """读附件文本片段（A4；**白名单路径校验**，只允许该资源 attachments 内的相对路径）。
+
+    `offset` 支持长附件续读（配合返回的 `next_offset`）。
+    """
     from . import attachments as att
 
     store = _need_store()
-    return att.read_attachment(store.roots, rid, rel_path, max_chars=max_chars)
+    return att.read_attachment(store.roots, rid, rel_path, max_chars=max_chars,
+                               offset=offset)
 
 
 def kb_attachment_path(rid: str, rel_path: str):
@@ -2010,7 +2015,8 @@ def rebuild_kb_vector_index(force: bool = False,
         progress_cb: 进度回调 (indexed: int, total: int, doi: str)
 
     Returns:
-        {"indexed": 有向量的篇数, "total": 扫描篇数, "skipped": 无向量篇数}
+        {"indexed": 有向量的篇数, "total": 扫描篇数, "skipped": 无向量篇数,
+         "pruned": 摘除的幽灵块数（产物已不在磁盘）}
     """
     import os
     api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
@@ -2095,4 +2101,7 @@ def rebuild_kb_vector_index(force: bool = False,
         if progress_cb:
             progress_cb(i + 1, total, doi)
 
-    return {"indexed": indexed, "total": total, "skipped": skipped}
+    # 对账：产物目录已被外部删除的块要摘掉（否则语义检索召回"读不回原文"的幽灵条目）
+    pruned = idx.prune_unreadable()
+    return {"indexed": indexed, "total": total, "skipped": skipped,
+            "pruned": pruned}

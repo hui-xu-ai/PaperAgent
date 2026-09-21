@@ -22,6 +22,7 @@ from .doc import PaperDoc, find_document_in_kb, read_document
 from .journals import JournalsDB
 from .llm import get_llm
 from .models import PaperMeta
+from .textseg import boundary_trim
 
 logger = logging.getLogger(__name__)
 
@@ -583,7 +584,7 @@ class Compiler:
                 summary_lines.append(stripped.lstrip("> ").strip())
 
         result = "\n".join(summary_lines)
-        return result[:limit] if len(result) > limit else result
+        return boundary_trim(result, limit)
 
     @staticmethod
     def _extract_wiki_summary(wiki_text: str, limit: int) -> str:
@@ -598,11 +599,17 @@ class Compiler:
                     break
 
         content = "\n".join(lines[start:]).strip()
-        return content[:limit]
+        return boundary_trim(content, limit)
 
     def _bidirectional_cross_refs(self, doi: str,
                                   related_ctxs: list[dict]) -> None:
-        """双向 cross_refs：在相关文献的 _wiki.md 末尾追加指向本文的 wiki link。"""
+        """双向 cross_refs：在相关文献的 _wiki.md 末尾**合并**一条指向本文的 wiki link。
+
+        2026-09-21 审计修复：旧实现每次都 `f.write(f"\\n\\n## 相关文献\\n- {link}\\n")` ——
+        每被引用一次就多出一个 `## 相关文献` 段（实测 snb 的 _wiki.md 尾部有 6 个重复段），
+        文件虚胖 3359 字符：既挤占向量嵌入预算（把正文挤出 3000 字上限），
+        又让"相关文献"在检索里反复命中。现在写进**唯一段**并去重。
+        """
         from .doi import doi_to_dirname
 
         self_dirname = doi_to_dirname(doi)
@@ -617,10 +624,9 @@ class Compiler:
                 text = wiki_path.read_text(encoding="utf-8", errors="replace")
                 if link_to_self in text:
                     continue  # 已存在
-                # 追加 cross_ref 段
-                section = f"\n\n## 相关文献\n- {link_to_self}（{r.get('connection', '')}）\n"
-                with open(wiki_path, "a", encoding="utf-8") as f:
-                    f.write(section)
+                line = f"- {link_to_self}（{r.get('connection', '')}）"
+                wiki_path.write_text(_merge_cross_ref(text, line),
+                                     encoding="utf-8")
             except Exception as e:  # noqa: BLE001
                 logger.warning("cross_ref 追加失败: %s → %s: %s",
                                doi, related_doi, e)
@@ -1351,12 +1357,48 @@ def _canon_concept(name: str) -> str:
     return n
 
 
+# cross_refs 的段标题（写入相关文献 _wiki.md 的"唯一"段落）
+_XREF_HEADING = re.compile(r"^##[ \t]*相关文献[ \t]*$")
+
+
+def _merge_cross_ref(text: str, line: str) -> str:
+    """把一条 cross_ref 合并进**唯一**的「## 相关文献」段（去重 + 合并历史重复段）。
+
+    返回新文本（不落盘）。历史数据里同一文件可能有多个 `## 相关文献` 段（旧实现
+    每次追加一个新段）——这里一并合并到文末的单一段落，条目按出现顺序去重保序。
+    """
+    lines = (text or "").rstrip("\n").split("\n")
+    items = [line]
+    out: list[str] = []
+    seen = False
+    i = 0
+    while i < len(lines):
+        if _XREF_HEADING.match(lines[i]):
+            j = i + 1
+            while j < len(lines) and not lines[j].startswith("#"):
+                t = lines[j].strip()
+                if t.startswith("- ") and t not in items:
+                    items.append(t)
+                j += 1
+            if out and out[-1].strip():
+                out.append("")          # 保住"段落 / 下一个标题"之间的空行
+            seen = True
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+    while out and not out[-1].strip():
+        out.pop()
+    out += ["", "## 相关文献", *items]
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
 def _ctx_from_l1(data: dict) -> str:
-    """L1 压缩版（≤300 字）：one_liner + 六维一行。"""
+    """L1 压缩版（≤1000 字）：one_liner + 六维一行；按边界收尾（不切进句子）。"""
     lines = [data.get("one_liner", "")]
     for k in ("background", "method", "result", "conclusion", "innovation", "limitation"):
         item = data.get(k) or {}
         text = item.get("text") if isinstance(item, dict) else str(item)
         if text:
             lines.append(f"{k}: {str(text)[:80]}")
-    return "\n".join(lines)[:_CTX_LIMIT]
+    return boundary_trim("\n".join(lines), _CTX_LIMIT)

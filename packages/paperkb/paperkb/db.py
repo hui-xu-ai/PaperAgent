@@ -687,6 +687,14 @@ class KBStore:
             n2 = conn.execute(
                 f"DELETE FROM fulltext_fts WHERE doi IN ({ph}) OR {like}",
                 (*cands, *[k + "::%" for k in cands])).rowcount
+        # 向量索引同步摘除：否则已删文献仍会被语义检索召回，而命中块读不回原文
+        # （文件没了 → 空片段，"有引用无证据"）。
+        try:
+            from .vector import drop_papers_from_index
+
+            drop_papers_from_index(self.roots, cands)
+        except Exception as e:  # noqa: BLE001 - 向量索引可选，失败不影响摘除
+            logger.info("向量索引摘除跳过: %s", e)
         return {"notes_removed": n1, "fulltext_removed": n2}
 
     def next_job(self) -> dict | None:
@@ -1076,7 +1084,8 @@ class KBStore:
             params = [*params, doi]
         with self._conn() as conn:
             rows = conn.execute(
-                f"""SELECT doi, filename FROM notes_fts WHERE {where}
+                f"""SELECT doi, filename, substr(content, 1, {_WINDOW_SCAN_CHARS}) AS content
+                    FROM notes_fts WHERE {where}
                     ORDER BY length(content) LIMIT ?""",
                 (*params, limit)).fetchall()
             anchors = chunks
@@ -1091,43 +1100,13 @@ class KBStore:
                     where2 += " AND doi = ?"
                     params2 = [*params2, doi]
                 rows = conn.execute(
-                    f"""SELECT doi, filename FROM notes_fts WHERE {where2}
+                    f"""SELECT doi, filename, substr(content, 1, {_WINDOW_SCAN_CHARS}) AS content
+                        FROM notes_fts WHERE {where2}
                         ORDER BY length(content) LIMIT ?""",
                     (*params2, limit)).fetchall()
             return [{"doi": r["doi"], "filename": r["filename"],
-                     "snip": self._match_window(conn, "notes_fts", r["doi"],
-                                                r["filename"], anchors)}
+                     "snip": match_window(r["content"] or "", anchors)}
                     for r in rows]
-
-    @staticmethod
-    def _match_window(conn, table: str, doi: str, filename: str | None,
-                      anchors: list[str], radius: int = 300,
-                      limit: int = 700) -> str:
-        """命中位置附近的文本窗口（替代 `substr(content,1,N)` 的"文件开头"口径）。
-
-        用 SQL `instr` 定位（逐个 anchor 试，取第一个命中），只回传 ≤limit 字符；
-        再按行/句边界收尾（`boundary_trim`），避免半截行。
-        """
-        cond = "doi=?"
-        extra: tuple = ()
-        if filename is not None:
-            cond += " AND filename=?"
-            extra = (filename,)
-        for a in anchors[:3]:
-            if not a:
-                continue
-            row = conn.execute(
-                f"""SELECT substr(content, max(1, instr(content, ?) - ?), ?) AS win,
-                           instr(content, ?) AS pos
-                    FROM {table} WHERE {cond}""",
-                (a, radius, radius + limit, a, doi, *extra)).fetchone()
-            if row and row["pos"] and row["win"]:
-                win = (row["win"] or "").strip()
-                nl = win.find("\n")
-                if 0 <= nl <= 200:      # 去掉开头半截行
-                    win = win[nl + 1:].lstrip()
-                return boundary_trim(win, limit)
-        return ""
 
     def notes_files(self, doi: str) -> list[str]:
         """该篇已编译产物文件名（notes_fts 中 DISTINCT filename），无则空。"""
@@ -1152,13 +1131,13 @@ class KBStore:
                     where = " AND ".join("content LIKE ?" for _ in chunks)
                     params = [f"%{c}%" for c in chunks]
                     rows = conn.execute(
-                        f"""SELECT doi FROM fulltext_fts WHERE {where}
+                        f"""SELECT doi, substr(content, 1, {_WINDOW_SCAN_CHARS}) AS content
+                            FROM fulltext_fts WHERE {where}
                             ORDER BY length(content) LIMIT ?""",
                         (*params, limit)).fetchall()
                     # 兜底 snippet 取"命中位置窗口"而非文件开头（同 notes_fts 口径）
                     return [{"doi": r["doi"],
-                             "snippet": self._match_window(conn, "fulltext_fts",
-                                                           r["doi"], None, chunks)}
+                             "snippet": match_window(r["content"] or "", chunks)}
                             for r in rows]
         return [{"doi": r["doi"], "snippet": r["snip"]} for r in rows]
 
@@ -1354,6 +1333,38 @@ def _fts_query(query: str, mode: str = "AND") -> str:
 def _has_cjk(text: str) -> bool:
     """是否含 CJK 统一表意文字（触发 LIKE 子串兜底）。"""
     return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+# CJK 兜底命中窗口：只在文件前 100k 字符里定位（更长的文本定位不划算，退化开头窗口）
+_WINDOW_SCAN_CHARS = 100_000
+
+
+def match_window(content: str, anchors: list[str], radius: int = 300,
+                 limit: int = 700) -> str:
+    """命中位置附近的文本窗口（替代 `substr(content,1,N)` 的"文件开头"口径）。
+
+    在**所有**锚点里取最早出现的位置——只试前几个会漏（bigram 的前 3 个二字词未必
+    出现在该文件里，旧写法会返回空片段 ⇒ 模型拿到"有引用、无证据"），然后取 ±radius
+    窗口并按行/句边界收尾。锚点全没出现（如超出扫描上限）→ 退化为开头窗口。
+    """
+    text = content or ""
+    if not text:
+        return ""
+    pos = -1
+    for a in anchors:
+        if not a:
+            continue
+        p = text.find(a)
+        if p >= 0 and (pos < 0 or p < pos):
+            pos = p
+    if pos < 0:
+        return boundary_trim(text.strip(), limit)
+    start = max(0, pos - radius)
+    seg = text[start:start + limit].strip()
+    nl = seg.find("\n")
+    if 0 <= nl <= 200:      # 去掉开头半截行
+        seg = seg[nl + 1:].lstrip()
+    return boundary_trim(seg, limit)
 
 
 def _cjk_grams(query: str, n: int = 2, cap: int = 12) -> list[str]:

@@ -29,8 +29,22 @@ _INVALID_FS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def _trim(v, limit: int = _TRIM) -> str:
+    """截断回填（防上下文膨胀）：优先在段落/行/句边界收尾，不切进句子或公式。
+
+    无边界可用时退回硬切（与旧行为一致，见 tests/test_kb_tools.py::test_trim）。
+    """
     s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
-    return s if len(s) <= limit else s[:limit] + f"…[截断 {len(s) - limit} 字符]"
+    if len(s) <= limit:
+        return s
+    try:
+        from paperkb.textseg import boundary_trim
+
+        kept = boundary_trim(s, limit)
+    except Exception:  # noqa: BLE001 - 边界裁剪失败退回硬切
+        kept = s[:limit]
+    if len(kept) >= len(s):
+        kept = s[:limit]
+    return kept + f"…[截断 {len(s) - len(kept)} 字符]"
 
 
 # ---------------------------------------------------------------- 报告写入辅助
@@ -112,12 +126,13 @@ TOOL_SPECS: list[dict] = [
                        "required": ["rid"]}}},
     {"type": "function", "function": {
         "name": "kb_attachment_text",
-        "description": "读某资源附件（SI/审稿意见等）的文本片段。path 必须是 kb_attachments 或 kb_recall 返回的相对路径（只允许该资源 attachments 内的文件）。",
+        "description": "读某资源附件（SI/审稿意见等）的文本片段。path 取自 kb_attachments/kb_recall。长文用 offset 续读（返回 next_offset，0=末尾）。",
         "parameters": {"type": "object",
                        "properties": {"rid": {"type": "string", "description": "资源标识（DOI 或 RID）"},
                                       "path": {"type": "string",
                                                "description": "附件相对路径，如 si/support.md（取自 kb_attachments/kb_recall）"},
-                                      "max_chars": {"type": "integer", "description": "最多返回字符数，默认 8000"}},
+                                      "max_chars": {"type": "integer", "description": "最多返回字符数，默认 8000"},
+                                      "offset": {"type": "integer", "description": "起始字符位置（续读用），默认 0"}},
                        "required": ["rid", "path"]}}},
     {"type": "function", "function": {
         "name": "kb_paper_detail",
@@ -327,7 +342,8 @@ def run_tool(name: str, args: dict, recall_budget: int | None = None, kb=None) -
             rid = args.get("rid", "")
             path = args.get("path", "")
             out = kb.kb_attachment_read(rid, path,
-                                        max_chars=int(args.get("max_chars", 8000)))
+                                        max_chars=int(args.get("max_chars", 8000)),
+                                        offset=int(args.get("offset", 0) or 0))
             if not out.get("ok"):
                 return {"ok": False, "result": out.get("error", "读取失败")}
             return {"ok": True, "result": _trim(out, _RECALL_TRIM)}

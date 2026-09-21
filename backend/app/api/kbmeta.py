@@ -607,9 +607,14 @@ def kbmeta_attachments(rid: str = Query(..., description="资源 RID 或目录�
 
 @router.get("/attachment/read")
 def kbmeta_attachment_read(rid: str = Query(...), path: str = Query(...),
-                           max_chars: int = Query(20000, ge=200, le=200000)) -> dict:
-    """读附件文本片段（A4；白名单路径校验：越权/不存在一律 404，不泄露磁盘结构）。"""
-    out = container.get_kbapi().kb_attachment_read(rid, path, max_chars=max_chars)
+                           max_chars: int = Query(20000, ge=200, le=200000),
+                           offset: int = Query(0, ge=0)) -> dict:
+    """读附件文本片段（A4；白名单路径校验：越权/不存在一律 404，不泄露磁盘结构）。
+
+    `offset` 支持长附件续读：配合返回的 `next_offset`（0 = 已到末尾）。
+    """
+    out = container.get_kbapi().kb_attachment_read(rid, path, max_chars=max_chars,
+                                                  offset=offset)
     if not out.get("ok"):
         raise HTTPException(404 if "不存在" in out.get("error", "") else 400,
                             out.get("error") or "读取失败")
