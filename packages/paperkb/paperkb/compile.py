@@ -169,11 +169,20 @@ class Compiler:
             r = self.compile(doi, level)
             return {"doi": doi, "level": level, "result": r}
         except CompileError as e:
-            self.store.upsert_job(doi, level, status="failed", error=str(e))
+            # 同 _mark_done：REPLACE 语义下不显式带分值就会把入队分冲成 0（job 就在手上，免费带上）
+            self.store.upsert_job(doi, level, status="failed", error=str(e),
+                                  value_score=float(job.get("value_score") or 0.0),
+                                  priority=int(job.get("priority") or 0))
             return {"doi": doi, "level": level, "error": str(e)}
 
     def queue_all_by_value(self, scores: list[dict]) -> dict:
-        """按价值分批量入队：L2(≥4.0)/L1(其余，全做)。"""
+        """按价值分批量入队入口只做 **L1/L2** 两级（L1 全做、L2 按分值）。
+
+        `level` 由上游 `score.value_score` 给定：L2 的判据是 `score >= L2_THRESHOLD`
+        **且 AI 评分可用**（`score.py`，阈值 2.5）。**不是 4.0** —— 4.0 是 L3 的阈值，
+        且 L3 不在这里排队，由 L2 编译完成后 `_maybe_auto_l3` 单独判定。
+        此前本行注释写 "L2(≥4.0)"，与实现不符，2026-09-21 更正。
+        """
         n = {"L1": 0, "L2": 0}
         for s in scores:
             level = s.get("level") or "L1"
@@ -923,7 +932,14 @@ class Compiler:
 
     def _mark_done(self, doi: str, level: str) -> None:
         # 2026-09-12：补写 done_at（此前恒空 → 无法判断产物是什么时候编出来的）。
+        # 2026-09-21：`upsert_job` 是 INSERT OR REPLACE 且 value_score 缺省 0.0，
+        # 直接写 done 会把入队时记下的真实价值分**冲成 0**（库里 24/24 行全 0，
+        # 实测 data/biblio/biblio.db）。界面侧靠 /compile/jobs 的兜底回填看不出来，
+        # 但落库的历史分没了（"这篇当初按几分编的"无法事后追溯）。故先读回原值沿用。
+        old = self.store.get_job(doi, level) or {}
         self.store.upsert_job(doi, level, status="done",
+                              value_score=float(old.get("value_score") or 0.0),
+                              priority=int(old.get("priority") or 0),
                               done_at=datetime.now().isoformat(timespec="seconds"))
 
     def _cluster_context(self, meta: PaperMeta, limit: int = 5) -> str:

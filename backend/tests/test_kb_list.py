@@ -53,8 +53,20 @@ def _add_meta(store, doi: str, *, title: str = "T", journal: str = "Nature",
     return doi
 
 
-def _add_job(store, doi: str, level: str, status: str, error: str = "") -> None:
+_LEVEL_ARTIFACT = {"L1": "_note.md", "L2": "_wiki.md", "L3": "_relations.md"}
+
+
+def _add_job(store, doi: str, level: str, status: str, error: str = "",
+             roots: Roots | None = None) -> None:
+    """写 compile_jobs 一行。
+
+    2026-09-21：status=done 且给了 roots 时**同时把产物文件铺出来**。kb_list 现在只把
+    “产物确实在盘上”的 done 行算作已编译（done 行 + 产物缺失 ⇒ 归入 stale、显示“待重建”），
+    所以 fixture 里凭空写一个 done 行已经不代表“已编译完成”了。
+    """
     store.upsert_job(normalize_doi(doi), level, status=status, error=error)
+    if status == "done" and roots is not None:
+        _make_kb(roots, doi, (_LEVEL_ARTIFACT[level],))
 
 
 def _make_kb(roots: Roots, doi: str, files: tuple[str, ...] = ()) -> None:
@@ -94,8 +106,8 @@ def test_kb_list_basic_aggregation(kbsetup, fake_scores, roots):
     fake_scores({d1: (4.5, "L3"), d2: (3.0, "L2"), d3: (1.2, "L1")})
 
     # 编译状态：d1 完成 L1/L2 + L3 排队；d2 失败带错误；d3 无任务
-    _add_job(store, d1, "L1", "done")
-    _add_job(store, d1, "L2", "done")
+    _add_job(store, d1, "L1", "done", roots=roots)
+    _add_job(store, d1, "L2", "done", roots=roots)
     _add_job(store, d1, "L3", "queued")
     _add_job(store, d2, "L1", "failed", error="llm timeout")
     _add_job(store, d2, "L2", "pending")          # pending 语义=排队中
@@ -136,13 +148,13 @@ def test_kb_list_basic_aggregation(kbsetup, fake_scores, roots):
 
 # ---------------------------------------------------------------- 过滤
 
-def test_kb_list_filters(kbsetup, fake_scores):
+def test_kb_list_filters(kbsetup, fake_scores, roots):
     store = api._store  # noqa: SLF001
     d1 = _add_meta(store, "10.1000/a.1", journal="Nature", year="2024")
     d2 = _add_meta(store, "10.1000/b.2", journal="Science Advances", year="2022")
     d3 = _add_meta(store, "10.1000/c.3", journal="Cell", year="2020")
     fake_scores({d1: (4.5, "L3"), d2: (2.0, "L1"), d3: (3.3, "L2")})
-    _add_job(store, d1, "L1", "done")
+    _add_job(store, d1, "L1", "done", roots=roots)
     _add_job(store, d2, "L1", "queued")           # 排队 ≠ 已编译
 
     assert [it["doi"] for it in _kb(journal="science")["items"]] == [d2]
@@ -159,6 +171,24 @@ def test_kb_list_filters(kbsetup, fake_scores):
 
     # 组合过滤
     assert [it["doi"] for it in _kb(score_min=3.0, compile_status="done")["items"]] == [d1]
+
+
+def test_kb_list_journal_filter_not_leaked_by_disk_branch(kbsetup, fake_scores, roots):
+    """回归钉：磁盘上有产物的篇目，被 journal 过滤器挡掉后不得被磁盘分支原样加回。
+
+    根因：`matched` 的登记点排在 journal/score_min 过滤器之后 ⇒ 被过滤器挡掉的篇目
+    在 3b「磁盘分支」里"复活"，而那个分支拿不到 journal 字段、也就没有 journal 过滤，
+    表现为"按期刊筛选筛不干净"。2026-09-21 修 kb_list 产物判据时实测暴露。
+    """
+    store = api._store  # noqa: SLF001
+    d1 = _add_meta(store, "10.1000/a.1", journal="Nature", year="2024")
+    d2 = _add_meta(store, "10.1000/b.2", journal="Science Advances", year="2022")
+    _make_kb(roots, d1, ("_note.md",))          # 两篇磁盘上都有产物
+    _make_kb(roots, d2, ("_note.md",))
+
+    assert [it["doi"] for it in _kb(journal="science")["items"]] == [d2]
+    assert [it["doi"] for it in _kb(journal="nature")["items"]] == [d1]
+    assert _kb(journal="cell")["items"] == []
 
 
 def test_kb_list_search_q(kbsetup, fake_scores):

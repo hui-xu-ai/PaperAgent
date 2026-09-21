@@ -436,6 +436,19 @@ def _need_compiler():
     return _compiler
 
 
+def compile_artifact_exists(doi: str, level: str) -> bool | None:
+    """该等级编译产物是否**真在磁盘上**（None = 编译器未初始化，无法判断）。
+
+    2026-09-21 用户报障：界面显示 "已完成 L1, L2, L3" 而 `_relations.md` 已被清理 ——
+    因为显示侧只读 `compile_jobs.status`，而 done 行在产物被删后仍是 done。
+    这里直接复用 `Compiler._artifact_exists`，与**入队幂等判据同源**，保证
+    "界面说已完成" 与 "重新入队会不会跳过重建" 永远是同一个条件，不会各自漂移。
+    """
+    if _compiler is None:
+        return None
+    return _compiler._artifact_exists(doi, level)   # noqa: SLF001 - 同一包内单一判据
+
+
 def compile_now(doi: str, level: str = "L1", force: bool = False) -> dict:
     """立即编译（同步；LLM 调用可能较慢）。键可为 DOI 或 RID（无 DOI 文献）。"""
     return _need_compiler().compile(doi, level, force)
@@ -527,7 +540,17 @@ def compile_process(limit: int = 1) -> list[dict]:
 
 
 def compile_status(status: str | None = None) -> list[dict]:
-    return _need_store().list_jobs(status)
+    """编译队列行，每行补 `artifact_exists`（产物是否真在盘上）。
+
+    2026-09-21 用户报障：`compile_jobs` 的 done 行在产物被清理后仍是 done，
+    只回状态会让界面显示 "已完成 L3" 而 `_relations.md` 根本不在。
+    判据来自 `compile_artifact_exists`（与入队幂等同源，见其 docstring）。
+    """
+    rows = _need_store().list_jobs(status)
+    for r in rows:
+        r["artifact_exists"] = compile_artifact_exists(
+            str(r.get("paper_doi") or ""), str(r.get("level") or ""))
+    return rows
 
 
 # ---------------------------------------------------------------- 卡片（M3）
@@ -1001,17 +1024,23 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
         key, _kind = dir_to_key(r["dir"], store)  # T6：md5 目录经 map 关联 DOI
         if key:
             kb_rows[key] = r
-    jobs: dict[str, dict] = {}          # doi → {compiled:list, queued:list, error:str}
+    jobs: dict[str, dict] = {}          # doi → {compiled:list, queued:list, stale:list, error:str}
     # 注：形参 compile_status 遮蔽同名门面函数，这里直接走 store.list_jobs()（等价）
     for j in store.list_jobs():
         doi = j.get("paper_doi") or ""
         if not doi:
             continue
-        agg = jobs.setdefault(doi, {"compiled": [], "queued": [], "error": "",
-                                    "failed_level": ""})
+        agg = jobs.setdefault(doi, {"compiled": [], "queued": [], "stale": [],
+                                    "error": "", "failed_level": ""})
         st, lv = (j.get("status") or ""), ((j.get("level") or "").upper())
+        # 2026-09-21：done 只算"产物还在盘上"的。产物被清理后该行仍是 done，
+        # 此前直接计入 compiled ⇒ 界面显示"已完成 L3"而 _relations.md 不存在（用户报障）。
+        # 这类行改记 stale：界面显示"待重建"，且与 queue() 的幂等判据一致（会重新入队）。
         if st == "done" and lv in _KB_LEVELS and lv not in agg["compiled"]:
-            agg["compiled"].append(lv)
+            if compile_artifact_exists(doi, lv) is False:
+                agg["stale"].append(lv)
+            else:
+                agg["compiled"].append(lv)
         elif st in ("queued", "compiling", "pending") and lv in _KB_LEVELS \
                 and lv not in agg["queued"]:
             agg["queued"].append(lv)
@@ -1028,6 +1057,13 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
         # P0-B：条目键 = DOI（有则用）否则 rid —— 无 DOI 资料（中文文献/书/学位论文）
         # 也能出现在列表里，且同一 rid 的两次写入不会互相覆盖。
         mkey = (m.doi or "").strip() or (m.rid or "")
+        # 2026-09-21：先登记 `matched`，且**不受展示过滤器影响**。它的语义是
+        # "这个磁盘目录有 bib 元数据"（P0-A：磁盘独有项只看剩下的），不是"通过了过滤器"。
+        # 此前登记点排在 journal / score_min 过滤器之后 ⇒ 一篇被过滤器挡掉的论文，
+        # 会被 3b 磁盘分支（那里没有 journal 信息、也就没有 journal 过滤）原样加回来，
+        # 表现为"按期刊筛选筛不干净"。修 kb_list 产物判据时实测暴露。
+        if kb_rows.get(mkey):
+            matched.add(mkey)
         s = scores.get(mkey) or {}
         value = float(s.get("score") or 0.0)
         if value < score_min:
@@ -1040,6 +1076,7 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
         agg = jobs.get(mkey) or {}
         compiled = [lv for lv in _KB_LEVELS if lv in agg.get("compiled", [])]
         queued = [lv for lv in _KB_LEVELS if lv in agg.get("queued", [])]
+        stale = [lv for lv in _KB_LEVELS if lv in agg.get("stale", [])]
         has_error = bool(agg.get("error", ""))
         if cs == "done" and not compiled:
             continue
@@ -1066,8 +1103,6 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
         if min_if and m_if < min_if:
             continue
         krow = kb_rows.get(mkey) or {}
-        if krow:
-            matched.add(mkey)
         # 2026-09-19：默认过滤 kb 目录已删除的幽灵记录（文件不在磁盘但数据库有记录）
         if on_disk_only and not krow:
             continue
@@ -1091,6 +1126,7 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             },
             "compiled": compiled,
             "queued": queued,
+            "stale": stale,
             "last_error": agg.get("error", ""),
             "last_failed_level": agg.get("failed_level", ""),
             "l3_eligible": ("L2" in compiled and "L3" not in compiled
@@ -1147,6 +1183,7 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             },
             "compiled": levels,
             "queued": [],
+            "stale": [lv for lv in _KB_LEVELS if lv in agg.get("stale", [])],
             "last_error": agg.get("error", ""),
             "last_failed_level": agg.get("failed_level", ""),
             "l3_eligible": ("L2" in levels and "L3" not in levels

@@ -150,8 +150,14 @@ def test_score_year_old():
 
 def test_norm_journal_name():
     assert norm_journal_name("Science China-Materials") == norm_journal_name("sciencechinamaterials")
-    # & 与 AND 不强制等价（规范化只去空白/标点）
-    assert norm_journal_name("  Sensors & Actuators B: Chemical ") == "SENSORSACTUATORSBCHEMICAL"
+    # 2026-09-21 口径变更（用户报障 Sensors & Actuators B 查不到 IF）：
+    # `&` 与 `and` **现在等价**。原断言写死 SENSORSACTUATORSBCHEMICAL（`&` 被当标点删掉），
+    # 会让同一本刊在 bib（Crossref 爱用 &）与 JCR 表（用 AND）两种写法下裂成两个键。
+    assert norm_journal_name("  Sensors & Actuators B: Chemical ") == \
+           norm_journal_name("Sensors and Actuators B-Chemical")
+    # 原有的"去空白/标点"能力不回退
+    assert norm_journal_name("Sensors,and Actuators B") == \
+           norm_journal_name("Sensors and Actuators B")
 
 
 def test_lookup_issn_and_override(store, tmp_path):

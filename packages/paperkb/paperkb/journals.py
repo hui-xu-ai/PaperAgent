@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import threading
@@ -14,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import Roots
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jcr (
@@ -44,12 +47,46 @@ CREATE TABLE IF NOT EXISTS cas (
 
 
 def norm_journal_name(name: str) -> str:
-    """期刊名规范化（匹配用）：大写 + 去空白/标点差异。"""
+    """期刊名规范化（匹配用）：大写 + 去空白/标点差异 + `&` 与 `and` 等价。
+
+    2026-09-21 用户报障（Sensors & Actuators B 这类写法查不到指标）：此前 `&` 被当标点
+    **删掉**、而 `and` 被保留，同一本刊于是因数据源写法不同裂成两个键 ——
+    bib 侧（Crossref 爱用 `&`）`Sensors & Actuators B: Chemical`
+    -> SENSORSACTUATORSBCHEMICAL，而期刊表侧 `SENSORS AND ACTUATORS B-CHEMICAL`
+    -> SENSORSANDACTUATORSBCHEMICAL，查不到。改为**先把 `&` 展开成 AND** 再剥标点，
+    两种写法归一到同一个键（大小写 / 标点 / 连字符差异本来就已归一）。
+
+    影响面实测（data/reference/journals.db；jcr 22249 行、其中含 `&` 的 1278 行）：
+    新口径只多合并 **1** 组，且经人工核对确为同一本刊
+    （`Journal of Computer Science & Technology` 与
+    `JOURNAL OF COMPUTER SCIENCE AND TECHNOLOGY`），无误并风险。
+    """
     if not name:
         return ""
-    s = name.upper()
+    s = name.upper().replace("&", " AND ")
     s = re.sub(r"[\s\-_.,;:'\"()&/]+", "", s)
     return s
+
+
+# JCR 会给同名刊加**城市消歧后缀**（MDPI 的 `Children-Basel`/`Symmetry-Basel`，
+# WoS 的 `ONCOLOGY-NEW YORK`/`JOURNAL OF PHYSIOLOGY-LONDON` 等），而 bib 侧
+# （Crossref/WoS SO 短名）通常不带后缀 ⇒ 查不到 IF/分区。
+# 实测（data/reference/journals.db）：29 个表项带此后缀，剥掉后与主索引键撞车仅
+# 2 例 —— `Decision-Washington`、`ONCOLOGY-NEW YORK`，而 `Decision`/`ONCOLOGY`
+# 本身就是**另一本独立刊**，不能合并。故本规则只用作**兜底**：主键命中就用主键，
+# 主键不中才查后缀索引，从根上避免把两本不同的刊错配到一起。
+_JCR_CITY_SUFFIX = re.compile(
+    r"[- ](?:BASEL|AMSTERDAM|LONDON|OXFORD|BERLIN|NEW YORK|PARIS|TOKYO|SINGAPORE|"
+    r"DORDRECHT|HOBOKEN|HOBOKEN NJ|CHICHESTER|WEINHEIM|BRISTOL|CAMBRIDGE|BEIJING|"
+    r"HACKENSACK|BINGHAMTON|THOUSAND OAKS|LOS ANGELES|WASHINGTON)$", re.I)
+
+
+def norm_journal_name_loose(name: str) -> str:
+    """兜底口径：先剥城市消歧后缀，再走常规规范化。无后缀时与 norm_journal_name 同值。"""
+    if not name:
+        return ""
+    return norm_journal_name(_JCR_CITY_SUFFIX.sub("", name.upper()))
+
 
 
 def _to_float(v) -> float:
@@ -118,6 +155,8 @@ class JournalsDB:
             jcr_by_issn: dict[str, dict] = {}
             jcr_by_eissn: dict[str, dict] = {}
             cas_by_name: dict[str, list[dict]] = {}
+            loose_first: dict[str, dict] = {}      # 剥后缀键 → {"row": 行, "full": 全名规范化}
+            loose_ambig: set[str] = set()          # 两个不同刊剥出同一个键 → 弃用
             try:
                 with self._conn() as conn:
                     jcr_rows = conn.execute(
@@ -131,6 +170,13 @@ class JournalsDB:
                 nm = norm_journal_name(d.get("journal_name", ""))
                 if nm:
                     jcr_by_name.setdefault(nm, []).append(d)   # 已按 year DESC 排序
+                    loose = norm_journal_name_loose(d.get("journal_name", ""))
+                    if loose and loose != nm:
+                        prev = loose_first.get(loose)
+                        if prev is None:
+                            loose_first[loose] = {"row": d, "full": nm}   # 首条=最新年
+                        elif prev["full"] != nm:
+                            loose_ambig.add(loose)     # 同键多刊：宁可不匹配，不可错配
                 issn = str(d.get("issn") or "").strip().upper()
                 eissn = str(d.get("eissn") or "").strip().upper()
                 if issn:
@@ -139,9 +185,17 @@ class JournalsDB:
                     jcr_by_eissn.setdefault(eissn, d)
             for r in cas_rows:
                 d = dict(r)
-                cas_by_name.setdefault(d.get("journal_name", ""), []).append(d)
+                # 2026-09-21：改用规范化名建索引（原用原始名，jcr/cas 两表同一本刊
+                # 只要写法有差异就静默配对失败、中科院分区丢失）。实测当前数据
+                # 771 行 jcr 名在 cas 里无完全相同的原始串，其中 6 行经规范化可救回
+                # （如 `Laparoscopic Endoscopic and Robotic Surgery` 对上大写版），
+                # 其余 765 行是 cas 确实未收录该刊 —— 故这项修的是未来换表时的写法差异。
+                cas_by_name.setdefault(norm_journal_name(d.get("journal_name", "")),
+                                       []).append(d)
             self._cache = {"jcr_by_name": jcr_by_name, "jcr_by_issn": jcr_by_issn,
-                           "jcr_by_eissn": jcr_by_eissn, "cas_by_name": cas_by_name}
+                           "jcr_by_eissn": jcr_by_eissn, "cas_by_name": cas_by_name,
+                           "jcr_by_loose": {k: v["row"] for k, v in loose_first.items()
+                                            if k not in loose_ambig}}
             return self._cache
 
     # ---------------------------------------------------------- upsert
@@ -189,18 +243,34 @@ class JournalsDB:
         return self._with_cas(dict(row)) if row else None
 
     def lookup(self, journal_name: str, year: int | None = None) -> dict | None:
-        """按期刊名（规范化匹配）查最新年份指标：{jcr: {...}|None, cas: {...}|None}。"""
+        """按期刊名（规范化匹配）查最新年份指标：{jcr: {...}|None, cas: {...}|None}。
+
+        两级：① 主索引（`&`≡`and`、大小写/标点已归一）；② 主索引不中才试**剥城市消歧后缀**
+        的兜底索引（`Children` → `Children-Basel`）。顺序不可颠倒 —— `Decision` 与
+        `Decision-Washington`、`ONCOLOGY` 与 `ONCOLOGY-NEW YORK` 都是各自的独立刊。
+        """
         norm = norm_journal_name(journal_name)
         if not norm:
             return None
-        rows = self._ensure_cache()["jcr_by_name"].get(norm)
-        if not rows:
-            return None
-        return self._with_cas(dict(rows[0]), year=year)   # rows 已按 year DESC
+        c = self._ensure_cache()
+        rows = c["jcr_by_name"].get(norm)
+        if rows:
+            return self._with_cas(dict(rows[0]), year=year)   # rows 已按 year DESC
+        loose = c["jcr_by_loose"].get(norm_journal_name_loose(journal_name))
+        if loose is not None:
+            logger.debug("期刊名兜底命中（剥消歧后缀）: %s -> %s",
+                         journal_name, loose.get("journal_name"))
+            return self._with_cas(dict(loose), year=year)
+        return None
 
     def _with_cas(self, jcr_row: dict, year: int | None = None) -> dict:
-        """jcr 行 + 关联 cas 行 → 结果 dict（year 指定则取对应年份）。"""
-        cas_rows = self._ensure_cache()["cas_by_name"].get(jcr_row["journal_name"], [])
+        """jcr 行 + 关联 cas 行 → 结果 dict（year 指定则取对应年份）。
+
+        两表按**规范化期刊名**配对（与 `lookup` 同一口径），避免同一本刊在 jcr 与 cas
+        里写法不同（大小写/标点/`&` vs `and`）时静默丢掉中科院分区。
+        """
+        key = norm_journal_name(jcr_row["journal_name"])
+        cas_rows = self._ensure_cache()["cas_by_name"].get(key, [])
         result: dict = {"jcr": jcr_row, "cas": None}
         for r in cas_rows:
             if year is None or r["year"] == year:

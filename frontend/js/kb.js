@@ -299,14 +299,28 @@ function kbNextLevel(it) {
   return KB_LEVELS.find(l => !done.includes(l)) || '';
 }
 
+/* 2026-09-21 用户报障：界面显示“已完成 L1, L2, L3”而 _relations.md 已被清理。
+   后端已把“done 但产物不在磁盘”的等级从 compiled 挪到 stale，
+   这里把 stale 明示出来，避免“为什么又要重编”只能靠猜。 */
+function kbStaleHtml(it, cls) {
+  const st = (it && it.stale) || [];
+  if (!st.length) return '';
+  return '<div class="' + (cls || 'kblp-err') + '">\u26a0 ' + escapeHtml(st.join('\u3001'))
+    + ' \u6807\u8bb0\u4e3a\u5df2\u5b8c\u6210\uff0c\u4f46\u7f16\u8bd1\u4ea7\u7269\u5df2\u4e0d\u5728\u78c1\u76d8'
+    + '\uff08\u76ee\u5f55\u88ab\u6e05\u7406\u8fc7\uff09\u2014\u2014\u9700\u91cd\u65b0\u7f16\u8bd1</div>';
+}
+
 function kbCompileBtnHtml(it) {
   const next = kbNextLevel(it);
   if (!next) {
     return '<button class="btn small" disabled title="\u4e09\u7ea7\u7f16\u8bd1\u5df2\u5168\u90e8\u5b8c\u6210'
       + '\uff08L1 _note.md / L2 _wiki.md / L3 _relations.md\uff09">\u2713 \u4e09\u7ea7\u5df2\u7f16\u8bd1\u5b8c\u6210</button>';
   }
+  // stale 的等级说“重建”而不是“编译”：用户已经编过一次，只是产物丢了
+  const stale = ((it && it.stale) || []).includes(next);
+  const label = stale ? `重建${next}` : `编译${next}`;
   return `<button class="btn small" data-op="compile" data-level="${next}" `
-    + `title="${KB_LEVEL_TIP[next]}">编译${next}</button>`;
+    + `title="${KB_LEVEL_TIP[next]}">${label}</button>`;
 }
 
 /* 操作结果文案：`skipped_done` 这类原始状态码直接弹给用户很费解（"操作完成：{...}"）。 */
@@ -416,6 +430,7 @@ function buildKbPreviewHtml(it) {
     <div class="kblp-sec">
       <h6>编译状态</h6>
       <div>已完成：${escapeHtml(compiled)} ${queued}</div>
+      ${kbStaleHtml(it)}
       ${errHtml}
     </div>
     <div class="kblp-ops">
@@ -497,6 +512,7 @@ async function openKbDetail(doi) {
       <h5>编译状态</h5>
       <div>已完成：${escapeHtml(compiled)}</div>
       ${queued}
+      ${kbStaleHtml(it, 'kbd-err')}
       ${it.last_error ? `<div class="kbd-err">⚠ ${escapeHtml(it.last_error)}</div>` : ''}
     </div>
     <div class="kbd-section kbd-ops">
@@ -793,6 +809,9 @@ function kbaPapersRender() {
     else if (hasError) { stClass = 'st-fail'; stText = '\u5931\u8d25'; }
     else if (top === 'L2') { stClass = 'st-l2'; stText = 'L2 \u5b8c\u6210'; }
     else if (top === 'L1') { stClass = 'st-l1'; stText = 'L1 \u5b8c\u6210'; }
+    // 2026-09-21\uff1adone \u4f46\u4ea7\u7269\u5df2\u88ab\u6e05\u7406\u7684\u7b49\u7ea7 \u2192 \u4e0d\u80fd\u8bf4\u201c\u5b8c\u6210\u201d\uff0c\u6539\u201c\u5f85\u91cd\u5efa\u201d
+    const staleLv = (it.stale || []).join('/');
+    if (staleLv) { stClass = 'st-fail'; stText = (top ? top + ' \u5b8c\u6210\u00b7' : '') + staleLv + ' \u5f85\u91cd\u5efa'; }
     const doi = escapeHtml(it.doi || '');
     const checked = kbaPapersState.selected.has(it.doi) ? ' checked' : '';
     const ifVal = it.impact_factor ? Number(it.impact_factor).toFixed(1) : '\u2014';

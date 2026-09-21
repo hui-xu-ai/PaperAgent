@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
-"""后台编译 worker（A2）：L1 全自动 + L2/L3 按价值分自动升级。
+"""后台编译 worker（A2）：L1 全自动 + L2 按价值分自动升级。
 
 - 单 daemon 线程轮询 compile_jobs 队列：有 queued → 执行器处理 1 项；
-  处理成功后按价值分自动升级（L1→L2→L3 价值链）
+  处理成功后按价值分自动升级（本 worker 只做 **L1→L2**，见 `_maybe_upgrade`）
+- **L2→L3 不在这里**：它发生在 paperkb 内部 —— L2 编译完成时 `Compiler._mark_done`
+  之后立即调 `_maybe_auto_l3`（`compile.py`），按价值分 ≥4.0 且 AI 评分可用自动入队
+  L3。此处不要重复实现，否则同一篇会被入队两次。
+  （此段 2026-09-21 澄清：原注释写 "L1→L2→L3 价值链"，容易被当成 worker 的职责。）
 - 队列空 → 轮询等待；LLM 未配置（无 API key）→ 空转等待，不崩溃、
   不把任务误置 failed（paperkb 未注入 LLM 时 get_llm 会抛，故先闸门）
 - 执行器/查询全部构造注入（callable，可单测，不直接 import container）
