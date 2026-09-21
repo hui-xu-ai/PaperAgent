@@ -14,7 +14,7 @@
 
 **向量索引重建**（二选一）：
 
-- **推荐**：打开应用 → 知识库面板 → 点一次「重建向量索引」。会重新调用 embedding
+- **推荐**：打开应用 → 「知识库管理」→「总览」→「🛠 索引维护」→ 点一次「重建向量索引」。会重新调用 embedding
   API（按篇数计费）；
 - **零成本**：调用 `paperkb.db.import_legacy(get_index_store(roots))` 把旧向量一次性
   搬进新存储（不重新 embedding），导入后旧文件 `data/vector/kb_vectors/*.npy` 可删。
