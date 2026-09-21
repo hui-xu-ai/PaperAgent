@@ -21,6 +21,10 @@
 `app/plugins/obsidian_notes/plugin.yaml` 的 datas 与 hiddenimport **曾是遗漏**，
 导致 PyInstaller 报 "Unable to find ... when adding binary and data files"、构建直接失败。
 新增/删除内置插件时必须同步改本文件的 datas + hiddenimports。
+
+⚠️ editable 包（`packages/{paperparse,paperkb,paperlit}`）**PyInstaller 不会自动跟随**：
+每个都要进 `pathex` + `hiddenimports`（用 collect_submodules 收整包）。漏一个的后果是
+打包版**启动即 ModuleNotFoundError**（v1.0.0 漏 paperkb、v1.3.0 漏 paperlit，各一次）。
 """
 from pathlib import Path
 
@@ -30,9 +34,11 @@ from PyInstaller.utils.hooks import collect_submodules
 PROJECT_ROOT = Path(SPECPATH).resolve()
 PACKAGE_ROOT = PROJECT_ROOT / "packages" / "paperparse"
 PAPERKB_ROOT = PROJECT_ROOT / "packages" / "paperkb"
+PAPERLIT_ROOT = PROJECT_ROOT / "packages" / "paperlit"
 BACKEND = PROJECT_ROOT / "backend"
 assert PACKAGE_ROOT.exists(), f"算法包目录不存在: {PACKAGE_ROOT}（请在项目根运行 pyinstaller）"
 assert PAPERKB_ROOT.exists(), f"知识库算法包目录不存在: {PAPERKB_ROOT}"
+assert PAPERLIT_ROOT.exists(), f"文献检索包目录不存在: {PAPERLIT_ROOT}"
 assert (PROJECT_ROOT / "frontend" / "version.js").exists(), \
     "缺 frontend/version.js（前端版本单一来源，见 docs/VERSIONING.md §1）"
 
@@ -103,6 +109,13 @@ hiddenimports = [
     # —— 实测事故：漏了它，打包版启动即 `ModuleNotFoundError: No module named 'paperkb'`。
     "paperkb",
     *collect_submodules("paperkb"),
+    # paperlit（文献 AI 检索包）：同一个坑再犯一次 —— 2026-09-19 集成 paperlit 时
+    # **没同步本文件**，`app/services/lit_service.py` 在模块级 `import paperlit`，
+    # 于是打包版一启动就 `ModuleNotFoundError: No module named 'paperlit'`（用户实测）。
+    # ⚠️ 规则：`packages/` 下**每个** editable 包都要出现在本列表 + pathex 里；
+    #    新增包时必须同步（v1.0.0 发布轮漏 paperkb、v1.3.0 轮漏 paperlit，别再第三次）。
+    "paperlit",
+    *collect_submodules("paperlit"),
     # uvicorn 动态加载器
     "uvicorn.logging",
     "uvicorn.loops.auto",
@@ -114,7 +127,7 @@ hiddenimports = [
 
 a = Analysis(
     [str(BACKEND / "launcher.py")],  # 独立入口（绝对导入，防相对导入报错）
-    pathex=[str(BACKEND), str(PACKAGE_ROOT), str(PAPERKB_ROOT)],
+    pathex=[str(BACKEND), str(PACKAGE_ROOT), str(PAPERKB_ROOT), str(PAPERLIT_ROOT)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

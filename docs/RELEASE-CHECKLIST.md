@@ -34,10 +34,18 @@
 
 ## 2. 构建（`pwsh -File tools\build_release.ps1`）
 
+- [ ] **`packages/` 下每个 editable 包都被 `PaperAgent.spec` 显式收集**（`pathex` +
+      `hiddenimports` + `collect_submodules`）。PyInstaller **不跟随 editable 安装**，
+      漏一个的后果是打包版**启动即 `ModuleNotFoundError`**——已踩两次：v1.0.0 漏
+      `paperkb`、v1.3.0 漏 `paperlit`。闸门 [4] 已自动断言，新增包时别再手工漏。
 - [ ] 产物 = `dist/PaperAgent/`（onedir）；`PaperAgent.exe` 带图标；`_internal/` 内含
       `frontend/`（含 `version.js`）与 `icon.ico`。
+- [ ] 期刊分区表随包：`_internal/share/reference/journals.db`（构建期由
+      `tools/build_reference_seed.py` 从 JCR xlsx 解析）+ 原始 xlsx（供用户日后更新）。
+      闸门 [6] 断言两者都在产物里——缺了价值分就丢 IF 档，文献会停在 L1。
 - [ ] 产物**不含** `data/` `knowledge_base/` `library/` `logs/` `work/` `用户提供的文献/`。
 - [ ] `console=False`（无黑窗）、`upx=False`（UPX 破坏 pymupdf/.NET 二进制）。
+- [ ] 分发版 zip 落在 `release/PaperAgent-v<版本>-win64.zip`（脚本自动生成，**不含**运行期目录）。
 
 ## 3. 打包版冒烟（**真实链路**，必须做）
 

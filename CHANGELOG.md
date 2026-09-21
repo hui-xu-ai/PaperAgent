@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **打包版启动失败**：`PaperAgent.spec` 漏收集 **`paperlit`**（2026-09-19 才集成进
+  `packages/` 的第三个 editable 包）——`app/services/lit_service.py` 在模块级
+  `import paperlit`，于是打包版一启动就 `ModuleNotFoundError: No module named 'paperlit'`。
+  已补 `pathex` + `hiddenimports`（`collect_submodules`），并给发布闸门加
+  「**每个 `packages/` 包都必须被 spec 显式收集**」断言（同类事故第二次：v1.0.0 漏 paperkb）
 - **打包构建修复**：`PaperAgent.spec` 仍引用已删除的 Obsidian 演示插件
   （`app/plugins/obsidian_notes/plugin.yaml|plugin.py` 与对应 hiddenimport），
   自 c819f49 删插件起 PyInstaller 直接报 "Unable to find ... when adding binary and

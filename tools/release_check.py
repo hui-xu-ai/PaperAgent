@@ -176,6 +176,18 @@ def check_packaging_spec() -> list[str]:
         bad.append("frontend/version.js 不存在（前端版本单一来源）")
     if not (ROOT / "assets" / "icon.ico").exists():
         bad.append("assets/icon.ico 不存在（托盘图标来源）")
+    # 每个 editable 包都必须被 spec 显式收集：PyInstaller **不跟随 editable 安装**，
+    # 漏一个的后果是打包版**启动即 ModuleNotFoundError**（v1.0.0 漏 paperkb、
+    # v1.3.0 漏 paperlit，各踩一次）。这条断言就是为了不再有第三次。
+    pkgs = sorted(d.name for d in (ROOT / "packages").iterdir()
+                  if d.is_dir() and (d / d.name / "__init__.py").exists()
+                  and not d.name.startswith(("_", ".")))
+    pkg_missing = [p for p in pkgs if f'"{p}"' not in spec]
+    print(f"    {'OK ' if not pkg_missing else '!! '}editable 包均已显式收集："
+          f"{pkgs or '（无）'}")
+    if pkg_missing:
+        bad.append(f"PaperAgent.spec 未收集这些 packages/ 包：{pkg_missing}"
+                   "（PyInstaller 不跟随 editable 安装 ⇒ 打包版启动即 ModuleNotFoundError）")
     print(f"    OK datas 未含 data/knowledge_base/library/logs/work/用户资产")
     return bad
 
