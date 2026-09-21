@@ -2006,9 +2006,9 @@ def kb_vector_search(query: str, top_k: int = 20,
     api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
     if not api_key:
         return []
-    from .vector import KbVectorIndex
+    from .vector import get_kb_vector_index
     store = _need_store()
-    idx = KbVectorIndex(store.roots, api_key=api_key)
+    idx = get_kb_vector_index(store.roots, api_key=api_key)
     return idx.search(query, top_k=top_k, exclude_doi=exclude_doi,
                       with_snippet=with_snippet, store=store)
 
@@ -2029,11 +2029,140 @@ def kb_vector_search_by_concepts(concept_names: list[str],
     api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
     if not api_key:
         return []
-    from .vector import KbVectorIndex
+    from .vector import get_kb_vector_index
     store = _need_store()
-    idx = KbVectorIndex(store.roots, api_key=api_key)
+    idx = get_kb_vector_index(store.roots, api_key=api_key)
     return idx.search_by_concepts(concept_names, top_k=top_k, store=store,
                                   exclude_doi=exclude_doi)
+
+
+def _index_paper_from_disk(idx, store, doi: str, folder, force: bool = False) -> int:
+    """把某篇 kb 目录的编译产物喂给向量索引（内容未变则只刷偏移/小节）。
+
+    重建（`rebuild_kb_vector_index`）与死信重试（`kb_index_retry`）共用这段口径，
+    避免"重建认得 _relations.md、重试漏了它"这类分叉（2026-09-21 审计踩过）。
+    """
+    note_text = ""
+    title = ""
+    note_path = folder / "_note.md"
+    if note_path.exists():
+        note_text = note_path.read_text(encoding="utf-8", errors="replace")
+        for line in note_text.splitlines():
+            if line.startswith("# "):
+                title = line[2:].strip()
+                break
+    wiki_path = folder / "_wiki.md"
+    wiki_text = (wiki_path.read_text(encoding="utf-8", errors="replace")
+                 if wiki_path.exists() else "")
+    relations_path = folder / "_relations.md"
+    relations_text = (relations_path.read_text(encoding="utf-8", errors="replace")
+                      if relations_path.exists() else "")
+    concepts = []
+    try:
+        concepts = store.concepts_for_doi(doi)
+    except Exception:  # noqa: BLE001 - 概念缺失不影响正文索引
+        pass
+    idx.index_paper(doi, note_text=note_text, wiki_text=wiki_text,
+                    relations_text=relations_text, concepts=concepts,
+                    title=title, force=force, folder=folder)
+    return idx.count_for(doi)
+
+
+def _folder_for_doi(roots, doi: str):
+    """定位某篇的 kb 目录（DOI 目录名 → 原样目录名 → frontmatter DOI 扫描）。"""
+    import re
+
+    from .doi import doi_to_dirname
+
+    for cand in (roots.kb_dir / doi_to_dirname(doi), roots.kb_dir / doi):
+        if (cand / "_note.md").is_file():
+            return cand
+    for note in roots.kb_dir.rglob("_note.md"):
+        try:
+            text = note.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = re.search(r"^doi:\s*(.+)$", text, re.MULTILINE)
+        if m and m.group(1).strip() == doi:
+            return note.parent
+    return None
+
+
+def _kb_index(api_key: str = ""):
+    """取向量索引实例（单例数据层；api_key 缺省读环境变量）。"""
+    import os
+
+    from .vector import get_kb_vector_index
+
+    store = _need_store()
+    key = api_key or os.environ.get("SILICONFLOW_API_KEY", "").strip()
+    return get_kb_vector_index(store.roots, api_key=key), store
+
+
+def kb_index_status() -> dict:
+    """索引健康快照（只读，不调 embedding）：体积 / 段数 / 垃圾行 / 死信 / 模型指纹。"""
+    store = _need_store()
+    from .index_store import get_index_store
+
+    ist = get_index_store(store.roots)
+    h = ist.health()
+    h["model"] = ist.get_meta("model")
+    h["dim"] = ist.get_meta("dim")
+    h["legacy_files_present"] = ist.legacy_files_present()
+    h["dead_letters_detail"] = ist.dead_letters(limit=50)
+    return h
+
+
+def kb_index_scan() -> dict:
+    """对账：摘除产物已不在磁盘的幽灵块 + 重算篇级统计（零 embedding 成本）。"""
+    store = _need_store()
+    from .index_store import get_index_store
+
+    ist = get_index_store(store.roots)
+    idx, _ = _kb_index()
+    pruned = idx.prune_unreadable()
+    ist.refresh_papers_state()
+    h = ist.health()
+    return {"pruned": pruned, "live_passages": h["live_passages"],
+            "garbage_rows": h["garbage_rows"], "missing_segments": h["missing_segments"]}
+
+
+def kb_index_compact() -> dict:
+    """压实段文件（回收刷新/删除产生的垃圾行）。"""
+    idx, _ = _kb_index()
+    return idx.compact()
+
+
+def kb_index_retry(limit: int = 20) -> dict:
+    """重试到期的死信（重新索引该篇）。成功由 index_paper 自动结案。"""
+    store = _need_store()
+    from .index_store import get_index_store
+
+    ist = get_index_store(store.roots)
+    due = ist.due_dead_letters(limit=max(1, min(200, limit)))
+    if not due:
+        return {"retried": 0, "resolved": 0, "skipped": 0}
+    idx, _ = _kb_index()
+    retried = resolved = skipped = 0
+    for row in due:
+        doi, op = row.get("doi") or "", row.get("op") or ""
+        if op != "vector_index" or not doi:
+            ist.resolve_dead_letter(row["id"])
+            skipped += 1
+            continue
+        folder = _folder_for_doi(store.roots, doi)
+        if folder is None:
+            ist.resolve_dead_letter(row["id"])   # 目录已不在：无从重试，结案
+            skipped += 1
+            continue
+        retried += 1
+        try:
+            _index_paper_from_disk(idx, store, doi, folder, force=True)
+        except Exception:  # noqa: BLE001 - 失败保持未结案，等下次退避重试
+            continue
+        if idx.count_for(doi) > 0:
+            resolved += 1
+    return {"retried": retried, "resolved": resolved, "skipped": skipped}
 
 
 def rebuild_kb_vector_index(force: bool = False,
@@ -2078,52 +2207,17 @@ def rebuild_kb_vector_index(force: bool = False,
     if not compiled:
         return {"indexed": 0, "total": 0, "skipped": 0}
 
-    from .vector import KbVectorIndex
-    idx = KbVectorIndex(roots, api_key=api_key)
+    from .vector import get_kb_vector_index
+    idx = get_kb_vector_index(roots, api_key=api_key)
 
     indexed = 0
     skipped = 0
     total = len(compiled)
 
     for i, (doi, folder) in enumerate(compiled):
-        note_text = ""
-        note_path = folder / "_note.md"
-        title = ""
-        if note_path.exists():
-            note_text = note_path.read_text(encoding="utf-8", errors="replace")
-            # 从 _note.md 提取标题（# 行）
-            for line in note_text.splitlines():
-                if line.startswith("# "):
-                    title = line[2:].strip()
-                    break
-
-        wiki_text = ""
-        wiki_path = folder / "_wiki.md"
-        if wiki_path.exists():
-            wiki_text = wiki_path.read_text(encoding="utf-8", errors="replace")
-
-        # L3 概念关系（2026-09-21 审计：旧版重建漏传 → 换机/清 data 后 L3 向量永久缺失）
-        relations_text = ""
-        relations_path = folder / "_relations.md"
-        if relations_path.exists():
-            relations_text = relations_path.read_text(encoding="utf-8",
-                                                     errors="replace")
-
-        # 提取 concepts（从 concepts 表）
-        concepts = []
-        try:
-            concepts = store.concepts_for_doi(doi)
-        except Exception:
-            pass
-
-        idx.index_paper(
-            doi, note_text=note_text, wiki_text=wiki_text,
-            relations_text=relations_text,
-            concepts=concepts, title=title, force=force, folder=folder,
-        )
         # 计数按"该篇最终有无向量"算：内容未变时 index_paper 返回 0（不重复嵌），
         # 但该篇**已索引**，不该记成 skipped。
-        if idx.count_for(doi) > 0:
+        if _index_paper_from_disk(idx, store, doi, folder, force=force) > 0:
             indexed += 1
         else:
             skipped += 1

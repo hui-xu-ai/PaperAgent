@@ -710,9 +710,41 @@ def kbmeta_compile_backfill() -> dict:
 
 @router.post("/vector/rebuild")
 def kbmeta_vector_rebuild(force: bool = False) -> dict:
-    """重建 KB 向量索引（编译结果 _note.md + _wiki.md + concepts）。"""
+    """重建 KB 向量索引（编译结果 _note.md + _wiki.md + _relations.md + concepts）。"""
     from paperkb.api import rebuild_kb_vector_index
     return rebuild_kb_vector_index(force=force)
+
+
+# ---------------------------------------------------------------- 索引健康（扩容 P0）
+# 可观测性契约：10 万篇量级下"索引到底健康吗"必须能一键回答，而不是靠翻日志。
+
+@router.get("/index/status")
+def kbmeta_index_status() -> dict:
+    """索引健康快照：段数 / 活行 / 垃圾行 / 死信 / 模型指纹 / 体积（只读）。"""
+    from paperkb.api import kb_index_status
+    return kb_index_status()
+
+
+@router.post("/index/scan")
+def kbmeta_index_scan() -> dict:
+    """对账：摘除产物已删的幽灵块 + 重算篇级统计（零 embedding 成本）。"""
+    from paperkb.api import kb_index_scan
+    return kb_index_scan()
+
+
+@router.post("/index/compact")
+def kbmeta_index_compact() -> dict:
+    """压实段文件（回收刷新/删除产生的垃圾行）。"""
+    from paperkb.api import kb_index_compact
+    return kb_index_compact()
+
+
+@router.post("/index/retry")
+def kbmeta_index_retry(limit: int = 20) -> dict:
+    """重试到期的索引死信（embedding 失败/中断的篇目）。"""
+    from paperkb.api import kb_index_retry
+    return kb_index_retry(limit=limit)
+
 
 
 @router.post("/markdown/upload")

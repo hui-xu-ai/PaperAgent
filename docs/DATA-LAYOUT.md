@@ -13,7 +13,7 @@ PaperAgent/
 │  ├─ diary/diary.db         文献日记（当前实现写文件，库占位）
 │  ├─ biblio/biblio.db       文献元数据 + 文献库导入记录（论文/别名/引用/编译队列/FTS）
 │  ├─ reference/journals.db  JCR 分区 + 中科院分区（可重新导入 xlsx）
-│  ├─ vector/                预留：向量索引
+│  ├─ vector/                派生索引（可重建）：kb_index.db 元数据 + kb_vectors/ 段文件 + query_cache.db
 │  └─ _migrated/             一次性迁移的旧库归档（可删）
 ├─ knowledge_base/       ★ 知识资产（**必须备份**）：每篇一个目录（编译产物/卡片/_qa/_index）
 │  ├─ <RID>/                 en.md · document.json · source.pdf · images/ · _note/_details/_wiki · cards/
@@ -43,6 +43,8 @@ PaperAgent/
 **实现方式（重要）**：backend `Store` 以 `system/app.db` 为 main，并把 `chat`/`biblio`
 用 `ATTACH DATABASE` 挂上；SQLite 的未限定表名按 main→附加库顺序解析，因此既有的
 全部 SQL 无需改写就落到正确的库。建表语句按库限定（`chat.sessions` / `biblio.papers`…）。
+**`data/vector/kb_index.db` 不属于上表五库**：它是**派生索引**（可由 `knowledge_base/` 编译产物重建），不参与 `data/manifest.json` 的版本契约；格式版本自带在 `kb_index.db` 的 `meta.schema_version`，新于代码支持的版本会 fail-fast。表：`segments`（段文件注册）· `passages`（块元数据 + 段/row 指针）· `papers_state`（篇级统计）· `dead_letter`（失败重试）。向量本体：`data/vector/kb_vectors/seg-*.f32`（裸 float32 行主序，**只追加**；空间回收走 `POST /api/kb-meta/index/compact`）。
+
 **跨库外键不受支持**：`sessions.paper_id`、`tasks.paper_id` 只存整数、不建 FK（级联由应用层做）。
 
 ## 3. 备份与清理
@@ -50,7 +52,7 @@ PaperAgent/
 | 动作 | 覆盖范围 |
 |---|---|
 | 必须备份 | `data/`（五库）+ `knowledge_base/`（知识资产）+ `用户提供的文献/` + `attachments/` |
-| 可选备份 | `library/`（重解析可再生，但要花 API 钱） |
+| 可选备份 | `library/`（重解析可再生，但要花 API 钱）· `data/vector/`（向量索引可由 knowledge_base 编译产物重建，但要花 embedding 钱） |
 | 随时可清 | `work/`（含 upload/tmp_export/pytest-tmp/mineru 缓存）· `logs/` · `data/_migrated/` · `__pycache__` |
 | 不入版本库 | `data/` `library/` `knowledge_base/` `work/` `logs/` `input/` `*.db` `用户提供的文献/` `attachments/`（见 `.gitignore`） |
 

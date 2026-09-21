@@ -27,7 +27,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -35,6 +34,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 from .config import Roots
+from .index_store import get_index_store
 from .textseg import boundary_trim, embed_prefix, split_chunks, strip_frontmatter
 
 if TYPE_CHECKING:  # 仅类型标注；运行期在 _query_cache 里惰性导入（避免环）
@@ -148,17 +148,67 @@ class KbVectorIndex:
 
         self.index_dir = roots.vector_dir / "kb_vectors"
         self.index_dir.mkdir(parents=True, exist_ok=True)
+        # 数据层：SQLite 元数据 + 段式向量文件，**进程级单例**（旧路径每次检索/每篇编译
+        # 都新建实例并全量读盘 → 10 万篇不可接受）
+        self._store = get_index_store(roots)
 
         self._key_to_idx: dict[str, int] = {}
         self._idx_to_key: list[str] = []
         self._key_meta: dict[str, dict] = {}
         self._index = None
-        self._vectors: np.ndarray | None = None
+        self._faiss_dirty = False       # 行号重排/就地刷新后置脏，检索前整表重建
+        # 向量用**可增长缓冲**（容量倍增），不是每次 vstack —— 后者每追加一批都复制整个
+        # 数组 ⇒ 全量重建 O(N²)（10 万篇 ≈104 万块，实测不可接受）。`_vectors` 是等长视图。
+        self._vec_buf: np.ndarray | None = None
+        self._vec_len = 0
 
-        self._load_meta()
-        self._load_vectors()
+        self._load_index()
+        if self.size == 0 and self._store.legacy_files_present():
+            logger.warning("检测到旧格式向量索引（kb_index_meta.json/kb_vectors.npy），"
+                           "本代码不再读取；需重建（rebuild_kb_vector_index）或先跑 "
+                           "paperkb.index_store.import_legacy 导入")
         self._validate()
         self._rebuild_faiss()
+
+    @property
+    def _vectors(self) -> np.ndarray | None:
+        """索引向量的等长视图（行序与 `_idx_to_key` 一致；无向量时为 None）。
+
+        是视图不是副本：`_vec_buf` 容量通常大于 `_vec_len`，这里只切出有效行。
+        写入请走 `_append_vectors` / `_remove_keys`，不要往视图里塞行。
+        """
+        if self._vec_buf is None or self._vec_len == 0:
+            return None
+        return self._vec_buf[:self._vec_len]
+
+    @_vectors.setter
+    def _vectors(self, arr: np.ndarray | None) -> None:
+        """整体替换向量（加载/清空用）。"""
+        if arr is None:
+            self._vec_buf = None
+            self._vec_len = 0
+            return
+        if arr.dtype == np.float32 and arr.flags["C_CONTIGUOUS"]:
+            self._vec_buf = arr          # 已经是连续 float32：直接用，避免加载时再复制一遍
+        else:
+            self._vec_buf = np.ascontiguousarray(arr, dtype=np.float32)
+        self._vec_len = len(self._vec_buf)
+
+    def _append_vectors(self, vecs: list[np.ndarray]) -> None:
+        """把若干行追加到缓冲末尾（容量不足则倍增扩容），摊还 O(1)/行。"""
+        if not vecs:
+            return
+        add = np.vstack(vecs)
+        need = self._vec_len + len(add)
+        if self._vec_buf is None:
+            self._vec_buf = np.zeros((max(need, 64), self.dim), dtype=np.float32)
+        elif need > len(self._vec_buf):
+            cap = max(len(self._vec_buf) * 2, need)
+            grown = np.zeros((cap, self.dim), dtype=np.float32)
+            grown[:self._vec_len] = self._vec_buf[:self._vec_len]
+            self._vec_buf = grown
+        self._vec_buf[self._vec_len:need] = add
+        self._vec_len = need
 
     @property
     def size(self) -> int:
@@ -228,6 +278,7 @@ class KbVectorIndex:
             return 0
 
         pending: list[tuple[str, str]] = []      # [(key, embed_text)]
+        meta_only: list[str] = []                # 内容未变、仅刷新偏移/小节的键
         refreshed = 0
         for item in want:
             key = item["key"]
@@ -238,35 +289,58 @@ class KbVectorIndex:
             if old is not None and key in self._key_to_idx and not force \
                     and old.get("hash") == h:
                 self._key_meta[key] = item["meta"]   # 内容未变：只刷新偏移/小节
+                meta_only.append(key)
                 continue
             if old is not None and key in self._key_to_idx:
                 refreshed += 1
             pending.append((key, item["embed_text"]))
             self._key_meta[key] = item["meta"]
 
+        applied_keys: list[str] = []
+        applied_vecs = np.zeros((0, self.dim), dtype=np.float32)
+        added = 0
         if pending:
             from paperlit.vector import encode_texts
             embeddings = encode_texts([t for _, t in pending], model=self.model,
                                       api_key=self.api_key)
+            ok: list[tuple[str, list[float]]] = []
             for (key, _), emb in zip(pending, embeddings):
                 if emb and len(emb) == self.dim:
-                    self._upsert(key, emb)
+                    ok.append((key, emb))
                 else:
-                    self._key_meta.pop(key, None)   # 编码失败：不留幽灵元数据
+                    # 编码失败：不留幽灵元数据 + 登记死信（否则该篇语义检索永久缺失、
+                    # 且因为没人重试而永远不恢复）
+                    self._key_meta.pop(key, None)
+                    self._store.add_dead_letter(doi, "vector_index",
+                                                f"embedding 编码失败/维度不符: {key}")
+            applied_keys, applied_vecs, added = self._apply_embeddings(ok)
 
         # 清理同 ptype 的旧键（分块数减少 / 该产物已删除）
-        removed = 0
+        # 走 SQLite 按 (doi,ptype) 取键，而不是扫描内存 `_key_meta`：后者 O(N)/篇 ⇒ 全量重建 O(N²)
+        stale_keys: list[str] = []
         for ptype in provided:
             desired = {it["key"] for it in want if it["meta"]["ptype"] == ptype}
-            stale = [k for k, m in self._key_meta.items()
-                     if m.get("doi") == doi and m.get("ptype") == ptype
-                     and k not in desired]
-            removed += self._remove_keys(stale)
+            stale_keys += [k for k in self._store.keys_for(doi, ptype)
+                           if k not in desired]
+        removed = self._remove_keys(stale_keys)
 
-        added = len(pending) - refreshed
+        # 持久化（**行级**，不重写全量）：段文件追加 + SQLite 行 upsert
+        if applied_keys:
+            self._store.append([dict(self._key_meta[k], key=k) for k in applied_keys],
+                               applied_vecs)
+        if meta_only:
+            self._store.save_passage_meta([dict(self._key_meta[k], key=k)
+                                           for k in meta_only if k in self._key_meta])
+        if stale_keys:
+            self._store.delete(stale_keys)
+        if applied_keys or stale_keys:
+            self._store.refresh_papers_state([doi])
+        if applied_keys:
+            self._store.resolve_for(doi, "vector_index")
+            self._persist_model()
+
+        # added 即 _apply_embeddings 返回的新增键数（≈ len(pending) - refreshed）
         if pending or removed or want:
-            self._save_meta()
-            self._save_vectors()
             logger.info("向量索引更新: doi=%s 新增=%d 刷新=%d 清理=%d 总=%d",
                         doi, added, refreshed, removed, self.size)
         return max(0, added)
@@ -502,8 +576,8 @@ class KbVectorIndex:
         if not drop:
             return 0
         removed = self._remove_keys(drop)
-        self._save_meta()
-        self._save_vectors()
+        self._store.delete(drop)
+        self._store.refresh_papers_state()
         logger.info("向量索引清理不可读块: %d（剩余 %d）", removed, self.size)
         return removed
 
@@ -533,26 +607,52 @@ class KbVectorIndex:
                 "section": "", "file": "", "start": -1, "end": -1}
 
     # ---------------------------------------------------------------- 索引底层
-    def _upsert(self, key: str, embedding: list[float]) -> bool:
-        """写入/就地刷新一条向量（`self._vectors` 是唯一真值）。"""
-        vec = np.array([embedding], dtype=np.float32)
-        norm = float(np.linalg.norm(vec))
-        if norm > 0:
-            vec = vec / norm
-        idx = self._key_to_idx.get(key)
-        if idx is not None and self._vectors is not None and idx < len(self._vectors):
-            self._vectors[idx] = vec[0]
-            self._rebuild_faiss()
-            return False
-        if idx is None:
-            self._key_to_idx[key] = len(self._idx_to_key)
-            self._idx_to_key.append(key)
-        self._vectors = vec if self._vectors is None else np.vstack([self._vectors, vec])
-        self._rebuild_faiss()
-        return True
+    def _apply_embeddings(self, items: list[tuple[str, list[float]]]
+                          ) -> tuple[list[str], np.ndarray, int]:
+        """批量写入向量，返回 `(全部写入键, 归一化向量, 其中新增键数)`。
+
+        已存在的键**就地刷新**（内存行号稳定，避免整表重排）；新键追加到缓冲末尾；
+        faiss 只在本批结束后重建**一次**。旧实现逐行 `np.vstack` + 逐行 `_rebuild_faiss()`
+        ⇒ 每次追加都复制整个数组、重建整个索引 ⇒ 全量重建 O(N²)。
+
+        返回**全部**键（含刷新键）：刷新也必须落盘（追加新行 + 重指向），否则磁盘上
+        仍是被替换掉的旧向量（实测：只就地改内存会让重载后拿到陈旧向量）。
+        """
+        if not items:
+            return [], np.zeros((0, self.dim), dtype=np.float32), 0
+        all_keys: list[str] = []
+        all_vecs: list[np.ndarray] = []
+        tail: list[np.ndarray] = []
+        new_count = 0
+        inplace = False
+        for key, embedding in items:
+            vec = np.asarray([embedding], dtype=np.float32)
+            norm = float(np.linalg.norm(vec))
+            if norm > 0:
+                vec = vec / norm
+            idx = self._key_to_idx.get(key)
+            if idx is not None and self._vec_len > idx:
+                self._vec_buf[idx] = vec[0]
+                inplace = True
+            else:
+                if idx is None:
+                    self._key_to_idx[key] = len(self._idx_to_key)
+                    self._idx_to_key.append(key)
+                new_count += 1
+                tail.append(vec[0])
+            all_keys.append(key)
+            all_vecs.append(vec[0])
+        self._append_vectors(tail)
+        if HAS_FAISS and inplace:
+            self._faiss_dirty = True          # faiss 无法就地改行 → 检索前整表重建
+        elif tail:
+            self._faiss_add(np.vstack(tail))
+        arr = np.ascontiguousarray(np.vstack(all_vecs)) if all_vecs \
+            else np.zeros((0, self.dim), dtype=np.float32)
+        return all_keys, arr, new_count
 
     def _remove_keys(self, keys: list[str]) -> int:
-        """按 key 删除向量（numpy 真值重排 + faiss 重建）。"""
+        """按 key 删除向量（缓冲重排 + faiss 重建）。"""
         drop = {k for k in keys if k in self._key_to_idx}
         if not drop:
             return 0
@@ -560,19 +660,37 @@ class KbVectorIndex:
         self._idx_to_key = [self._idx_to_key[i] for i in keep]
         self._key_to_idx = {k: i for i, k in enumerate(self._idx_to_key)}
         self._key_meta = {k: v for k, v in self._key_meta.items() if k not in drop}
-        if self._vectors is not None:
-            self._vectors = self._vectors[keep] if keep else None
-        self._rebuild_faiss()
+        if self._vec_buf is not None and self._vec_len:
+            self._vectors = self._vec_buf[:self._vec_len][keep] if keep else None
+        self._faiss_dirty = True          # 行号已重排 → faiss 需在检索前整表重建
         return len(drop)
 
     def _rebuild_faiss(self) -> None:
+        """整表重建 faiss 索引（O(N)）：删除/就地刷新后走 `_faiss_dirty` 延迟到检索前。"""
         if not HAS_FAISS:
             return
+        self._faiss_dirty = False
         if self._vectors is None or len(self._vectors) == 0:
             self._index = None
             return
         self._index = faiss.IndexFlatIP(self.dim)
-        self._index.add(self._vectors.astype(np.float32))
+        self._index.add(np.ascontiguousarray(self._vectors, dtype=np.float32))
+
+    def _faiss_add(self, vecs: np.ndarray) -> None:
+        """**增量**追加到 faiss（O(新增行数)）。
+
+        每篇都整表重建是 O(N²)：10 万篇 ≈104 万块，每次编译重加 100 万行不可接受。
+        有脏行（删除/就地刷新）时退化为整表重建——那种情况本就少见。
+        """
+        if not HAS_FAISS or vecs is None or len(vecs) == 0:
+            return
+        if self._faiss_dirty or self._index is None:
+            self._rebuild_faiss()
+            return
+        if self._index.ntotal + len(vecs) > self.size:
+            self._rebuild_faiss()          # 行数对不上：宁可整表重建，不可错位
+            return
+        self._index.add(np.ascontiguousarray(vecs, dtype=np.float32))
 
     def _search_by_vector(self, query_vec: list[float], top_k: int
                           ) -> list[tuple[str, float]]:
@@ -582,11 +700,14 @@ class KbVectorIndex:
         q = np.array([query_vec], dtype=np.float32)
 
         if HAS_FAISS and self._index is not None:
-            faiss.normalize_L2(q)
-            scores, indices = self._index.search(q, min(top_k, self.size))
-            return [(self._idx_to_key[idx], float(score))
-                    for score, idx in zip(scores[0], indices[0])
-                    if 0 <= idx < len(self._idx_to_key)]
+            if self._faiss_dirty or self._index.ntotal != self.size:
+                self._rebuild_faiss()      # 脏/错位：先对齐再查（宁可慢，不可错）
+            if self._index is not None:
+                faiss.normalize_L2(q)
+                scores, indices = self._index.search(q, min(top_k, self.size))
+                return [(self._idx_to_key[idx], float(score))
+                        for score, idx in zip(scores[0], indices[0])
+                        if 0 <= idx < len(self._idx_to_key)]
 
         if self._vectors is None or len(self._vectors) == 0:
             return []
@@ -598,51 +719,42 @@ class KbVectorIndex:
         return [(self._idx_to_key[i], float(sims[i])) for i in top_indices]
 
     # ---------------------------------------------------------------- 持久化
-    def _save_meta(self) -> None:
-        meta_path = self.index_dir / "kb_index_meta.json"
-        meta = {
-            "version": 2,
-            "dim": self.dim,
-            "model": self.model,
-            "size": self.size,
-            "chunk_chars": CHUNK_CHARS,
-            "key_to_idx": self._key_to_idx,
-            "idx_to_key": self._idx_to_key,
-            "key_meta": self._key_meta,
-        }
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False),
-                             encoding="utf-8")
+    def _load_index(self) -> None:
+        """从数据层加载索引（元数据 SQLite + 向量段文件），行序严格对齐。
 
-    def _load_meta(self) -> None:
-        meta_path = self.index_dir / "kb_index_meta.json"
-        if not meta_path.exists():
-            return
+        `_store.load()` 只返回段内仍被 `passages` 指向的行，因此被刷新/删除的旧行
+        不会进入结果（旧格式 `kb_index_meta.json` / `kb_vectors.npy` 不再读取——
+        数据层已由 `index_store` 接管；存量需重建或用 `index_store.import_legacy` 导入）。
+        """
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self._key_to_idx = meta.get("key_to_idx", {})
-            self._idx_to_key = meta.get("idx_to_key", [])
-            self._key_meta = meta.get("key_meta", {}) or {}
-            if not self._key_meta:      # v1 元数据：无 key_meta → 按旧键解析
-                for k in self._idx_to_key:
-                    self._key_meta[k] = self._meta_of(k)
-        except Exception as e:
-            logger.warning("Failed to load KB vector index meta: %s", e)
-
-    def _load_vectors(self) -> None:
-        vec_path = self.index_dir / "kb_vectors.npy"
-        if not vec_path.exists():
+            keys, meta, vectors = self._store.load()
+        except Exception as e:  # noqa: BLE001 - 索引损坏不应让编译失败
+            logger.warning("加载 KB 向量索引失败: %s", e)
             return
-        try:
-            self._vectors = np.load(vec_path)
-            self._rebuild_faiss()
-            logger.info("KB vector index loaded: %d vectors", len(self._vectors))
-        except Exception as e:
-            logger.warning("Failed to load KB vectors: %s", e)
+        if not keys:
+            return
+        self._idx_to_key = list(keys)
+        self._key_to_idx = {k: i for i, k in enumerate(keys)}
+        self._key_meta = {k: dict(v) for k, v in meta.items()}
+        self._vectors = vectors
+        logger.info("KB vector index loaded: %d vectors (%s)", self.size,
+                    self._store.health().get("segments"))
 
-    def _save_vectors(self) -> None:
-        vec_path = self.index_dir / "kb_vectors.npy"
-        if self._vectors is not None:
-            np.save(vec_path, self._vectors)
+    def _persist_model(self) -> None:
+        """记录模型指纹（不同向量空间禁止混用；健康接口展示）。"""
+        try:
+            self._store.set_meta("model", self.model)
+            self._store.set_meta("dim", str(self.dim))
+            self._store.set_meta("chunk_chars", str(CHUNK_CHARS))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("写入索引 meta 失败: %s", e)
+
+    def compact(self) -> dict:
+        """压实段文件（回收刷新/删除产生的垃圾行）；需先重启/重载索引再使用。"""
+        return self._store.compact()
+
+    def health(self) -> dict:
+        return self._store.health()
 
     # --- Protocol 兼容 ---
     def add_document(self, doi: str, text: str) -> None:
@@ -660,6 +772,40 @@ def build_vector_index(roots: Roots, impl: str = "noop",
     if impl == "kb":
         return KbVectorIndex(roots, api_key=api_key)
     raise ValueError(f"未知向量实现: {impl!r}（支持 noop / kb）")
+
+
+# ---------------------------------------------------------------- 进程级单例
+# 旧路径每次检索（api.kb_vector_search）与每次编译（compile）都新建 `KbVectorIndex` 并
+# **全量读盘**：10 万篇 ≈104 万块 ≈4.3GB，单次问答读一遍盘不可接受。单例后只加载一次，
+# 写路径（index_paper / drop）都作用在同一实例上，内存与磁盘始终一致。
+_INDEX_CACHE: dict[tuple, "KbVectorIndex"] = {}
+
+
+def _default_api_key() -> str:
+    import os
+
+    return os.environ.get("SILICONFLOW_API_KEY", "").strip()
+
+
+def get_kb_vector_index(roots: Roots, api_key: str = "",
+                        model: str = "BAAI/bge-m3") -> KbVectorIndex:
+    """按 (vector 根路径, api_key, model) 取进程级单例。"""
+    key = (str(Path(roots.vector_dir).resolve()), api_key or _default_api_key(), model)
+    idx = _INDEX_CACHE.get(key)
+    if idx is None:
+        idx = KbVectorIndex(roots, api_key=key[1], model=model)
+        _INDEX_CACHE[key] = idx
+    return idx
+
+
+def reset_kb_vector_index(roots: Roots | None = None) -> None:
+    """丢弃单例（测试/换根路径用）。"""
+    if roots is None:
+        _INDEX_CACHE.clear()
+        return
+    prefix = str(Path(roots.vector_dir).resolve())
+    for k in [k for k in _INDEX_CACHE if k[0] == prefix]:
+        _INDEX_CACHE.pop(k, None)
 
 
 def _key_aliases(key: str) -> set[str]:
@@ -696,15 +842,15 @@ def drop_papers_from_index(roots: Roots, keys: list[str]) -> int:
             aliases |= _key_aliases(k)
     if not aliases:
         return 0
-    idx = KbVectorIndex(roots)
+    idx = get_kb_vector_index(roots)
     drop = [k for k, m in idx._key_meta.items()
             if (m.get("doi") in aliases)
             or (doi_to_dirname(m.get("doi") or "") in aliases)]
     if not drop:
         return 0
     removed = idx._remove_keys(drop)
-    idx._save_meta()
-    idx._save_vectors()
+    idx._store.delete(drop)
+    idx._store.refresh_papers_state()
     logger.info("向量索引摘除: keys=%s 删除块=%d 剩余=%d", sorted(aliases)[:3],
                 removed, idx.size)
     return removed

@@ -379,8 +379,8 @@ class Compiler:
         except Exception:  # noqa: BLE001
             return []
 
-        from .vector import KbVectorIndex
-        idx = KbVectorIndex(self.roots, api_key=api_key)
+        from .vector import get_kb_vector_index
+        idx = get_kb_vector_index(self.roots, api_key=api_key)
 
         seen_dois: set[str] = set()
         results: list[dict] = []
@@ -476,8 +476,8 @@ class Compiler:
                 if api_key:
                     from .api import _settings
                     if getattr(_settings, "vector_impl", "noop") == "kb":
-                        from .vector import KbVectorIndex
-                        idx = KbVectorIndex(self.roots, api_key=api_key)
+                        from .vector import get_kb_vector_index
+                        idx = get_kb_vector_index(self.roots, api_key=api_key)
                         vec_results = idx.search_by_concepts(
                             concept_names, top_k=top_k * 2,
                             store=self.store, exclude_doi=doi)
@@ -740,8 +740,8 @@ class Compiler:
             return
 
         try:
-            from .vector import KbVectorIndex
-            idx = KbVectorIndex(self.roots, api_key=api_key)
+            from .vector import get_kb_vector_index
+            idx = get_kb_vector_index(self.roots, api_key=api_key)
 
             note_text = ""
             note_path = self._note_path(doi)
