@@ -762,7 +762,8 @@ class Compiler:
 
             added = idx.index_paper(doi, note_text=note_text, wiki_text=wiki_text,
                                     relations_text=relations_text,
-                                    concepts=concepts, title=title)
+                                    concepts=concepts, title=title,
+                                    folder=self._kb_folder(doi))
             if added:
                 logger.info("向量索引已更新: doi=%s added=%d", doi, added)
         except Exception as e:  # noqa: BLE001

@@ -15,6 +15,7 @@ from pathlib import Path
 from .config import Roots
 from .doi import is_doi, make_rid
 from .models import PaperMeta
+from .textseg import boundary_trim, strip_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -733,20 +734,29 @@ class KBStore:
         ⚠️ P0-B step3：只删**编译产物**行（filename 不以 `attachments/` 开头）——
         用户的附件索引（SI/审稿意见）与编译产物共用 doi 键，整删会把用户资料从
         检索里洗掉。见 `index_attachment`/`index_attachments`。
+
+        2026-09-21：`.md` 产物的 **YAML frontmatter 不入索引**——`type/doi/tags` 是模板
+        噪声，既占命中窗口（CJK LIKE 兜底曾把 `--- type: paper-note ---` 当检索证据返回），
+        又让 bm25 把"标签词"当正文命中。正文仍原样保留。
         """
         with self._conn() as conn:
             conn.execute(
                 "DELETE FROM notes_fts WHERE doi=? AND filename NOT LIKE 'attachments/%'",
                 (doi,))
             for f in files:
-                if not (f.get("content") or "").strip():
+                content = f.get("content") or ""
+                if not content.strip():
                     continue
+                name = f.get("filename", "")
+                if name.endswith(".md"):
+                    content = strip_frontmatter(content)
                 conn.execute(
                     "INSERT INTO notes_fts(doi, filename, content) VALUES(?,?,?)",
-                    (doi, f.get("filename", ""), f.get("content", "")))
+                    (doi, name, content))
 
     def append_note(self, doi: str, filename: str, content: str) -> None:
         """追加单条入 notes_fts（不删已有行）。供 _qa 写回（多条 _qa 共存，不互相覆盖）。"""
+        content = strip_frontmatter(content or "") if (filename or "").endswith(".md") else content
         if not (content or "").strip():
             return
         with self._conn() as conn:
@@ -1041,7 +1051,7 @@ class KBStore:
 
     def _search_notes_like(self, query: str, limit: int,
                            mode: str = "AND",
-                           doi: str | None = None) -> list[sqlite3.Row]:
+                           doi: str | None = None) -> list[dict]:
         """CJK 子串 LIKE 兜底：按空白分词，全 AND（严格）或 OR（宽松）匹配。
 
         2026-09-12 用户反馈修复：**无空格的中文问句**（实际就是用户的日常问法，如
@@ -1050,6 +1060,10 @@ class KBStore:
         于是"单篇编译笔记召回"对中文问句**永远为空**。
         现在：对 CJK 片段额外展开 **2 字窗口（bigram）** 作为 OR 备选，只要笔记里出现
         「创新」「文献」这类二字词就能召回；噪声由 ORDER BY length + limit 兜住。
+
+        2026-09-21 修复：兜底 snippet 此前是 `substr(content,1,500)`（**文件开头**），
+        而这批中文问句的答案多在正文中段 ⇒ 注入给模型的"证据"是 frontmatter 模板。
+        现在改为 `instr` 定位命中词、取命中位置 ±300 字的窗口。
         """
         chunks = [c for c in query.replace('"', " ").split() if c]
         if not chunks:
@@ -1062,26 +1076,58 @@ class KBStore:
             params = [*params, doi]
         with self._conn() as conn:
             rows = conn.execute(
-                f"""SELECT doi, filename, substr(content, 1, 500) AS snip
-                    FROM notes_fts WHERE {where}
+                f"""SELECT doi, filename FROM notes_fts WHERE {where}
                     ORDER BY length(content) LIMIT ?""",
                 (*params, limit)).fetchall()
-            if rows or not _has_cjk(query):
-                return rows
-            # CJK bigram OR 兜底（仅在整串匹配失败时才跑，避免无谓扫描）
-            grams = _cjk_grams(query)
-            if not grams:
-                return []
-            where2 = " OR ".join("content LIKE ?" for _ in grams)
-            params2 = [f"%{g}%" for g in grams]
-            if doi:
-                where2 += " AND doi = ?"
-                params2 = [*params2, doi]
-            return conn.execute(
-                f"""SELECT doi, filename, substr(content, 1, 500) AS snip
-                    FROM notes_fts WHERE {where2}
-                    ORDER BY length(content) LIMIT ?""",
-                (*params2, limit)).fetchall()
+            anchors = chunks
+            if not rows and _has_cjk(query):
+                # CJK bigram OR 兜底（仅在整串匹配失败时才跑，避免无谓扫描）
+                anchors = _cjk_grams(query)
+                if not anchors:
+                    return []
+                where2 = " OR ".join("content LIKE ?" for _ in anchors)
+                params2 = [f"%{g}%" for g in anchors]
+                if doi:
+                    where2 += " AND doi = ?"
+                    params2 = [*params2, doi]
+                rows = conn.execute(
+                    f"""SELECT doi, filename FROM notes_fts WHERE {where2}
+                        ORDER BY length(content) LIMIT ?""",
+                    (*params2, limit)).fetchall()
+            return [{"doi": r["doi"], "filename": r["filename"],
+                     "snip": self._match_window(conn, "notes_fts", r["doi"],
+                                                r["filename"], anchors)}
+                    for r in rows]
+
+    @staticmethod
+    def _match_window(conn, table: str, doi: str, filename: str | None,
+                      anchors: list[str], radius: int = 300,
+                      limit: int = 700) -> str:
+        """命中位置附近的文本窗口（替代 `substr(content,1,N)` 的"文件开头"口径）。
+
+        用 SQL `instr` 定位（逐个 anchor 试，取第一个命中），只回传 ≤limit 字符；
+        再按行/句边界收尾（`boundary_trim`），避免半截行。
+        """
+        cond = "doi=?"
+        extra: tuple = ()
+        if filename is not None:
+            cond += " AND filename=?"
+            extra = (filename,)
+        for a in anchors[:3]:
+            if not a:
+                continue
+            row = conn.execute(
+                f"""SELECT substr(content, max(1, instr(content, ?) - ?), ?) AS win,
+                           instr(content, ?) AS pos
+                    FROM {table} WHERE {cond}""",
+                (a, radius, radius + limit, a, doi, *extra)).fetchone()
+            if row and row["pos"] and row["win"]:
+                win = (row["win"] or "").strip()
+                nl = win.find("\n")
+                if 0 <= nl <= 200:      # 去掉开头半截行
+                    win = win[nl + 1:].lstrip()
+                return boundary_trim(win, limit)
+        return ""
 
     def notes_files(self, doi: str) -> list[str]:
         """该篇已编译产物文件名（notes_fts 中 DISTINCT filename），无则空。"""
@@ -1100,16 +1146,20 @@ class KBStore:
                 """SELECT doi, snippet(fulltext_fts, 1, '[', ']', '…', 12) AS snip
                    FROM fulltext_fts WHERE fulltext_fts MATCH ?
                    ORDER BY bm25(fulltext_fts) LIMIT ?""", (q, limit)).fetchall()
-        if not rows and _has_cjk(query):
-            chunks = [c for c in query.replace('"', " ").split() if c]
-            if chunks:
-                where = " AND ".join("content LIKE ?" for _ in chunks)
-                params = [f"%{c}%" for c in chunks]
-                rows = conn.execute(
-                    f"""SELECT doi, substr(content, 1, 500) AS snip
-                        FROM fulltext_fts WHERE {where}
-                        ORDER BY length(content) LIMIT ?""",
-                    (*params, limit)).fetchall()
+            if not rows and _has_cjk(query):
+                chunks = [c for c in query.replace('"', " ").split() if c]
+                if chunks:
+                    where = " AND ".join("content LIKE ?" for _ in chunks)
+                    params = [f"%{c}%" for c in chunks]
+                    rows = conn.execute(
+                        f"""SELECT doi FROM fulltext_fts WHERE {where}
+                            ORDER BY length(content) LIMIT ?""",
+                        (*params, limit)).fetchall()
+                    # 兜底 snippet 取"命中位置窗口"而非文件开头（同 notes_fts 口径）
+                    return [{"doi": r["doi"],
+                             "snippet": self._match_window(conn, "fulltext_fts",
+                                                           r["doi"], None, chunks)}
+                            for r in rows]
         return [{"doi": r["doi"], "snippet": r["snip"]} for r in rows]
 
     def notes_content(self, doi: str, filename: str) -> str:

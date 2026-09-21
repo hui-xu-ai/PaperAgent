@@ -1952,8 +1952,9 @@ def status() -> dict:
 # ---------------------------------------------------------------- 向量检索
 
 def kb_vector_search(query: str, top_k: int = 20,
-                     exclude_doi: str = "") -> list[dict]:
-    """知识库编译结果向量相似度搜索。
+                     exclude_doi: str = "",
+                     with_snippet: bool = True) -> list[dict]:
+    """知识库编译结果向量相似度搜索（块级）。
 
     需 vector_impl=kb + SILICONFLOW_API_KEY；不满足时返回空列表。
 
@@ -1961,6 +1962,8 @@ def kb_vector_search(query: str, top_k: int = 20,
         query: 查询文本
         top_k: 返回数量
         exclude_doi: 排除的 DOI（L3 概念层搜索时排除自身）
+        with_snippet: 附带"命中块原文"（从产物文件按偏移切回）——检索注入用，
+            保证"命中段 = 注入段"；L3 候选发现不需要，可传 False 省 I/O。
     """
     if _settings.vector_impl != "kb":
         return []
@@ -1971,7 +1974,8 @@ def kb_vector_search(query: str, top_k: int = 20,
     from .vector import KbVectorIndex
     store = _need_store()
     idx = KbVectorIndex(store.roots, api_key=api_key)
-    return idx.search(query, top_k=top_k, exclude_doi=exclude_doi)
+    return idx.search(query, top_k=top_k, exclude_doi=exclude_doi,
+                      with_snippet=with_snippet, store=store)
 
 
 def kb_vector_search_by_concepts(concept_names: list[str],
@@ -2006,7 +2010,7 @@ def rebuild_kb_vector_index(force: bool = False,
         progress_cb: 进度回调 (indexed: int, total: int, doi: str)
 
     Returns:
-        {"indexed": N, "total": M, "skipped": K}
+        {"indexed": 有向量的篇数, "total": 扫描篇数, "skipped": 无向量篇数}
     """
     import os
     api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
@@ -2062,6 +2066,13 @@ def rebuild_kb_vector_index(force: bool = False,
         if wiki_path.exists():
             wiki_text = wiki_path.read_text(encoding="utf-8", errors="replace")
 
+        # L3 概念关系（2026-09-21 审计：旧版重建漏传 → 换机/清 data 后 L3 向量永久缺失）
+        relations_text = ""
+        relations_path = folder / "_relations.md"
+        if relations_path.exists():
+            relations_text = relations_path.read_text(encoding="utf-8",
+                                                     errors="replace")
+
         # 提取 concepts（从 concepts 表）
         concepts = []
         try:
@@ -2069,12 +2080,15 @@ def rebuild_kb_vector_index(force: bool = False,
         except Exception:
             pass
 
-        added = idx.index_paper(
+        idx.index_paper(
             doi, note_text=note_text, wiki_text=wiki_text,
-            concepts=concepts, title=title, force=force,
+            relations_text=relations_text,
+            concepts=concepts, title=title, force=force, folder=folder,
         )
-        if added > 0:
-            indexed += added
+        # 计数按"该篇最终有无向量"算：内容未变时 index_paper 返回 0（不重复嵌），
+        # 但该篇**已索引**，不该记成 skipped。
+        if idx.count_for(doi) > 0:
+            indexed += 1
         else:
             skipped += 1
 
