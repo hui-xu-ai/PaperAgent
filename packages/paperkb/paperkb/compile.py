@@ -992,26 +992,48 @@ class Compiler:
             logger.warning("AI 评分保存/L2 升级失败（不阻断编译）: doi=%s err=%s", doi, e)
 
     def _maybe_auto_l3(self, doi: str) -> None:
-        """L2 编译完成后：重算价值分，≥ L3_THRESHOLD 且 ai_value 可用 → 自动入队 L3。"""
+        """L2 编译完成后：重算价值分，≥ L3_THRESHOLD 且 ai_value 可用 → 自动入队 L3。
+
+        两条硬约束（2026-09-21 实测 adma 修复）：
+
+        1. **done 判据必须带产物存在性**（与 `queue()` 同一口径）。只信 `compile_jobs`
+           状态会被"产物被清理后重解析"留下的**陈旧 done 行**永久挡掉：实测 adma 重测时
+           L3 行停在 43 分钟前、`_relations.md` 已被清 ⇒ 静默跳过、产物永不重建，
+           界面却继续显示"已完成 L3"。
+        2. **四条跳过路径都必须留日志**。此前全是静默 early-return，"L3 为什么没自动编"
+           只能靠复现猜（这正是排查耗时的根因）。
+        """
         try:
             self.store.fill_journal_meta(doi)
             from .api import value_score_for
             from .score import L3_THRESHOLD
             new_score = value_score_for(doi)
             if not new_score:
+                logger.info("L3 自动升级跳过: 无价值分（缺 papers_meta 行）: doi=%s", doi)
                 return
             parts = new_score.get("parts", {})
             ai_value_info = parts.get("ai_value", {})
             ai_value = ai_value_info.get("value") if ai_value_info else None
             ai_available = ai_value_info.get("available", False) if ai_value_info else False
             if not ai_available or ai_value is None or ai_value <= 0:
+                logger.info("L3 自动升级跳过: AI 评分不可用（ai_value=%s available=%s）: doi=%s",
+                            ai_value, ai_available, doi)
                 return
-            if new_score.get("score", 0) >= L3_THRESHOLD:
-                l3_job = self.store.get_job(doi, "L3")
-                if l3_job is None or l3_job.get("status") != "done":
-                    self.queue(doi, "L3", value_score=new_score["score"])
-                    logger.info("L2 完成触发 L3 自动升级: %s score=%.2f ai_value=%.2f",
-                                doi, new_score["score"], ai_value)
+            score = float(new_score.get("score", 0) or 0)
+            if score < L3_THRESHOLD:
+                logger.info("L3 自动升级跳过: 价值分 %.2f < 阈值 %.2f（ai_value=%.2f）: doi=%s",
+                            score, L3_THRESHOLD, ai_value, doi)
+                return
+            l3_job = self.store.get_job(doi, "L3")
+            stale_done = bool(l3_job and l3_job.get("status") == "done")
+            if stale_done and self._artifact_exists(doi, "L3"):
+                logger.info("L3 自动升级跳过: 已编译且产物在盘: doi=%s", doi)
+                return
+            r = self.queue(doi, "L3", value_score=score)
+            logger.info(
+                "L2 完成触发 L3 自动升级: %s score=%.2f ai_value=%.2f -> %s%s",
+                doi, score, ai_value, r.get("status"),
+                "（陈旧 done 行且产物缺失，改判需重建）" if stale_done else "")
         except Exception as e:  # noqa: BLE001
             logger.warning("L3 自动升级失败（不阻断编译）: doi=%s err=%s", doi, e)
 
