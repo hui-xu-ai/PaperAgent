@@ -156,3 +156,45 @@ class TestAttachmentOffset:
                           store=api._need_store(), index=False)  # noqa: SLF001
         out = api.kb_attachment_read("nd-demo3", "si/c.md", max_chars=200)
         assert out["ok"] and len(out["text"]) == 200
+
+
+class TestPerPaperRecallIsolation:
+    """带 doi 过滤的召回绝不返回其他文献（2026-09-21）。
+
+    旧实现把条件拼成 `A OR B AND doi = ?`——SQL 里 AND 优先级更高 ⇒ 等价
+    `A OR (B AND doi = ?)`，doi 只约束紧邻的那一个 LIKE，其余锚点的命中**跨文献泄漏**
+    （实测单篇召回返回别篇 `_note.md`）。既有缺陷，06e63da 时代已存在。
+    """
+
+    def _two_papers(self, env):
+        _mk_paper(env, "10.1000/a.1", "A 篇",
+                  "# A\n\n电渗驱动机制：缩短离子迁移路径以提升收缩应变。")
+        _mk_paper(env, "10.1000/b.1", "B 篇",
+                  "# B\n\n磁驱动机制：磁场调控磁偶极取向实现弯曲变形。")
+        api.rebuild_fts()
+
+    def test_plain_doi_filter(self, env):
+        self._two_papers(env)
+        hits = api._need_store().search_notes("驱动", limit=10, doi="10.1000/a.1")  # noqa: SLF001
+        assert {h["doi"] for h in hits} == {"10.1000/a.1"}
+
+    def test_cjk_bigram_fallback_respects_doi(self, env):
+        """整串不命中 → 走 bigram OR 兜底，doi 过滤仍须生效。"""
+        self._two_papers(env)
+        hits = api._need_store().search_notes(  # noqa: SLF001
+            "驱动的机制是什么", limit=10, doi="10.1000/a.1")
+        assert hits, "该篇应被 bigram 兜底召回"
+        assert {h["doi"] for h in hits} == {"10.1000/a.1"}, f"doi 过滤被击穿: {hits}"
+
+    def test_or_mode_respects_doi(self, env):
+        self._two_papers(env)
+        rows = api._need_store()._search_notes_like(  # noqa: SLF001
+            "驱动 机制", limit=10, mode="OR", doi="10.1000/a.1")
+        assert rows, "两词 OR 应命中该篇"
+        assert {r["doi"] for r in rows} == {"10.1000/a.1"}, f"doi 过滤被击穿: {rows}"
+
+    def test_recall_paper_returns_only_own_notes(self, env):
+        """端到端：单篇检索只回该篇产物。"""
+        self._two_papers(env)
+        items = api.recall_paper("10.1000/a.1", "驱动的机制是什么", top_k=3)
+        assert items and {it["doi"] for it in items} == {"10.1000/a.1"}

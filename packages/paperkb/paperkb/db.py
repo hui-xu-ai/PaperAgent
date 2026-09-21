@@ -1078,7 +1078,10 @@ class KBStore:
         if not chunks:
             return []
         joiner = " AND " if mode == "AND" else " OR "
-        where = joiner.join("content LIKE ?" for _ in chunks)
+        # OR 组必须加括号：`A OR B AND doi = ?` 在 SQL 里等价于 `A OR (B AND doi = ?)`
+        # ⇒ doi 过滤只作用在紧邻的那一个 LIKE 上，其余锚点的命中会**跨文献泄漏**
+        # （实测：单篇召回返回别篇 `_note.md`，2026-09-21 修复）。
+        where = "(" + joiner.join("content LIKE ?" for _ in chunks) + ")"
         params = [f"%{c}%" for c in chunks]
         if doi:
             where += " AND doi = ?"
@@ -1095,7 +1098,7 @@ class KBStore:
                 anchors = _cjk_grams(query)
                 if not anchors:
                     return []
-                where2 = " OR ".join("content LIKE ?" for _ in anchors)
+                where2 = "(" + " OR ".join("content LIKE ?" for _ in anchors) + ")"
                 params2 = [f"%{g}%" for g in anchors]
                 if doi:
                     where2 += " AND doi = ?"
