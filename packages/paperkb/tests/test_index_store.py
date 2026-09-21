@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""扩容 P0：`index_store` 数据层（SQLite 元数据 + 段式向量 + 单例 + 死信）单测。
+"""扩容 P0：`db.IndexStore` 数据层（SQLite 元数据 + 段式向量 + 单例 + 死信）单测。
 
 覆盖的是**10 万篇量级的存储契约**，不是"能跑就行"：
 - 追加写与索引体积无关（不再整份重写 `.npy` / `meta.json`）；
@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 
 from paperkb.config import Roots
-from paperkb.index_store import (SCHEMA_VERSION, IndexStore, get_index_store,
-                                 import_legacy, reset_index_store)
+from paperkb.db import (VEC_SCHEMA_VERSION, IndexStore, get_index_store,
+                        import_legacy, reset_index_store)
 
 DIM = 8
 
@@ -61,7 +61,7 @@ class TestSingleton:
 class TestSchema:
     def test_schema_version_stamped(self, roots):
         st = get_index_store(roots)
-        assert int(st.get_meta("schema_version")) == SCHEMA_VERSION
+        assert int(st.get_meta("schema_version")) == VEC_SCHEMA_VERSION
 
     def test_newer_schema_refused(self, roots, tmp_path):
         """数据由更新版本写过 → 必须拒绝读取（不许猜测式部分读取）。"""

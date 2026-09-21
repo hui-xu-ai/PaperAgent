@@ -27,7 +27,6 @@ ALTER_ALLOW_PREFIX = ("packages/paperkb/paperkb/migrations/",)
 CONNECT_ALLOW = {
     "backend/app/services/store.py",
     "packages/paperkb/paperkb/db.py",
-    "packages/paperkb/paperkb/index_store.py",
     "packages/paperkb/paperkb/journals.py",
     "packages/paperkb/paperkb/manifest.py",
     "packages/paperkb/paperkb/backup.py",

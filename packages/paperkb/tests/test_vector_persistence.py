@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from paperkb.config import Roots
-from paperkb.index_store import reset_index_store
+from paperkb.db import reset_index_store
 from paperkb.vector import EMBEDDING_DIM, KbVectorIndex, get_kb_vector_index, \
     reset_kb_vector_index
 
@@ -210,7 +210,7 @@ class TestIndexHealthApi:
 
     def test_retry_resolves_when_product_present(self, kbsetup, roots):
         """死信 → 产物在磁盘 → 重试成功并结案。"""
-        from paperkb.index_store import get_index_store
+        from paperkb.db import get_index_store
 
         ist = get_index_store(roots)
         doi = "10.1234/retry"
@@ -228,7 +228,7 @@ class TestIndexHealthApi:
 
     def test_retry_closes_dead_letter_without_dir(self, kbsetup, roots):
         """目录已不在（篇目被移除）→ 无从重试，结案而不是永远挂着。"""
-        from paperkb.index_store import get_index_store
+        from paperkb.db import get_index_store
 
         ist = get_index_store(roots)
         ist.add_dead_letter("10.1234/gone", "vector_index", "boom", delay_sec=0)

@@ -25,7 +25,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "paperkb"))
 
 from paperkb.config import Roots          # noqa: E402
-from paperkb.index_store import reset_index_store   # noqa: E402
+from paperkb.db import reset_index_store   # noqa: E402
 from paperkb.vector import (EMBEDDING_DIM, get_kb_vector_index,   # noqa: E402
                             reset_kb_vector_index)
 

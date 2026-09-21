@@ -2102,7 +2102,7 @@ def _kb_index(api_key: str = ""):
 def kb_index_status() -> dict:
     """索引健康快照（只读，不调 embedding）：体积 / 段数 / 垃圾行 / 死信 / 模型指纹。"""
     store = _need_store()
-    from .index_store import get_index_store
+    from .db import get_index_store
 
     ist = get_index_store(store.roots)
     h = ist.health()
@@ -2116,7 +2116,7 @@ def kb_index_status() -> dict:
 def kb_index_scan() -> dict:
     """对账：摘除产物已不在磁盘的幽灵块 + 重算篇级统计（零 embedding 成本）。"""
     store = _need_store()
-    from .index_store import get_index_store
+    from .db import get_index_store
 
     ist = get_index_store(store.roots)
     idx, _ = _kb_index()
@@ -2136,7 +2136,7 @@ def kb_index_compact() -> dict:
 def kb_index_retry(limit: int = 20) -> dict:
     """重试到期的死信（重新索引该篇）。成功由 index_paper 自动结案。"""
     store = _need_store()
-    from .index_store import get_index_store
+    from .db import get_index_store
 
     ist = get_index_store(store.roots)
     due = ist.due_dead_letters(limit=max(1, min(200, limit)))

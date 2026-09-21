@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 from .config import Roots
-from .index_store import get_index_store
+from .db import get_index_store
 from .textseg import boundary_trim, embed_prefix, split_chunks, strip_frontmatter
 
 if TYPE_CHECKING:  # 仅类型标注；运行期在 _query_cache 里惰性导入（避免环）
@@ -166,7 +166,7 @@ class KbVectorIndex:
         if self.size == 0 and self._store.legacy_files_present():
             logger.warning("检测到旧格式向量索引（kb_index_meta.json/kb_vectors.npy），"
                            "本代码不再读取；需重建（rebuild_kb_vector_index）或先跑 "
-                           "paperkb.index_store.import_legacy 导入")
+                           "paperkb.db.import_legacy 导入")
         self._validate()
         self._rebuild_faiss()
 
@@ -724,7 +724,7 @@ class KbVectorIndex:
 
         `_store.load()` 只返回段内仍被 `passages` 指向的行，因此被刷新/删除的旧行
         不会进入结果（旧格式 `kb_index_meta.json` / `kb_vectors.npy` 不再读取——
-        数据层已由 `index_store` 接管；存量需重建或用 `index_store.import_legacy` 导入）。
+        数据层已由 `db.IndexStore` 接管；存量需重建或用 `db.import_legacy` 导入）。
         """
         try:
             keys, meta, vectors = self._store.load()
