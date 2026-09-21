@@ -660,13 +660,17 @@ def translate_paper(doc_json: str | Path, *, compact: bool = False) -> dict:
 
 # ---------------------------------------------------------------- 检索/问答（M4）
 
-def recall(query: str, top_k: int = 8, include_fulltext: bool = False) -> list[dict]:
-    """多路召回（编译产物/元数据/引用邻域/卡片）。"""
+def recall(query: str, top_k: int = 8, include_fulltext: bool = False,
+           rerank: bool | None = None) -> list[dict]:
+    """多路召回（编译产物/向量/元数据/引用邻域/卡片）→ RRF 融合 → 可选重排。
+
+    `rerank=None` 时按 KbSettings.rerank_enabled（应用侧默认开、库默认关）。
+    """
     from .retrieve import recall as _recall
 
     store = _need_store()
     out = _recall(store, store.roots, query, top_k=top_k,
-                  include_fulltext=include_fulltext)
+                  include_fulltext=include_fulltext, rerank=rerank)
     return _enrich_recall(store, out)
 
 
@@ -1950,6 +1954,9 @@ def status() -> dict:
         "meta_count": len(store.all_dois()),
         "vector_impl": _settings.vector_impl,
         "fts_enabled": _settings.fts_enabled,
+        "rrf_k": _settings.rrf_k,
+        "rerank_enabled": _settings.rerank_enabled,
+        "reranker_model": _settings.reranker_model,
         "db": str(store.db_path),
     }
 

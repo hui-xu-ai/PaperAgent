@@ -30,8 +30,8 @@ BUDGET_CHARS = 16_000          # ≈4-8k token
 NOTES_SHARE = 0.75             # 笔记 6k token 份额
 MAX_NOTES_PER_DOC = 2          # 每篇最多取几个产物文件
 MAX_NEIGHBOR_DOCS = 3          # 引用邻域最多补几篇
-SNIPPET_CHARS = 1200           # 单条注入片段上限（片段级，命中块约 900 字）
-NOTES_QUOTA = 2 / 3            # notes_fts 主路占 top_k 的名额比例（余量给其他通道）
+SNIPPET_CHARS = 1200           # 单条注入片段上限（片段级，小节扩展后约 1.2k 字）
+RERANK_MIN_POOL = 12           # 候选池下限（少于它就没什么可重排的）
 
 # 向量命中 → 注入条目用的"文件名"（与 notes_fts 的 filename 对齐，便于跨路去重）
 _VEC_FILE = {"note": "_note.md", "wiki": "_wiki.md", "relations": "_relations.md",
@@ -76,79 +76,174 @@ def _vector_recall(query: str, top_k: int) -> list[dict]:
 
 def recall(store: KBStore, roots: Roots, query: str, *,
            top_k: int = 8, include_fulltext: bool = False,
-           prefer_dois: list[str] | None = None) -> list[dict]:
-    """多路召回 → 合并去重排序。返回 [{"doi","file","snippet","source","score"}]。"""
-    from .db import _fts_query
+           prefer_dois: list[str] | None = None,
+           rerank: bool | None = None) -> list[dict]:
+    """多路召回 → RRF 融合 → 交叉编码器精排 → 去重排序。
 
-    items: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    返回 [{"doi","file","snippet","source","rrf","rerank_score"[,"score"]}]。
 
-    def _add(doi: str, file: str, snippet: str, source: str, score: float) -> None:
-        key = (doi, file)
-        if key in seen:
-            return
-        seen.add(key)
-        items.append({"doi": doi, "file": file, "snippet": snippet,
-                      "source": source, "score": score})
+    融合口径（2026-09-21 起）：各路召回只贡献**排名**，用 RRF（`Σ w/(k+rank)`，
+    k=60）合并——跨通道的余弦/BM25 分数本就不可比，硬编码权重（旧实现的
+    1.0/0.9/0.6）只是掩盖问题。精排用 bge-reranker-v2-m3（~¥0.001/次），
+    失败或无 key 时静默跳过，退回 RRF 顺序。
+    """
+    channels: list[tuple[str, float, list[dict]]] = []
 
     # 1) notes_fts 主召回（编译产物）
-    for r in store.search_notes(query, limit=top_k * 2):
-        _add(r["doi"], r["file"], r.get("snippet") or "", "notes", 1.0)
-    # 1b) 向量语义召回（编译产物分块，命中段即注入段；vector_impl=kb 才生效）
-    for v in _vector_recall(query, top_k):
-        _add(v["doi"], v["file"], v["snippet"], "vector", 0.9)
-    # 2) meta_fts 元数据召回（文献级）
-    for m in store.search_meta(query, limit=top_k * 2):
-        _add(m.doi, "_meta",
-             f"{m.title} — {boundary_trim(m.abstract or '', 150)}", "meta", 0.6)
-    # 3) 引用邻域：命中文献的 引用/被引 文献的笔记（跨文献关联）
-    hit_dois = [it["doi"] for it in items][:top_k]
-    if hit_dois:
-        neighbor_dois: list[str] = []
-        for doi in hit_dois[:MAX_NEIGHBOR_DOCS]:
-            rel = store.citations_for(doi)
-            for c in rel.get("cited", [])[:8]:
-                if c["doi"] not in neighbor_dois:
-                    neighbor_dois.append(c["doi"])
-            for c in rel.get("citing", [])[:8]:
-                if c["doi"] not in neighbor_dois:
-                    neighbor_dois.append(c["doi"])
-        for ndoi in neighbor_dois[:MAX_NEIGHBOR_DOCS]:
-            if ndoi == hit_dois[0]:
-                continue
-            for r in store.search_notes(query, limit=5):
-                if r["doi"] == ndoi:
-                    _add(r["doi"], r["file"], r.get("snippet") or "", "neighbor", 0.4)
-                    break
-    # 4) 卡片按需读取（命中文献）
-    from .cards import list_cards, read_cards_for_compile
-
-    for doi in hit_dois[:top_k]:
-        card_ctx = read_cards_for_compile(roots.kb_dir, doi, limit_chars=600)
-        if card_ctx:
-            _add(doi, "cards", boundary_trim(card_ctx, 200), "cards", 0.5)
-    # 5) 全文兜底：附件镜像行（复合键 `<rid>::attachments/…`）**默认召回**；
+    notes = [{"doi": r["doi"], "file": r["file"], "snippet": r.get("snippet") or ""}
+             for r in store.search_notes(query, limit=top_k * 2)]
+    channels.append(("notes", 1.0, notes))
+    # 2) 向量语义召回（编译产物分块，命中段即注入段；vector_impl=kb 才生效）
+    channels.append(("vector", 1.0, _vector_recall(query, top_k * 2)))
+    # 3) meta_fts 元数据召回（文献级）
+    channels.append(("meta", 0.5, [
+        {"doi": m.doi, "file": "_meta",
+         "snippet": f"{m.title} — {boundary_trim(m.abstract or '', 150)}"}
+        for m in store.search_meta(query, limit=top_k * 2)]))
+    # 4) 引用邻域：命中文献的 引用/被引 文献的笔记（跨文献关联）
+    hit_dois = [it["doi"] for ch in channels for it in ch[2]][:top_k]
+    channels.append(("neighbor", 0.4, _neighbor_items(store, query, hit_dois)))
+    # 5) 卡片按需读取（命中文献）
+    channels.append(("cards", 0.5, _card_items(roots, hit_dois)))
+    # 6) 全文兜底：附件镜像行（复合键 `<rid>::attachments/…`）**默认召回**；
     #    正文全文（纯 doi 键）仍是可选开关行为（include_fulltext）。
-    ft_rows = store.search_fulltext(query, limit=top_k * 4 if include_fulltext else top_k * 2)
-    for r in ft_rows:
+    channels.append(("fulltext", 0.6, _fulltext_items(
+        store, query, include_fulltext, top_k)))
+
+    fused = _rrf_fuse(channels, k=_rrf_k())            # 排名倒数融合 + 去重
+    pool = fused[: max(RERANK_MIN_POOL, top_k * 3)]
+    if _rerank_on(rerank) and len(pool) > 1:
+        _rerank_items(query, pool)
+        pool.sort(key=lambda x: (-x.get("rerank_score", float("-inf")), -x["rrf"]))
+    return pool[:top_k]
+
+
+def _rrf_k() -> int:
+    try:
+        from .api import _settings
+
+        return int(getattr(_settings, "rrf_k", 60) or 60)
+    except Exception:  # noqa: BLE001
+        return 60
+
+
+def _rrf_fuse(channels: list[tuple[str, float, list[dict]]],
+              k: int = 60) -> list[dict]:
+    """RRF 融合：`score(d) = Σ_ch w_ch / (k + rank_ch(d))`（rank 从 1 起）。
+
+    同一 (doi, file) 在多路命中就累加——这正是 RRF 的用意：**多路都召回的更可信**。
+    保留首次出现的 channel 作为 `source`（可观测性），片段取"信息量更大的那个"
+    （长度优先：小节扩展 > FTS 窗口 > 标题）。输出按 RRF 降序。
+    """
+    best: dict[tuple[str, str], dict] = {}
+    for name, weight, items in channels:
+        for rank, it in enumerate(items, 1):
+            key = (it["doi"], it.get("file") or "")
+            score = weight / (k + rank)
+            cur = best.get(key)
+            if cur is None:
+                best[key] = {**it, "source": name, "rrf": score, "channels": [name]}
+                continue
+            cur["rrf"] += score
+            cur["channels"].append(name)
+            other = it.get("snippet") or ""
+            if len(other) > len(cur.get("snippet") or ""):
+                cur["snippet"] = other
+            if name == "vector":        # 向量片段是"命中块/小节"，优先作为注入文本
+                cur["source"] = "vector"
+    return sorted(best.values(), key=lambda x: -x["rrf"])
+
+
+def _rerank_on(rerank: bool | None) -> bool:
+    """是否做二阶段重排：显式参数 > KbSettings.rerank_enabled（且必须有 key）。"""
+    try:
+        from .api import _settings
+
+        enabled = bool(getattr(_settings, "rerank_enabled", True))
+    except Exception:  # noqa: BLE001
+        enabled = True
+    enabled = enabled if rerank is None else bool(rerank)
+    return enabled and bool(_rerank_key())
+
+
+def _rerank_key() -> str:
+    import os
+
+    return (os.environ.get("SILICONFLOW_RERANK_API_KEY", "").strip()
+            or os.environ.get("SILICONFLOW_API_KEY", "").strip())
+
+
+def _rerank_items(query: str, items: list[dict]) -> None:
+    """就地把 bge-reranker-v2-m3 分数写进 `rerank_score`（失败静默跳过）。"""
+    from .api import _settings
+
+    docs = [(it.get("snippet") or "").strip() for it in items]
+    if not any(docs):
+        return
+    try:
+        from paperlit.vector.reranker import rerank as _rr
+
+        scored = _rr(query=query, documents=docs,
+                     model=getattr(_settings, "reranker_model",
+                                   "BAAI/bge-reranker-v2-m3"),
+                     api_key=_rerank_key(), top_n=len(docs))
+    except Exception as e:  # noqa: BLE001 - 重排是加分项，失败不影响召回
+        logger.warning("重排失败（退回 RRF 顺序）: %s", e)
+        return
+    for idx, score in scored:
+        if 0 <= idx < len(items):
+            items[idx]["rerank_score"] = float(score)
+
+
+def _neighbor_items(store: KBStore, query: str, hit_dois: list[str]) -> list[dict]:
+    out: list[dict] = []
+    if not hit_dois:
+        return out
+    neighbor_dois: list[str] = []
+    for doi in hit_dois[:MAX_NEIGHBOR_DOCS]:
+        rel = store.citations_for(doi)
+        for c in rel.get("cited", [])[:8]:
+            if c["doi"] not in neighbor_dois:
+                neighbor_dois.append(c["doi"])
+        for c in rel.get("citing", [])[:8]:
+            if c["doi"] not in neighbor_dois:
+                neighbor_dois.append(c["doi"])
+    for ndoi in neighbor_dois[:MAX_NEIGHBOR_DOCS]:
+        if ndoi == hit_dois[0]:
+            continue
+        for r in store.search_notes(query, limit=5):
+            if r["doi"] == ndoi:
+                out.append({"doi": r["doi"], "file": r["file"],
+                            "snippet": r.get("snippet") or ""})
+                break
+    return out
+
+
+def _card_items(roots: Roots, hit_dois: list[str]) -> list[dict]:
+    from .cards import read_cards_for_compile
+
+    out: list[dict] = []
+    for doi in hit_dois:
+        ctx = read_cards_for_compile(roots.kb_dir, doi, limit_chars=600)
+        if ctx:
+            out.append({"doi": doi, "file": "cards",
+                        "snippet": boundary_trim(ctx, 200)})
+    return out
+
+
+def _fulltext_items(store: KBStore, query: str, include_fulltext: bool,
+                    top_k: int) -> list[dict]:
+    out: list[dict] = []
+    for r in store.search_fulltext(
+            query, limit=top_k * 4 if include_fulltext else top_k * 2):
         key = r.get("doi") or ""
         rid, sep, rel = key.partition(KBStore.ATTACH_FT_SEP)
         if sep and rel.startswith("attachments/"):
-            _add(rid, rel, r.get("snippet") or "", "fulltext", 0.5)
+            out.append({"doi": rid, "file": rel, "snippet": r.get("snippet") or ""})
         elif include_fulltext and not sep:
-            _add(key, "_fulltext", r.get("snippet") or "", "fulltext", 0.3)
-
-    # 通道配额：主路 notes_fts（整文件命中）最多占 ~2/3 名额，其余留给向量/元数据等
-    # ——纯按 score 排序时 notes(1.0) 会把 top_k 全吃满，语义一路即使命中也不出场
-    # （实测 7 篇库里 top_k=6 全是 notes）。其余通道为空时用 notes 补齐，不缩水。
-    primary = [it for it in items if it["source"] == "notes"]
-    others = [it for it in items if it["source"] != "notes"]
-    keep_notes = max(1, int(top_k * NOTES_QUOTA))
-    out = primary[:keep_notes] + others
-    if len(out) < top_k:
-        out += primary[keep_notes:]
-    out.sort(key=lambda x: -x["score"])
-    return out[:top_k]
+            out.append({"doi": key, "file": "_fulltext",
+                        "snippet": r.get("snippet") or ""})
+    return out
 
 
 def recall_paper(store: KBStore, roots: Roots, doi: str, query: str, *,

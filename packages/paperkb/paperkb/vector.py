@@ -30,12 +30,15 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
 from .config import Roots
-from .textseg import embed_prefix, split_chunks, strip_frontmatter
+from .textseg import boundary_trim, embed_prefix, split_chunks, strip_frontmatter
+
+if TYPE_CHECKING:  # 仅类型标注；运行期在 _query_cache 里惰性导入（避免环）
+    from .db import QueryVecCache
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,9 @@ EMBEDDING_DIM = 1024  # bge-m3 维度
 # 实测 9 篇 25 个产物 → 68 块（约 7.5 块/篇），非标题内容零丢失。
 CHUNK_CHARS = 900
 CHUNK_OVERLAP = 120
+
+# 注入片段上限（字符）：小节扩展后的目标长度（≈ 半页；配合 8k token 预算）
+SNIPPET_CHARS = 1200
 
 # 产物正文短于该长度不索引（标题/概念另有入口）
 MIN_PASSAGE_CHARS = 50
@@ -62,6 +68,31 @@ except ImportError:
 
 def _md5(text: str) -> str:
     return hashlib.md5((text or "").encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------- 查询向量缓存
+# 缓存本体在**数据层**（`db.QueryVecCache`，独立 SQLite `data/vector/query_cache.db`）——
+# `sqlite3.connect` 只允许出现在数据层（test_version_contract 守卫），业务模块走统一接口。
+_caches: dict[str, "QueryVecCache"] = {}
+
+
+def _query_cache_enabled() -> bool:
+    try:
+        from .api import _settings
+
+        return bool(getattr(_settings, "query_vec_cache", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _query_cache(roots: Roots) -> "QueryVecCache":
+    """按 vector 根路径缓存实例（测试用不同 tmp 目录时互不串档）。"""
+    from .db import QueryVecCache
+
+    key = str(roots.vector_dir)
+    if key not in _caches:
+        _caches[key] = QueryVecCache(roots)
+    return _caches[key]
 
 
 def _body_of(text: str) -> str:
@@ -277,13 +308,16 @@ class KbVectorIndex:
 
     # ---------------------------------------------------------------- 读取
     def search(self, query: str, top_k: int = 20, exclude_doi: str = "",
-               with_snippet: bool = False, store=None) -> list[dict]:
+               with_snippet: bool = False, store=None,
+               expand_section: bool = True,
+               snippet_chars: int = SNIPPET_CHARS) -> list[dict]:
         """向量相似度搜索（块级）。
 
         Args:
             exclude_doi: 排除的 DOI（搜索自身时排除）
-            with_snippet: 命中块原文（从产物文件按偏移切回，**命中段 = 注入段**）
+            with_snippet: 附带片段（**命中段 = 注入段**，从产物文件按偏移切回）
             store: KBStore（`concepts` 类型的片段需要它重建定义文本）
+            expand_section: 片段做 small-to-big 扩展到所属小节整段（≤snippet_chars）
 
         Returns:
             [{"key","doi","passage_type","chunk","section","score"[,"snippet"]}, ...]
@@ -291,9 +325,8 @@ class KbVectorIndex:
         if not self.api_key or self.size == 0:
             return []
 
-        from paperlit.vector import encode_query
-        query_vec = encode_query(query, model=self.model, api_key=self.api_key)
-        if not query_vec or len(query_vec) != self.dim:
+        query_vec = self._encode_query(query)
+        if not query_vec:
             return []
 
         output = []
@@ -311,11 +344,33 @@ class KbVectorIndex:
                 "score": score,
             }
             if with_snippet:
-                row["snippet"] = self.passage_text(key, store=store)
+                text = (self.section_text(key, limit=snippet_chars)
+                        if expand_section else self.passage_text(key, store=store))
+                if not text and (meta.get("ptype") or "") == "concepts":
+                    text = self.passage_text(key, store=store)
+                row["snippet"] = text
             output.append(row)
             if len(output) >= top_k:
                 break
         return output
+
+    def _encode_query(self, query: str) -> list[float]:
+        """查询向量（带 SQLite 缓存；失败返回 []）。
+
+        缓存的价值在 L3：同一批关键词会在多篇文献的候选检索里反复出现命中率高；
+        问答的自然语言问句命中率低但成本是一次点查，无副作用。
+        """
+        from paperlit.vector import encode_query
+
+        cache = _query_cache(self.roots) if _query_cache_enabled() else None
+        if cache is not None:
+            hit = cache.get(self.model, query)
+            if hit:
+                return hit
+        vec = encode_query(query, model=self.model, api_key=self.api_key)
+        if vec and len(vec) == self.dim and cache is not None:
+            cache.put(self.model, query, vec)
+        return vec or []
 
     def search_by_concepts(self, concept_names: list[str], top_k: int = 20,
                            store=None, exclude_doi: str = "") -> list[dict]:
@@ -361,6 +416,44 @@ class KbVectorIndex:
                         "shared_concepts": shared,
                         "passage_type": r["passage_type"], "key": r["key"]})
         return out[:top_k]
+
+    def section_text(self, key: str, *, limit: int = SNIPPET_CHARS) -> str:
+        """small-to-big：把命中块扩到**所属小节整段**（同 (doi,ptype,section) 的块合并）。
+
+        为什么：块级匹配精度高但上下文窄（900 字里可能只命中半句），业界做法是"小块匹配、
+        大块注入"（parent-document / small-to-big）。小节是天然父级，且分块时同小节的块
+        偏移本就连续，合并 = 取 min(start)..max(end) 的原文切片。
+        校验：首块与末块的 md5 必须与索引一致（中间被改会让末块偏移变化而被发现），
+        任一不符 → 退回单块（宁可窄，不可错）。
+        """
+        meta = self._meta_of(key)
+        if (meta.get("ptype") or "") not in _PTYPE_FILE:
+            return self.passage_text(key)
+        section = meta.get("section") or ""
+        if not section:
+            return self.passage_text(key)
+        sibs = [m for m in self._key_meta.values()
+                if m.get("doi") == meta.get("doi") and m.get("ptype") == meta.get("ptype")
+                and (m.get("section") or "") == section
+                and int(m.get("start") or -1) >= 0 and int(m.get("end") or -1) > 0]
+        if len(sibs) < 2:
+            return self.passage_text(key)
+        sibs.sort(key=lambda m: int(m["start"]))
+        first, last = sibs[0], sibs[-1]
+        path = self._passage_path(first)
+        if path is None:
+            return self.passage_text(key)
+        try:
+            body = _body_of(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            return self.passage_text(key)
+        head = body[int(first["start"]):int(first["end"])].strip()
+        tail = body[int(last["start"]):int(last["end"])].strip()
+        if _md5(head) != (first.get("chunk_md5") or "") \
+                or _md5(tail) != (last.get("chunk_md5") or ""):
+            logger.info("小节扩展偏移不符（文件已变），退回单块: %s", key)
+            return self.passage_text(key)
+        return boundary_trim(body[int(first["start"]):int(last["end"])].strip(), limit)
 
     def passage_text(self, key: str, store=None) -> str:
         """命中块原文（按索引时的偏移从产物切回；偏移不符则返回空串）。

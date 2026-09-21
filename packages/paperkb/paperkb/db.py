@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""主库访问层（KBStore）：建表迁移 / papers_meta / citations / compile_jobs / FTS5。
+"""主库访问层（KBStore）：建表迁移 / papers_meta / citations / compile_jobs / FTS5
++ 查询向量缓存（`QueryVecCache`，派生缓存、独立 sqlite 文件）。
 
 独立于 backend store.py（paperkb 可独立测试）；backend 集成时经 api 门面调用。
 SQLite WAL 模式；所有路径来自 Roots 注入。
@@ -1385,3 +1386,77 @@ def _cjk_grams(query: str, n: int = 2, cap: int = 12) -> list[str]:
         if len(seen) >= cap:
             break
     return seen
+
+
+# ---------------------------------------------------------------- 查询向量缓存（数据层）
+class QueryVecCache:
+    """查询文本 → 向量的缓存（独立 SQLite：`data/vector/query_cache.db`）。
+
+    为什么放数据层（2026-09-21）：`sqlite3.connect` 只允许出现在数据层
+    （`backend/tests/test_version_contract.py` 守卫），向量模块是业务模块——
+    业务模块走统一接口，裸连接一律放这里。
+
+    定位：**派生缓存**，不是权威数据。丢了只是重算（多花几次 embedding），
+    因此表结构不参与迁移/版本契约，`get/put` 全部吞异常（缓存故障不影响检索）。
+
+    只缓存**查询**向量（几十 token/次），不缓存文档向量（文档走索引本体）。
+    收益点是 L3 候选检索：同一批关键词会在多篇文献里反复搜，命中率高；
+    问答的自然语言问句命中率低，但代价只是一次点查。
+    """
+
+    MAX_ROWS = 5000
+
+    def __init__(self, roots: Roots):
+        self.path = roots.vector_dir / "query_cache.db"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self.path), timeout=10)
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS qvec(
+                   model TEXT NOT NULL, qhash TEXT NOT NULL, dim INTEGER NOT NULL,
+                   vec BLOB NOT NULL, hits INTEGER DEFAULT 0, created_at TEXT DEFAULT '',
+                   PRIMARY KEY(model, qhash))""")
+        self._conn.commit()
+
+    def get(self, model: str, query: str) -> list[float]:
+        import array
+
+        qh = _md5_text((query or "").strip())
+        try:
+            row = self._conn.execute(
+                "SELECT vec, dim FROM qvec WHERE model=? AND qhash=?",
+                (model, qh)).fetchone()
+            if not row:
+                return []
+            self._conn.execute(
+                "UPDATE qvec SET hits=hits+1 WHERE model=? AND qhash=?", (model, qh))
+            self._conn.commit()
+            vec = array.array("f")
+            vec.frombytes(row[0])
+            return list(vec) if len(vec) == row[1] else []
+        except Exception:  # noqa: BLE001 - 缓存异常不影响检索
+            return []
+
+    def put(self, model: str, query: str, vec: list[float]) -> None:
+        import array
+
+        qh = _md5_text((query or "").strip())
+        try:
+            blob = array.array("f", [float(x) for x in vec]).tobytes()
+            self._conn.execute(
+                """INSERT OR REPLACE INTO qvec(model,qhash,dim,vec,hits,created_at)
+                   VALUES(?,?,?,?,0,datetime('now'))""",
+                (model, qh, len(vec), blob))
+            n = self._conn.execute("SELECT COUNT(*) FROM qvec").fetchone()[0]
+            if n > self.MAX_ROWS:      # 简单 LRU：删最旧/最少命中的 10%
+                self._conn.execute(
+                    """DELETE FROM qvec WHERE (model,qhash) IN (
+                           SELECT model,qhash FROM qvec
+                           ORDER BY created_at ASC, hits ASC LIMIT ?)""",
+                    (max(1, n - int(self.MAX_ROWS * 0.9)),))
+            self._conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _md5_text(text: str) -> str:
+    return hashlib.md5((text or "").encode("utf-8")).hexdigest()

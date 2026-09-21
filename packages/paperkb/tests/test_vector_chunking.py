@@ -188,3 +188,97 @@ class TestSearchSnippet:
         by_doi = {r["doi"]: r["shared_concepts"] for r in res}
         assert by_doi["10.1234/a"] == ["gnn"], "只共有一个概念时不得谎报两个"
         assert set(by_doi["10.1234/b"]) == {"gnn", "imc"}
+
+
+# 一个 2000 字的单小节笔记：同小节会被切成 ≥2 块（small-to-big 的用武之地）
+LONG_SECTION_NOTE = ("---\ntype: paper-note\ndoi: 10.1234/sec\n---\n"
+                     "# 长节样例\n\n## 研究背景\n" + "背景句子内容。" * 400)
+
+
+class TestSectionExpand:
+    """small-to-big：命中块 → 所属小节整段（小块匹配、大块注入）。"""
+
+    def _index(self, roots, body=LONG_SECTION_NOTE, doi="10.1234/sec"):
+        d = _paper_dir(roots, doi, "_note.md", body)
+        idx = KbVectorIndex(roots, api_key="k")
+        idx.index_paper(doi, note_text=body, folder=d)
+        keys = sorted((k for k in idx._key_to_idx if k.startswith(f"{doi}__note")),
+                      key=lambda k: int(idx._key_meta[k]["start"]))
+        return idx, keys, d
+
+    @patch("paperlit.vector.encode_texts", side_effect=_mock_encode_texts)
+    def test_expands_to_whole_section(self, mock_enc, roots):
+        idx, keys, _d = self._index(roots)
+        assert len(keys) >= 2, "样例小节应切成多块"
+        first = keys[0]
+        single = idx.passage_text(first)
+        merged = idx.section_text(first)          # expand_section 默认走这条
+        assert len(single) > 500
+        assert len(merged) > len(single), "应扩展到小节整段（不止命中那一块）"
+        assert merged in LONG_SECTION_NOTE, "扩展片段必须是原文的连续切片"
+        second_start = int(idx._key_meta[keys[1]]["start"])
+        first_start = int(idx._key_meta[first]["start"])
+        assert len(merged) > second_start - first_start, "应覆盖到下一块的起点"
+
+    @patch("paperlit.vector.encode_texts", side_effect=_mock_encode_texts)
+    def test_respects_limit(self, mock_enc, roots):
+        idx, keys, _d = self._index(roots)
+        assert len(idx.section_text(keys[0], limit=600)) <= 600
+
+    @patch("paperlit.vector.encode_texts", side_effect=_mock_encode_texts)
+    def test_file_changed_falls_back_to_single_chunk(self, mock_enc, roots):
+        idx, keys, d = self._index(roots)
+        (d / "_note.md").write_text("# 完全换了内容\n" + "z" * 300, encoding="utf-8")
+        assert idx.section_text(keys[0]) == "", "偏移失准宁可返回空，不给错位证据"
+
+    @patch("paperlit.vector.encode_texts", side_effect=_mock_encode_texts)
+    def test_single_chunk_section_not_expanded(self, mock_enc, roots):
+        idx, keys, _d = self._index(
+            roots, body="# T\n\n## 小节\n" + "只有一段短内容。" * 10,
+            doi="10.1234/one")
+        assert keys == ["10.1234/one__note"]
+        assert idx.section_text(keys[0]) == idx.passage_text(keys[0])
+
+
+class TestQueryVecCache:
+    """查询向量缓存：同一问句第二次不再调 embedding API。"""
+
+    @patch("paperlit.vector.encode_query", side_effect=_mock_encode_query)
+    @patch("paperlit.vector.encode_texts", side_effect=_mock_encode_texts)
+    def test_second_identical_query_hits_cache(self, mock_enc, mock_q, roots):
+        body = "# T\n" + "正文内容。" * 100
+        d = _paper_dir(roots, "10.1234/a", "_note.md", body)
+        idx = KbVectorIndex(roots, api_key="k")
+        idx.index_paper("10.1234/a", note_text=body, folder=d)
+        idx.search("同一个问句", top_k=2)
+        idx.search("同一个问句", top_k=2)
+        assert mock_q.call_count == 1, "重复查询应命中 SQLite 缓存"
+        assert (roots.vector_dir / "query_cache.db").exists()
+
+    @patch("paperlit.vector.encode_query", side_effect=_mock_encode_query)
+    @patch("paperlit.vector.encode_texts", side_effect=_mock_encode_texts)
+    def test_disabled_by_setting(self, mock_enc, mock_q, roots, monkeypatch):
+        from paperkb import api
+
+        class _S:
+            query_vec_cache = False
+
+        monkeypatch.setattr(api, "_settings", _S(), raising=False)
+        body = "# T\n" + "正文内容。" * 100
+        d = _paper_dir(roots, "10.1234/a", "_note.md", body)
+        idx = KbVectorIndex(roots, api_key="k")
+        idx.index_paper("10.1234/a", note_text=body, folder=d)
+        idx.search("同一个问句", top_k=2)
+        idx.search("同一个问句", top_k=2)
+        assert mock_q.call_count == 2, "关掉缓存就该每次真调"
+
+    def test_roundtrip_and_miss(self, roots):
+        from paperkb.db import QueryVecCache
+
+        c = QueryVecCache(roots)
+        c.put("m", "问句", [1.0, 2.0, 3.0])
+        assert c.get("m", "问句") == [1.0, 2.0, 3.0]
+        assert c.get("m", "别的问句") == []
+        assert c.get("other-model", "问句") == []
+        # 派生缓存落在数据层（vector_dir），不进 biblio 主库
+        assert c.path == roots.vector_dir / "query_cache.db"

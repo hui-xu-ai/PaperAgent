@@ -84,3 +84,11 @@ class KbSettings:
     })
     # 用户研究方向主题表（导入界面设置；AI 编译时据此打主题相关度分）
     preferred_topics: list[str] = field(default_factory=list)
+    # --- 检索融合与重排（2026-09-21：多路召回不再用硬编码分数，改 RRF + 交叉编码器精排）---
+    rrf_k: int = 60                     # RRF 常数（Cormack 2009 建议 60）
+    # 二阶段重排默认**关**（同 vector_impl 的约定：库默认保守，应用层显式开启）——
+    # 否则任何调用方（含单测）都会因为环境里有 key 而真的打重排 API。
+    rerank_enabled: bool = False
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_pool: int = 30               # 送重排的候选数（top-30 × ~350 token ≈ ¥0.0005/次）
+    query_vec_cache: bool = True        # 查询向量缓存（data/vector/query_cache.db）
