@@ -20,6 +20,17 @@ import { HL_CITING, HL_CITED } from './scales.js';
 const DIM_NODE = '#333a45';
 const DIM_EDGE = '#1c222b';
 
+// ── 交互手感常量（2026-09-21 用户反馈：左键选择太难点、平移太容易误触、箭头太大）──
+const HOVER_COLOR = '#ffc53d';   // 磁力吸附到的节点高亮色（与 2D/3D 材质都能看清）
+const HOVER_SCALE = 1.7;         // 悬停节点放大倍数（吸附感）
+const PICK_EXTRA_PX = 12;        // 选择宽容度：离节点边缘这么多像素内都算命中（磁力吸附取最近者）
+const PAN_GUARD_PX = 22;         // 2D：按下点离最近节点边缘这么近 ⇒ 不立刻平移（先当作选节点）
+const PAN_ESCAPE_PX = 18;        // 但持续拖动超过这个距离仍转为平移（避免"按在节点上就拖不动"）
+const CLICK_MOVE_PX = 4;         // 位移小于它才算点击（原 2px 太灵敏，手一抖就选不中）
+const ARROW_LEN_K = 2.6;         // 箭头尺寸（× 世界单位系数 _k；原 6 ⇒ 大箭头在大图里很乱）
+const ARROW_MIN_W = 1.6;         // 箭头相对边宽的下限（× 边宽；原 3）
+const ARROW_POS = 0.86;          // 箭头沿边的位置（0=起点，1=终点）
+
 const BACKGROUNDS = {
   dark: { css: '#0e1116' },
   light: { css: '#f4f6fa' },
@@ -60,6 +71,10 @@ export class RendererThree {
     this._hoverId = null;
     this._longTimer = null;
     this._drag = null;
+    this._idxById = new Map();   // nodeId → 实例下标（悬停只改 1~2 个实例，不全量重写）
+    this._projPx = null;         // 屏幕投影缓存（拾取 O(N) 逐帧太贵）
+    this._projSig = '';
+    this._posRev = 0;            // 位置/尺寸版本号：投影缓存的作废依据之一
 
     this._initScene();
     this._initDom();
@@ -147,14 +162,27 @@ export class RendererThree {
 
     el.addEventListener('mousedown', (e) => {
       this._clearLongTimer();
-      // 先检测是否点在节点上（避免小节点被平移覆盖）
-      const picked = this._pick(e.clientX, e.clientY);
-      const pan = this._mode === '2d' ? e.button === 0 : (e.button === 1 || (e.button === 0 && e.shiftKey));
+      // 磁力吸附拾取：取宽容圈内**最近**的节点（小节点也点得中）
+      const hit = this._nearestNode(e.clientX, e.clientY);
+      // 平移门限用**更大**的保护圈（22px）：只有离任何节点都够远，左键才立刻平移
+      const nearNode = hit || this._nearestNode(e.clientX, e.clientY, PAN_GUARD_PX);
+      const forcePan = e.button === 1 || (e.button === 0 && e.shiftKey);
+      let mode = null;
+      if (forcePan) {
+        mode = 'pan';
+      } else if (e.button === 0) {
+        if (this._mode === '2d') {
+          // 2D：按下点贴着节点 ⇒ 先按"选节点"处理（平移变难触发）；空白处才是平移
+          mode = nearNode ? 'node' : 'pan';
+        } else {
+          mode = 'rotate';
+        }
+      }
       this._drag = {
-        mode: pan ? 'pan' : (e.button === 0 ? 'rotate' : null),
-        x: e.clientX, y: e.clientY, moved: false, button: e.button, picked,
+        mode, x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
+        moved: false, button: e.button, picked: hit ? hit.id : null,
       };
-      if (this._drag.mode) el.style.cursor = 'grabbing';
+      if (mode) el.style.cursor = (mode === 'pan' || !hit) ? 'grabbing' : 'pointer';
       if (this._hoverId && this._longCb) {
         const target = this._hoverId;
         this._longTimer = setTimeout(() => { this._longTimer = null; if (this._longCb) this._longCb(target); }, 450);
@@ -166,10 +194,17 @@ export class RendererThree {
       if (this._drag && this._drag.mode) {
         const dx = e.clientX - this._drag.x;
         const dy = e.clientY - this._drag.y;
-        if (Math.abs(dx) + Math.abs(dy) > 2) this._drag.moved = true;
+        const total = Math.hypot(e.clientX - this._drag.startX, e.clientY - this._drag.startY);
+        if (total > CLICK_MOVE_PX) this._drag.moved = true;
         this._drag.x = e.clientX; this._drag.y = e.clientY;
-        if (this._drag.mode === 'pan') this._pan(dx, dy);
-        else this._rotate(dx, dy);
+        if (this._drag.mode === 'pan') {
+          this._pan(dx, dy);
+        } else if (this._drag.mode === 'node') {
+          // 保护圈内按住不放继续拖 ⇒ 仍给平移（否则用户会觉得"拖不动"）
+          if (total > PAN_ESCAPE_PX) this._drag.mode = 'pan';
+        } else {
+          this._rotate(dx, dy);
+        }
       } else if (this._hoverId && this._tooltip.style.display === 'block') {
         this._tooltip.style.left = (e.clientX + 14) + 'px';
         this._tooltip.style.top = (e.clientY + 14) + 'px';
@@ -196,7 +231,10 @@ export class RendererThree {
       if (this._drag) return;
       const id = this._pick(e.clientX, e.clientY);
       if (id !== this._hoverId) {
+        const prev = this._hoverId;
         this._hoverId = id;
+        this._applyHoverVisual(prev);
+        this._applyHoverVisual(id);
         if (id) {
           const d = this._byId.get(id);
           this._tooltip.textContent = d ? (d.title || d.id) : id;
@@ -210,6 +248,7 @@ export class RendererThree {
     });
 
     el.addEventListener('mouseleave', () => {
+      this._applyHoverVisual(this._hoverId);
       this._hoverId = null;
       this._tooltip.style.display = 'none';
       this._clearLongTimer();
@@ -233,13 +272,17 @@ export class RendererThree {
     if (this._hl) this.clearHighlight();
   }
 
-  _pan(dx, dy) {
-    this._userMoved = true;
-    const w = this._container.offsetWidth || 800;
+  /** 当前视图下 1 屏幕像素 = 多少世界单位（2D 正交 / 3D 透视统一口径）。 */
+  _worldPerPx() {
     const h = this._container.offsetHeight || 600;
-    const worldPerPx = this._mode === '2d'
+    return this._mode === '2d'
       ? (2 * this._orthoHalf) / h
       : (2 * this._sph.radius * Math.tan((this._camPersp.fov * Math.PI) / 360)) / h;
+  }
+
+  _pan(dx, dy) {
+    this._userMoved = true;
+    const worldPerPx = this._worldPerPx();
     const right = new THREE.Vector3();
     const up = new THREE.Vector3();
     this._camera.matrix.extractBasis(right, up, new THREE.Vector3());
@@ -367,15 +410,21 @@ export class RendererThree {
 
   _writeNodeTransforms() {
     if (!this._nodesMesh) return;
+    this._posRev++;                 // 位置/尺寸变了 → 作废屏幕投影缓存
     const m = new THREE.Matrix4();
     const c = new THREE.Color();
+    this._idxById.clear();
     this._nodes.forEach((n, i) => {
+      this._idxById.set(n.id, i);
       const r = Math.max(0.2, (n.size || 2)) * this._k;
-      m.makeScale(r, r, r);
+      const hover = n.id === this._hoverId;
+      const s = hover ? r * HOVER_SCALE : r;
+      m.makeScale(s, s, s);
       m.setPosition(n.x || 0, n.y || 0, 0);
       this._nodesMesh.setMatrixAt(i, m);
       let color = n.color || '#4f9cf9';
       if (this._hl) color = this._hlNodeColor(n.id);
+      if (hover) color = HOVER_COLOR;
       this._nodesMesh.setColorAt(i, c.set(color));
     });
     this._nodesMesh.instanceMatrix.needsUpdate = true;
@@ -419,10 +468,10 @@ export class RendererThree {
       if (this._hl) color = this._hlEdgeColor(e, color);
       this._edgesMesh.setColorAt(i, c.set(color));
 
-      // 箭头：指向 target 端（showEdgeDir 开启时）
+      // 箭头：指向 target 端（showEdgeDir 开启时）；尺寸刻意做小——大量节点下大头箭头会糊成一片
       if (st.showEdgeDir) {
-        const ax = sx + (tx - sx) * 0.82, ay = sy + (ty - sy) * 0.82;
-        const as = Math.max(widthWorld * 3, this._k * 6);
+        const ax = sx + (tx - sx) * ARROW_POS, ay = sy + (ty - sy) * ARROW_POS;
+        const as = Math.max(widthWorld * ARROW_MIN_W, this._k * ARROW_LEN_K);
         m.compose(new THREE.Vector3(ax, ay, 0), q, new THREE.Vector3(as, as, as));
         this._arrowMesh.setMatrixAt(i, m);
         this._arrowMesh.setColorAt(i, c.set(color));
@@ -504,19 +553,79 @@ export class RendererThree {
 
   // ── 拾取 / 视角 ────────────────────────────────────
 
-  _pick(clientX, clientY) {
-    if (!this._nodesMesh || !this._nodes.length) return null;
+  /** 视图签名：相机/画布/节点尺寸任一变化就作废投影缓存。 */
+  _viewSig() {
+    const t = this._target;
+    return [this._container.offsetWidth, this._container.offsetHeight, t.x, t.y, t.z,
+            this._orthoHalf, this._sph.radius, this._sph.theta, this._sph.phi,
+            this._mode, this._k, this._posRev].join('|');
+  }
+
+  /** 全节点屏幕投影（含各自屏幕半径）——带缓存，仅在视图变化时重算。 */
+  _projectNodes() {
+    const sig = this._viewSig();
+    if (sig === this._projSig && this._projPx) return this._projPx;
     const rect = this._gl.domElement.getBoundingClientRect();
-    const ndc = new THREE.Vector2(
-      ((clientX - rect.left) / rect.width) * 2 - 1,
-      -((clientY - rect.top) / rect.height) * 2 + 1,
-    );
-    const ray = new THREE.Raycaster();
-    ray.setFromCamera(ndc, this._camera);
-    const hits = ray.intersectObject(this._nodesMesh);
-    if (!hits.length) return null;
-    const n = this._nodes[hits[0].instanceId];
-    return n ? n.id : null;
+    const w = rect.width || 1, h = rect.height || 1;
+    const wpp = this._worldPerPx() || 1;
+    const v = new THREE.Vector3();
+    const cam = this._camera;
+    cam.updateMatrixWorld();
+    const out = [];
+    for (const n of this._nodes) {
+      v.set(n.x || 0, n.y || 0, 0).project(cam);
+      if (v.z > 1) continue;                       // 相机背后（3D 旋转时会出现）
+      const rPx = (Math.max(0.2, n.size || 2) * this._k) / wpp;
+      out.push({
+        id: n.id,
+        px: rect.left + (v.x + 1) / 2 * w,
+        py: rect.top + (1 - v.y) / 2 * h,
+        rPx: Math.max(1.5, rPx),                   // 极小节点也给 1.5px，便于吸附
+      });
+    }
+    this._projPx = out;
+    this._projSig = sig;
+    return out;
+  }
+
+  /**
+   * 磁力吸附拾取：返回宽容圈（节点屏幕半径 + extraPx）内**最近**的节点。
+   * 比射线精确命中宽容得多——小节点、密集区都点得中；`dist` 供平移门限判断。
+   */
+  _nearestNode(clientX, clientY, extraPx = PICK_EXTRA_PX) {
+    if (!this._nodes.length || !this._nodesMesh) return null;
+    let best = null;
+    for (const p of this._projectNodes()) {
+      const dist = Math.hypot(clientX - p.px, clientY - p.py);
+      if (dist > p.rPx + extraPx) continue;
+      if (!best || dist < best.dist) best = { id: p.id, dist, rPx: p.rPx };
+    }
+    return best;
+  }
+
+  _pick(clientX, clientY) {
+    const hit = this._nearestNode(clientX, clientY);
+    return hit ? hit.id : null;
+  }
+
+  /** 悬停反馈：只改这 1 个实例的矩阵/颜色（鼠标移动频繁，不能全量重写）。 */
+  _applyHoverVisual(id) {
+    if (!id || !this._nodesMesh) return;
+    const i = this._idxById.get(id);
+    if (i == null) return;
+    const n = this._nodes[i];
+    const r = Math.max(0.2, n.size || 2) * this._k;
+    const on = id === this._hoverId;
+    const s = on ? r * HOVER_SCALE : r;
+    const m = new THREE.Matrix4().makeScale(s, s, s);
+    m.setPosition(n.x || 0, n.y || 0, 0);
+    this._nodesMesh.setMatrixAt(i, m);
+    let color = n.color || '#4f9cf9';
+    if (this._hl) color = this._hlNodeColor(id);
+    if (on) color = HOVER_COLOR;
+    this._nodesMesh.setColorAt(i, new THREE.Color(color));
+    this._nodesMesh.instanceMatrix.needsUpdate = true;
+    if (this._nodesMesh.instanceColor) this._nodesMesh.instanceColor.needsUpdate = true;
   }
 
   focus(id) {
