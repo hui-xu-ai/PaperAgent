@@ -184,6 +184,20 @@ class SettingsService:
                                 "api_key": s.deepseek_api_key, "enabled": True,
                                 "env": "DEEPSEEK", "max_tokens": ds_max,
                                 "reasoning_effort": None})
+        # 2026-09-21：智谱 GLM 内置槽位（第二家大模型，用户只填 ZHIPU_API_KEY）。
+        # 为什么不用 CUSTOM_PROVIDER_：Windows 下 os.environ 的键**一律大写**，而自定义
+        # 供应商的 id 还要再加一层 `p_`，写回前缀永远对不上文件里那组 ⇒ 每存一次就多留
+        # 一组同义键。固定大写的 ZHIPU_* 可以原样往返，.env 不会越写越乱。
+        zp_key = os.getenv("ZHIPU_API_KEY", "").strip()
+        if zp_key:
+            presets.append({
+                "id": "zhipu", "name": "智谱 GLM",
+                "base_url": os.getenv("ZHIPU_BASE_URL",
+                                      "https://open.bigmodel.cn/api/paas/v4").strip(),
+                "model": os.getenv("ZHIPU_MODEL", "glm-5.3-flash").strip(),
+                "api_key": zp_key, "enabled": True, "env": "ZHIPU",
+                "max_tokens": int(os.getenv("ZHIPU_MAX_TOKENS") or DEFAULT_MAX_OUTPUT_TOKENS),
+                "reasoning_effort": None})
         sf_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
         if sf_key or self._db_has_providers():
             presets.append({
@@ -304,14 +318,14 @@ class SettingsService:
             # N4：清理**已删除**自定义供应商的 .env 残留（避免重启后 env 预填重新冒出）
             kept_ids = {p["id"] for p in cleaned}
             for old_p in current:
-                if old_p["id"] not in kept_ids and not (old_p.get("env") in ("DEEPSEEK", "SILICONFLOW")):
+                if old_p["id"] not in kept_ids and not (old_p.get("env") in ("DEEPSEEK", "SILICONFLOW", "ZHIPU")):
                     try:
                         self._remove_custom_env(old_p["id"])
                     except Exception as e:  # noqa: BLE001
                         logger.warning("清理 .env 失败（%s）: %s", old_p["id"], e)
             for p in cleaned:
                 env_prefix = (p.get("env") or "").strip()
-                if env_prefix in ("DEEPSEEK", "SILICONFLOW"):
+                if env_prefix in ("DEEPSEEK", "SILICONFLOW", "ZHIPU"):
                     try:
                         self._sync_env_file(env_prefix, p)
                     except Exception as e:  # noqa: BLE001 - 写 .env 失败不阻塞保存
@@ -325,6 +339,7 @@ class SettingsService:
     # ---------------------------------------------------------- .env 写回（P12-4）
     _ENV_KEYS = {
         "DEEPSEEK": ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"),
+        "ZHIPU": ("ZHIPU_API_KEY", "ZHIPU_BASE_URL", "ZHIPU_MODEL"),
         "SILICONFLOW": ("SILICONFLOW_API_KEY", "SILICONFLOW_BASE_URL", "SILICONFLOW_MODEL"),
         "QWEN": ("QWEN_API_KEY", "QWEN_BASE_URL", "QWEN_MODEL"),
     }
@@ -372,7 +387,17 @@ class SettingsService:
         prefix = f"CUSTOM_PROVIDER_{_re.sub(r'[^A-Za-z0-9_]', '_', pid)}_"
         text = env_path.read_text(encoding="utf-8-sig")
         lines = text.splitlines()
-        lines = [ln for ln in lines if not ln.lstrip().startswith(prefix)]
+        # 2026-09-21 大小写收敛：Windows 下 `os.environ` 的键**一律大写**，而这里按 DB 里的 id
+        # 原样写文件 ⇒ 读回时 id 被多加一层 `p_`（`p_zhipu` 读成 `P_ZHIPU` → id `p_P_ZHIPU`），
+        # 写回前缀于是跟文件里那组对不上 ⇒ **每次保存都多留一组同义键**（用户 .env 里
+        # `CUSTOM_PROVIDER_p_P_*` 与 `CUSTOM_PROVIDER_p_P_P_*` 并存就是这么来的）。
+        # 修法：沿用文件里已有的键名大小写，并按**小写化前缀**整组替换。
+        ci = prefix.lower()
+        canon = next((ln.split("=", 1)[0].strip()[:len(prefix)]
+                      for ln in lines if ln.lstrip().lower().startswith(ci)), None)
+        if canon:
+            prefix = canon
+        lines = [ln for ln in lines if not ln.lstrip().lower().startswith(ci)]
         changed = False
         for field, suffix in self._CUSTOM_ENV_FIELDS.items():
             val = provider.get(field) or ""
@@ -395,10 +420,12 @@ class SettingsService:
         import re as _re
         prefix = f"CUSTOM_PROVIDER_{_re.sub(r'[^A-Za-z0-9_]', '_', provider_id)}_"
         text = env_path.read_text(encoding="utf-8-sig")
-        lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith(prefix)]
+        ci = prefix.lower()
+        # 大小写不敏感：文件里可能是小写 id，运行期 os.environ 里被 Windows 大写化
+        lines = [ln for ln in text.splitlines() if not ln.lstrip().lower().startswith(ci)]
         # 运行中清除 os.environ 对应条目
         for key in list(os.environ.keys()):
-            if key.startswith(prefix):
+            if key.lower().startswith(ci):
                 del os.environ[key]
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -515,8 +542,54 @@ class SettingsService:
     # 2026-09-19 从单个翻译供应商升级为**池**：`translation_providers` 为 JSON 列表，每个条目
     # 带 `enabled` 标志。**启用 1 个 = 切换模式**（只用该模型）；**启用多个 = 并行模式**
     # （轮询分发各批次，提速）。都不启用 = 回落主模型。旧单条 `translation_provider` 自动迁移入池。
+    _TRANSLATE_ENV_RE = re.compile(
+        r"^TRANSLATE_(\d+)_(BASE_URL|MODEL|API_KEY|MAX_TOKENS|ENABLED)$")
+
+    def _env_translation_presets(self) -> list[dict]:
+        """[种子] `.env` 的 `TRANSLATE_<idx>_*` → 翻译池条目（仅 DB 池为空时兜底）。
+
+        - **API_KEY 留空 → 回落 `SILICONFLOW_API_KEY`**（与 `get_lit_api_keys` 同一约定：
+          硅基流动一个 Key 同时服务翻译 / embedding / reranker）；
+        - **启用但拿不到任何 Key 的条目不播种**——宁可回落主模型，也不要"界面看着启用了、
+          实际调不通"；
+        - `ENABLED=0` 照原样播进来（界面可见但**不参与路由**），尊重用户显式关闭。
+        写回侧：界面保存走 `save_translation_providers` → `_sync_translate_env`（按序号
+        重写 `TRANSLATE_<idx>_*`），因此种子条目不会污染 `CUSTOM_PROVIDER_*`。
+        """
+        groups: dict[int, dict] = {}
+        for key, val in os.environ.items():
+            m = self._TRANSLATE_ENV_RE.match(key)
+            if m:
+                groups.setdefault(int(m.group(1)), {})[m.group(2).lower()] = (val or "").strip()
+        sf_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+        out: list[dict] = []
+        for idx in sorted(groups):
+            f = groups[idx]
+            if not (f.get("base_url") and f.get("model")):
+                continue
+            enabled = str(f.get("enabled") or "1").strip().lower() not in ("0", "false", "no")
+            api_key = f.get("api_key") or sf_key
+            if enabled and not api_key:
+                continue
+            try:
+                max_tokens = int(f.get("max_tokens") or 8192)
+            except ValueError:
+                max_tokens = 8192
+            out.append({
+                "id": f"translate_{idx}",
+                "name": f"{f['model'].split('/')[-1]}（.env 翻译预设）",
+                "base_url": f["base_url"], "model": f["model"], "api_key": api_key,
+                "enabled": enabled, "env": "TRANSLATE",
+                "max_tokens": max_tokens, "reasoning_effort": None,
+            })
+        return out
     def get_translation_providers(self, masked: bool = True) -> list[dict]:
-        """获取翻译供应商池（全部，含未启用的）。[] = 未配置（回落主模型）。"""
+        """获取翻译供应商池（全部，含未启用的）。[] = 未配置（回落主模型）。
+
+        2026-09-21：DB 池为空时回落 **.env 种子**（`TRANSLATE_<idx>_*`）——让"只填一个
+        硅基流动 Key 就能用免费 Qwen2.5-7B 翻译"成立，新装用户不必先去界面点一遍。
+        DB 有记录（含用户显式清空前的保存）时**永不覆盖**：DB 是权威，env 只负责首次播种。
+        """
         raw = self.store.get_setting(KEY_TRANSLATION_PROVIDERS)
         providers: list[dict] = []
         if raw:
@@ -539,6 +612,10 @@ class SettingsService:
                             json.dumps(providers, ensure_ascii=False))
                 except json.JSONDecodeError:
                     pass
+        if not providers:
+            # 2026-09-21：DB 池为空 → .env 种子（TRANSLATE_<idx>_*）。让"只填一个硅基流动
+            # Key 就能用免费 Qwen2.5-7B 翻译"成立，新装用户不必先去界面点一遍。
+            providers = self._env_translation_presets()
         if masked:
             out = []
             for p in providers:

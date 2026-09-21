@@ -2,6 +2,8 @@
 """设置服务测试（V03）：供应商脱敏 / env 兜底 / 激活。"""
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from app.services.settings_service import SettingsService
@@ -11,12 +13,16 @@ from app.services.settings_service import SettingsService
 def _clean_extra_env(monkeypatch):
     """隔离真实 .env 的 SILICONFLOW_*/CUSTOM_PROVIDER_*（P12F：用户配置后 env presets
     会多出 siliconflow 供应商，干扰本文件按预设数量断言的测试；
-    T3：根 .env 的 CUSTOM_PROVIDER_* 自定义供应商同样经 load_dotenv 注入 os.environ）。"""
+    T3：根 .env 的 CUSTOM_PROVIDER_* 自定义供应商同样经 load_dotenv 注入 os.environ）。
+    2026-09-21：再隔离 QWEN_*/ZHIPU_*/TRANSLATE_<n>_*——翻译池现在也会从 .env 播种
+    （`_env_translation_presets`），不隔离则本机 .env 会漏进池断言。"""
     import os
-    for k in ("SILICONFLOW_API_KEY", "SILICONFLOW_BASE_URL", "SILICONFLOW_MODEL"):
+    for k in ("SILICONFLOW_API_KEY", "SILICONFLOW_BASE_URL", "SILICONFLOW_MODEL",
+              "ZHIPU_API_KEY", "ZHIPU_BASE_URL", "ZHIPU_MODEL", "ZHIPU_MAX_TOKENS"):
         monkeypatch.delenv(k, raising=False)
     for k in list(os.environ):
-        if k.startswith("CUSTOM_PROVIDER_"):
+        if k.startswith("CUSTOM_PROVIDER_") or k.startswith("QWEN_") or re.match(
+                r"TRANSLATE_\d+_", k):
             monkeypatch.delenv(k, raising=False)
 
 
@@ -500,3 +506,96 @@ def test_parse_params_reject_invalid_values(tmp_path, store, monkeypatch):
         svc.save_parse(_parse_body(mineru_params={"is_ocr": "maybe"}))
     with pytest.raises(ValueError):
         svc.save_parse(_parse_body(paddleocr={"options": {"bogusSwitch": True}}))
+
+
+# ================================================ 翻译池 .env 种子（2026-09-21）
+def _seed_translate_env(monkeypatch, *, api_key=None, enabled="1"):
+    monkeypatch.setenv("TRANSLATE_0_BASE_URL", "https://api.siliconflow.cn/v1")
+    monkeypatch.setenv("TRANSLATE_0_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+    monkeypatch.setenv("TRANSLATE_0_MAX_TOKENS", "8192")
+    monkeypatch.setenv("TRANSLATE_0_ENABLED", enabled)
+    monkeypatch.delenv("TRANSLATE_0_API_KEY", raising=False)
+    if api_key is not None:
+        monkeypatch.setenv("TRANSLATE_0_API_KEY", api_key)
+
+
+def test_translation_pool_seeded_from_env(store, monkeypatch):
+    """只填一个硅基流动 Key ⇒ 翻译池自动有免费 Qwen2.5-7B（新装用户不必先点界面）。"""
+    _seed_translate_env(monkeypatch)
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-1234567890")
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    pool = svc.get_enabled_translation_providers(masked=False)
+    assert len(pool) == 1
+    assert pool[0]["model"] == "Qwen/Qwen2.5-7B-Instruct"
+    assert pool[0]["api_key"] == "sk-sf-1234567890"   # 留空 → 复用硅基 Key
+    assert pool[0]["max_tokens"] == 8192
+    assert pool[0]["id"] == "translate_0"
+
+
+def test_translation_pool_seed_respects_explicit_key_and_disable(store, monkeypatch):
+    """显式填了 TRANSLATE_0_API_KEY 就用它；ENABLED=0 则播进来但不参与路由。"""
+    _seed_translate_env(monkeypatch, api_key="sk-qwen-key")
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-1234567890")
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert svc.get_translation_providers(masked=False)[0]["api_key"] == "sk-qwen-key"
+    assert len(svc.get_enabled_translation_providers(masked=False)) == 1
+
+    monkeypatch.setenv("TRANSLATE_0_ENABLED", "0")
+    svc2 = SettingsService(store, app_settings=_make_env_settings())
+    assert len(svc2.get_translation_providers(masked=False)) == 1     # 可见
+    assert svc2.get_enabled_translation_providers(masked=False) == []  # 不路由 → 回落主模型
+
+
+def test_translation_pool_seed_skipped_without_any_key(store, monkeypatch):
+    """启用但拿不到任何 Key ⇒ 不播种（宁可回落主模型，也不要"看着启用却调不通"）。"""
+    _seed_translate_env(monkeypatch)
+    monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert svc.get_translation_providers(masked=False) == []
+    assert svc.get_enabled_translation_providers(masked=False) == []
+
+
+def test_translation_pool_db_wins_over_env_seed(store, monkeypatch):
+    """DB 有记录（用户已在界面保存过）⇒ env 种子一律不生效。"""
+    _seed_translate_env(monkeypatch)
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-1234567890")
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_translation_providers([{
+        "id": "t-db", "name": "用户选的", "base_url": "https://example.com/v1",
+        "model": "user-model", "api_key": "sk-db", "enabled": True}])
+    pool = svc.get_translation_providers(masked=False)
+    assert [p["id"] for p in pool] == ["t-db"]
+    assert [p["model"] for p in pool] == ["user-model"]
+
+
+def test_zhipu_env_slot(store, monkeypatch):
+    """智谱 GLM 内置槽位：填 ZHIPU_API_KEY 即出现（不走 CUSTOM_PROVIDER_，避免 .env 越写越乱）。"""
+    monkeypatch.setenv("ZHIPU_API_KEY", "zp-1234567890")
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    z = [p for p in svc.get_providers(masked=False) if p["id"] == "zhipu"]
+    assert len(z) == 1
+    assert z[0]["name"] == "智谱 GLM"
+    assert z[0]["model"] == "glm-5.3-flash"
+    assert z[0]["base_url"] == "https://open.bigmodel.cn/api/paas/v4"
+    assert z[0]["env"] == "ZHIPU"
+
+
+def test_zhipu_env_slot_absent_without_key(store, monkeypatch):
+    monkeypatch.delenv("ZHIPU_API_KEY", raising=False)
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert [p["id"] for p in svc.get_providers(masked=False)] == ["deepseek"]
+
+
+def test_zhipu_writeback_keeps_single_key_group(tmp_path, store, monkeypatch):
+    """ZHIPU_* 写回大小写稳定：连存两次不产生第二组键（自定义供应商曾踩的坑）。"""
+    from app.config import Settings
+    monkeypatch.setenv("ZHIPU_API_KEY", "zp-1234567890")
+    env_path = tmp_path / ".env"
+    env_path.write_text("ZHIPU_API_KEY=zp-old\nZHIPU_BASE_URL=https://open.bigmodel.cn/api/paas/v4\n"
+                        "ZHIPU_MODEL=glm-5.3-flash\n", encoding="utf-8")
+    svc = SettingsService(store, app_settings=Settings(), env_sync=True, env_path=str(env_path))
+    for _ in range(2):
+        svc.save_providers(svc.get_providers(masked=False))
+    text = env_path.read_text(encoding="utf-8")
+    keys = [ln.split("=", 1)[0] for ln in text.splitlines() if ln.startswith("ZHIPU_")]
+    assert sorted(keys) == ["ZHIPU_API_KEY", "ZHIPU_BASE_URL", "ZHIPU_MODEL"]
