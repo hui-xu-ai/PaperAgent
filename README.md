@@ -27,8 +27,9 @@
 **把一篇英文 PDF 变成"能读、能查、能问"的中文知识库**：本机单用户的文献 AI 阅读 / 翻译 / 知识库应用。
 导入 → 精准解析（MinerU v4 + 双通道字符仲裁）→ 三级知识编译（L1/L2/L3 笔记）→ 可选全文翻译 → 阅读 / 检索 / 问答。
 
-> ⚡ **不想折腾环境？** 直接下载 [Releases](../../releases) 里的 `PaperAgent-v1.0.0-win64.zip`（约 86MB，**免装 Python**）：
-> 解压 → 双击 `PaperAgent.exe` → 在「设置」里填 `DEEPSEEK_API_KEY`（翻译/编译/问答）与 `MINERU_API_KEY`（解析）→ 开始导入。
+> ⚡ **不想折腾环境？** 直接下载 [Releases](../../releases) 里的 `PaperAgent-v1.3.0-win64.zip`（约 90MB，**免装 Python**）：
+> 解压到空目录 → 双击 `PaperAgent.exe` → 在「设置」里填 `MINERU_API_KEY`（解析，必填）与 `DEEPSEEK_API_KEY`（翻译/编译/问答）→ 开始导入。
+> **新用户请先看 [新用户操作手册](docs/USER-MANUAL.md)**（按功能分章：导入 / 阅读 / 问答 / 知识库 / AI 检索 / 图谱 / 升级排障）。
 > 源码运行见下方「安装」。
 
 本机单用户的**文献 AI 阅读 / 翻译 / 知识库管理** Web 应用：导入 PDF → 精准解析 → 编译知识库笔记（L1/L2/L3）→（可选）AI 翻译与总结 → 阅读、检索、问答。
@@ -174,7 +175,7 @@ packages/paperkb/     知识库算法包（db/compile/translate/retrieve/imports
 tools/              运维与诊断脚本（解析批跑、评分卡、CDP 实测、迁移等）
 assets/             icon.ico 等静态资产
 rules/              外部规则根（builtin 在包内；learned/user 可写）
-docs/ feedback/     设计与会话记录（文档，非运行时）
+docs/ feedback/     设计与会话记录（文档，非运行时）；**新用户看 docs/USER-MANUAL.md**，知识库原理看 docs/KNOWLEDGE-BASE.md
 library/            【生成物】解析库：library/<RID>/ = mineru_full.md / en.md / document.json / images / work / qa_report.json
                     + library/<RID>/attachments/{si,review,data}/（依附资料，与父资源同生共死）
 knowledge_base/     【生成物】知识库：<DOI 目录>/ = en.md / zh.md / en_zh.md / summary.md / source.pdf / 笔记 + _qa/

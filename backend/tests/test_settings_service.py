@@ -522,12 +522,12 @@ def _seed_translate_env(monkeypatch, *, api_key=None, enabled="1"):
 def test_translation_pool_seeded_from_env(store, monkeypatch):
     """只填一个硅基流动 Key ⇒ 翻译池自动有免费 Qwen2.5-7B（新装用户不必先点界面）。"""
     _seed_translate_env(monkeypatch)
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-1234567890")
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-fake-not-a-real-key")
     svc = SettingsService(store, app_settings=_make_env_settings())
     pool = svc.get_enabled_translation_providers(masked=False)
     assert len(pool) == 1
     assert pool[0]["model"] == "Qwen/Qwen2.5-7B-Instruct"
-    assert pool[0]["api_key"] == "sk-sf-1234567890"   # 留空 → 复用硅基 Key
+    assert pool[0]["api_key"] == "sk-fake-not-a-real-key"   # 留空 → 复用硅基 Key
     assert pool[0]["max_tokens"] == 8192
     assert pool[0]["id"] == "translate_0"
 
@@ -535,7 +535,7 @@ def test_translation_pool_seeded_from_env(store, monkeypatch):
 def test_translation_pool_seed_respects_explicit_key_and_disable(store, monkeypatch):
     """显式填了 TRANSLATE_0_API_KEY 就用它；ENABLED=0 则播进来但不参与路由。"""
     _seed_translate_env(monkeypatch, api_key="sk-qwen-key")
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-1234567890")
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-fake-not-a-real-key")
     svc = SettingsService(store, app_settings=_make_env_settings())
     assert svc.get_translation_providers(masked=False)[0]["api_key"] == "sk-qwen-key"
     assert len(svc.get_enabled_translation_providers(masked=False)) == 1
@@ -558,7 +558,7 @@ def test_translation_pool_seed_skipped_without_any_key(store, monkeypatch):
 def test_translation_pool_db_wins_over_env_seed(store, monkeypatch):
     """DB 有记录（用户已在界面保存过）⇒ env 种子一律不生效。"""
     _seed_translate_env(monkeypatch)
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-1234567890")
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-fake-not-a-real-key")
     svc = SettingsService(store, app_settings=_make_env_settings())
     svc.save_translation_providers([{
         "id": "t-db", "name": "用户选的", "base_url": "https://example.com/v1",
