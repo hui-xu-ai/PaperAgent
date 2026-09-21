@@ -1,10 +1,10 @@
 {
  "arbitration": {
-  "applied_p": 29,
-  "arbitrated": 116,
+  "applied_p": 30,
+  "arbitrated": 106,
   "by_source": {
    "fallback": 2,
-   "rule": 113,
+   "rule": 103,
    "third": 3
   },
   "machine_fallback": 2,
@@ -12,7 +12,7 @@
   "ref_skipped": 0,
   "third_decided": 3
  },
- "conflicts": 118,
+ "conflicts": 108,
  "document": {
   "doi": null,
   "keywords": [
@@ -39,13 +39,13 @@
   "title": "Reinforced Magnetic-Responsive Electro-Ionic Artificial Muscles by 3D Laser-Induced Graphene Nano-Heterostructures"
  },
  "en_md": {
-  "lines": 119,
-  "sha256": "b3e5aa8b3eec5e95"
+  "lines": 95,
+  "sha256": "54d5b580b11883db"
  },
  "figures": 4,
  "formula_issues": 0,
  "mineru_full_md": {
-  "sha256": "fce50bed3524c47e"
+  "sha256": "77fef60a8b80099e"
  },
  "review": {
   "count": 0,
@@ -56,18 +56,18 @@
   "total": 6
  },
  "third_signal": {
-  "no_paddle_pair": 63,
+  "no_paddle_pair": 62,
   "pages_usable": 15,
   "votes": {
-   "both": 35,
+   "both": 32,
    "mineru": 2,
-   "neither": 7,
-   "paddleocr": 45
+   "neither": 3,
+   "paddleocr": 38
   }
  },
  "verify": {
-  "items": 39,
-  "ok": 16,
+  "items": 40,
+  "ok": 17,
   "review": 15,
   "suspicious": 7
  }
