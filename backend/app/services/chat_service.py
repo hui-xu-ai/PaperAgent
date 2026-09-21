@@ -773,20 +773,21 @@ class ChatService:
         # ---- qa：新知识库检索（notes/meta FTS5，编译产物）→ 流式 ----
         # 契约 2：检索**开始前**发 status —— 检索耗时期间前端不再只有空白气泡。
         yield {"type": "status", "text": RETRIEVAL_STATUS_TEXT}
+        # 注入上下文**由检索层组装**（2026-09-21）：走 paperkb.qa_context ⇒
+        # 「产物整份注入优先」（note/wiki/relations 读整份，≤3000 字/份），
+        # 而不是这里自己拼片段——实测拼片段会在 570 字处硬切，把同一份
+        # `_note.md` 里「研究结果」的数值（做功密度/等长应力/保持指数）切掉，
+        # 模型只能回答"数值被截断"。前后端解耦：片段怎么拼是检索层的事。
+        retrieved = 0
+        context = ""
         try:
             kbmeta = self._get_kbmeta()
-            retrieved = kbmeta.recall(question, top_k=6) if kbmeta else []
+            if kbmeta:
+                packed = kbmeta.qa_context(question, top_k=6, budget_chars=8000)
+                retrieved = len(packed.get("items") or [])
+                context = packed.get("context") or ""
         except Exception as e:  # noqa: BLE001
             logger.warning("知识库检索失败: %s", e)
-            retrieved = []
-        # 检索片段拼注入上下文：按边界裁剪（旧实现 [:8000] 会把最后一条片段切进句中）
-        from paperkb.textseg import boundary_trim
-
-        context = boundary_trim(
-            "\n\n".join(
-                f"[{it['doi']}/{it.get('file') or 'meta'}] {it.get('snippet') or ''}"
-                for it in retrieved),
-            8000)
         system = self._kb_system_prompt("qa")
         extra = self._system_extra()
         if extra:
@@ -827,6 +828,7 @@ class ChatService:
                                      reasoning_content=reasoning_content)
         self.store.set_cached_answer(key, question, answer)
         yield {"type": "done", "cached": False, "message_id": mid,
+               "retrieved": retrieved,
                "tokens": self._estimate_tokens(question) + self._estimate_tokens(answer)}
 
     def _ask_manage_tools(self, session_id: int, question: str,

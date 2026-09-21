@@ -1027,7 +1027,13 @@ class KBStore:
 
     def search_notes(self, query: str, limit: int = 10,
                      doi: str | None = None) -> list[dict]:
-        """notes_fts 召回；doi 给定则只召回该篇（Q5 阶段2 单篇编译笔记）。"""
+        """notes_fts 召回；doi 给定则只召回该篇（Q5 阶段2 单篇编译笔记）。
+
+        片段口径（2026-09-21 统一）：**两条路都取"命中位置窗口"**
+        （`match_window`，边界对齐、上限 `NOTE_WINDOW_LIMIT`）。旧实现主路用
+        SQLite `snippet(...,12)`（token 窗口，中英混排下窗口极不稳定），兜底用
+        `substr(content,1,500)` 再改成窗口 ⇒ 同一个通道两种片段口径，长度/边界都对不齐。
+        """
         q = _fts_query(query)
         if not q:
             return []
@@ -1041,21 +1047,23 @@ class KBStore:
             rows = self._search_notes_like(query, limit, mode="AND", doi=doi)
             if not rows:
                 rows = self._search_notes_like(query, limit, mode="OR", doi=doi)
-        return [{"doi": r["doi"], "file": r["filename"], "snippet": r["snip"]}
+        anchors = _query_anchors(query)
+        return [{"doi": r["doi"], "file": r["filename"],
+                 "snippet": match_window(r["content"] or "", anchors,
+                                         limit=NOTE_WINDOW_LIMIT)}
                 for r in rows]
 
     def _search_notes_raw(self, q: str, limit: int,
                           doi: str | None = None) -> list[sqlite3.Row]:
+        cols = (f"doi, filename, substr(content, 1, {_WINDOW_SCAN_CHARS}) AS content")
         if doi:
             with self._conn() as conn:
                 return conn.execute(
-                    """SELECT doi, filename, snippet(notes_fts, 2, '[', ']', '…', 12) AS snip
-                       FROM notes_fts WHERE notes_fts MATCH ? AND doi = ?
+                    f"""SELECT {cols} FROM notes_fts WHERE notes_fts MATCH ? AND doi = ?
                        ORDER BY bm25(notes_fts) LIMIT ?""", (q, doi, limit)).fetchall()
         with self._conn() as conn:
             return conn.execute(
-                """SELECT doi, filename, snippet(notes_fts, 2, '[', ']', '…', 12) AS snip
-                   FROM notes_fts WHERE notes_fts MATCH ?
+                f"""SELECT {cols} FROM notes_fts WHERE notes_fts MATCH ?
                    ORDER BY bm25(notes_fts) LIMIT ?""", (q, limit)).fetchall()
 
     def _search_notes_like(self, query: str, limit: int,
@@ -1070,9 +1078,8 @@ class KBStore:
         现在：对 CJK 片段额外展开 **2 字窗口（bigram）** 作为 OR 备选，只要笔记里出现
         「创新」「文献」这类二字词就能召回；噪声由 ORDER BY length + limit 兜住。
 
-        2026-09-21 修复：兜底 snippet 此前是 `substr(content,1,500)`（**文件开头**），
-        而这批中文问句的答案多在正文中段 ⇒ 注入给模型的"证据"是 frontmatter 模板。
-        现在改为 `instr` 定位命中词、取命中位置 ±300 字的窗口。
+        返回**原始行**（`content` 列），片段由上层 `search_notes` 统一用
+        `match_window` 生成——片段口径只有一处（2026-09-21）。
         """
         chunks = [c for c in query.replace('"', " ").split() if c]
         if not chunks:
@@ -1092,14 +1099,13 @@ class KBStore:
                     FROM notes_fts WHERE {where}
                     ORDER BY length(content) LIMIT ?""",
                 (*params, limit)).fetchall()
-            anchors = chunks
             if not rows and _has_cjk(query):
                 # CJK bigram OR 兜底（仅在整串匹配失败时才跑，避免无谓扫描）
-                anchors = _cjk_grams(query)
-                if not anchors:
+                grams = _cjk_grams(query)
+                if not grams:
                     return []
-                where2 = "(" + " OR ".join("content LIKE ?" for _ in anchors) + ")"
-                params2 = [f"%{g}%" for g in anchors]
+                where2 = "(" + " OR ".join("content LIKE ?" for _ in grams) + ")"
+                params2 = [f"%{g}%" for g in grams]
                 if doi:
                     where2 += " AND doi = ?"
                     params2 = [*params2, doi]
@@ -1108,9 +1114,7 @@ class KBStore:
                         FROM notes_fts WHERE {where2}
                         ORDER BY length(content) LIMIT ?""",
                     (*params2, limit)).fetchall()
-            return [{"doi": r["doi"], "filename": r["filename"],
-                     "snip": match_window(r["content"] or "", anchors)}
-                    for r in rows]
+            return list(rows)
 
     def notes_files(self, doi: str) -> list[str]:
         """该篇已编译产物文件名（notes_fts 中 DISTINCT filename），无则空。"""
@@ -1342,14 +1346,25 @@ def _has_cjk(text: str) -> bool:
 # CJK 兜底命中窗口：只在文件前 100k 字符里定位（更长的文本定位不划算，退化开头窗口）
 _WINDOW_SCAN_CHARS = 100_000
 
+# 笔记片段上限（字符）：与向量路的 `vector.SNIPPET_CHARS=1200` **同口径**。
+# 旧值 700 太窄——实测 1625 字的 `_note.md` 里「研究结果」的数值落在偏移 603~1100，
+# 700 字窗口怎么切都取不到，模型只能答"数值被截断"（而产物里明明有）。
+NOTE_WINDOW_LIMIT = 1200
+
 
 def match_window(content: str, anchors: list[str], radius: int = 300,
-                 limit: int = 700) -> str:
+                 limit: int = NOTE_WINDOW_LIMIT,
+                 slack: int = 300) -> str:
     """命中位置附近的文本窗口（替代 `substr(content,1,N)` 的"文件开头"口径）。
 
     在**所有**锚点里取最早出现的位置——只试前几个会漏（bigram 的前 3 个二字词未必
     出现在该文件里，旧写法会返回空片段 ⇒ 模型拿到"有引用、无证据"），然后取 ±radius
     窗口并按行/句边界收尾。锚点全没出现（如超出扫描上限）→ 退化为开头窗口。
+
+    `slack`（2026-09-21 修）：窗口必须**比 limit 宽**，否则 `len(seg) <= limit` 时
+    `boundary_trim` 判定"无需裁"直接原样返回 ⇒ 右边界是**硬切**（实测尾部出现
+    「…剩磁仅1.」「…为水基的」这类半句，与"按行/句收尾"的承诺不符）。
+    多取 slack 字再 trim，右边界才会真正落到 段落>行>句>逗号 上。
     """
     text = content or ""
     if not text:
@@ -1364,11 +1379,20 @@ def match_window(content: str, anchors: list[str], radius: int = 300,
     if pos < 0:
         return boundary_trim(text.strip(), limit)
     start = max(0, pos - radius)
-    seg = text[start:start + limit].strip()
+    seg = text[start:start + limit + max(0, slack)].strip()
     nl = seg.find("\n")
     if 0 <= nl <= 200:      # 去掉开头半截行
         seg = seg[nl + 1:].lstrip()
     return boundary_trim(seg, limit)
+
+
+def _query_anchors(query: str) -> list[str]:
+    """片段定位锚点（`match_window` 用）：空白分词优先，再补 CJK bigram。
+
+    两条路（FTS 主路 / LIKE 兜底）共用同一份锚点 ⇒ 片段口径只有一处。
+    """
+    chunks = [c for c in (query or "").replace('"', " ").split() if c]
+    return list(dict.fromkeys([*chunks, *_cjk_grams(query)]))
 
 
 def _cjk_grams(query: str, n: int = 2, cap: int = 12) -> list[str]:

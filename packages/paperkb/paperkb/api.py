@@ -710,6 +710,29 @@ def _enrich_recall(store, items: list[dict]) -> list[dict]:
     return items
 
 
+def qa_context(query: str, top_k: int = 8, budget_chars: int = 8000,
+               include_fulltext: bool = False) -> dict:
+    """[问答注入] 一次调用拿到「召回条目 + 组装好的注入上下文」。
+
+    为什么要有它（2026-09-21）：backend 问答路径此前自己拼片段
+    （`f"[{doi}/{file}] {snippet}"` 再 `boundary_trim`），与 paperkb 的
+    `build_context`（产物整份注入）是**两套口径**——同一批命中，一边给整份产物、
+    一边只给片段（实测因此丢掉「研究结果」里的数值）。注入文本该由检索层决定：
+    API 契约优先，前后端解耦（前端/后端都不需要知道"片段怎么拼"）。
+
+    返回 `{"items", "context", "context_chars"}`；`items` 与 `recall` 同形
+    （含 rid/kind/rrf/rerank_score，供 UI 溯源）。
+    """
+    from .retrieve import build_context, recall as _recall
+
+    store = _need_store()
+    items = _enrich_recall(store, _recall(
+        store, store.roots, query, top_k=top_k,
+        include_fulltext=include_fulltext))
+    ctx = build_context(items, store, store.roots, budget_chars)
+    return {"items": items, "context": ctx, "context_chars": len(ctx)}
+
+
 def recall_paper(doi: str, query: str, top_k: int = 4) -> list[dict]:
     """单篇编译笔记召回（paper 会话 Q5 阶段2）：只取该 DOI 编译产物按相关性。"""
     from .retrieve import recall_paper as _rp

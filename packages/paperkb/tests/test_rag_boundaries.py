@@ -198,3 +198,102 @@ class TestPerPaperRecallIsolation:
         self._two_papers(env)
         items = api.recall_paper("10.1000/a.1", "驱动的机制是什么", top_k=3)
         assert items and {it["doi"] for it in items} == {"10.1000/a.1"}
+
+
+class TestWindowBoundaryAlignment:
+    """命中窗口的两条口径修复（2026-09-21）。
+
+    旧 `match_window` 的窗口宽度**正好等于 limit** ⇒ `boundary_trim` 判定"无需裁"
+    原样返回，右边界是硬切（实测尾部「…剩磁仅1.」「…为水基的」）；且上限 700 太窄，
+    1625 字的 `_note.md` 里偏移 603~1100 的数值怎么都取不到。
+    """
+
+    def test_right_edge_lands_on_boundary(self):
+        from paperkb.db import match_window
+
+        content = "电渗" + "前置句子。" * 300 + "x" * 500
+        out = match_window(content, ["电渗"], limit=1200, radius=300)
+        assert len(out) <= 1200
+        assert out.rstrip()[-1] in "。！？；，\n", f"右边界仍是硬切: {out[-20:]!r}"
+
+    def test_notes_window_limit_is_1200(self, env):
+        """笔记片段上限与向量路（SNIPPET_CHARS=1200）对齐，不再是 700。"""
+        from paperkb.db import NOTE_WINDOW_LIMIT
+
+        assert NOTE_WINDOW_LIMIT == 1200
+        _mk_paper(env, "10.1000/long.1", "长笔记",
+                  "# T\n\n电渗锚点内容。" + "填充句子。" * 400)
+        api.rebuild_fts()
+        rows = api._need_store().search_notes("电渗锚点", limit=2)  # noqa: SLF001
+        assert rows
+        n = len(rows[0]["snippet"])
+        assert n <= NOTE_WINDOW_LIMIT, f"片段超上限: {n}"
+        assert n > 800, f"片段仍被 700 字老上限卡住: {n}"
+
+    def test_fts_primary_path_also_boundary_aligned(self, env):
+        """主路（FTS MATCH）也走命中窗口——旧实现用 SQLite `snippet(...,12)`。"""
+        _mk_paper(env, "10.1000/en.1", "English",
+                  "# T\n\nIPMC actuators bend under voltage." + " filler text." * 200)
+        api.rebuild_fts()
+        rows = api._need_store().search_notes("IPMC actuators", limit=2)  # noqa: SLF001
+        assert rows, "英文主路应召回"
+        assert rows[0]["snippet"].startswith("IPMC") or "IPMC" in rows[0]["snippet"]
+
+
+class TestContextAssembly:
+    """注入上下文组装：产物整份优先、向量路不丢、预算受控（2026-09-21）。"""
+
+    def _notes_item(self, doi: str, snippet: str, source: str = "vector") -> dict:
+        return {"doi": doi, "file": "_note.md", "snippet": snippet, "source": source}
+
+    def test_vector_source_items_not_dropped(self, env):
+        """`source="vector"` 的条目必须进上下文（旧实现两个名单都不含 ⇒ 整条丢）。"""
+        from paperkb.retrieve import build_context
+
+        _mk_paper(env, "10.1000/v.1", "V 篇", "# V\n\n" + "向量命中正文。" * 20)
+        api.rebuild_fts()
+        store = api._need_store()  # noqa: SLF001
+        ctx = build_context([self._notes_item("10.1000/v.1", "片段内容。", "vector")],
+                            store, env)
+        assert "10.1000/v.1" in ctx and "向量命中正文" in ctx
+
+    def test_product_injected_whole_not_snippet(self, env):
+        """产物命中：注入整份（含片段之外的尾部），不再被片段截断。"""
+        from paperkb.retrieve import build_context
+
+        body = "# T\n\n" + "正文段落。" * 100 + "\n\n尾部标记XYZ。"
+        _mk_paper(env, "10.1000/w.1", "W 篇", body)
+        api.rebuild_fts()
+        store = api._need_store()  # noqa: SLF001
+        ctx = build_context([self._notes_item("10.1000/w.1", "只有这一小段。")], store, env)
+        assert "尾部标记XYZ" in ctx, f"应注入整份产物: {ctx[-80:]!r}"
+
+    def test_dedupes_same_product(self, env):
+        from paperkb.retrieve import build_context
+
+        _mk_paper(env, "10.1000/d.1", "D 篇", "# D\n\n" + "去重正文。" * 20)
+        store = api._need_store()  # noqa: SLF001
+        ctx = build_context([self._notes_item("10.1000/d.1", "a", "vector"),
+                             self._notes_item("10.1000/d.1", "b", "notes")], store, env)
+        assert ctx.count("[10.1000/d.1]") == 1
+
+    def test_budget_respected(self, env):
+        from paperkb.retrieve import build_context
+
+        for i in range(5):
+            _mk_paper(env, f"10.1000/b{i}.1", f"B{i}", "# B\n\n" + "预算正文。" * 300)
+        store = api._need_store()  # noqa: SLF001
+        items = [self._notes_item(f"10.1000/b{i}.1", "s") for i in range(5)]
+        ctx = build_context(items, store, env, budget_chars=4000)
+        assert ctx, "必须先真的有内容（否则空上下文也能过预算断言）"
+        assert len(ctx) <= 4000
+
+    def test_qa_context_facade(self, env):
+        """门面 `qa_context` = 召回条目 + 组装好的上下文（backend 问答路径用）。"""
+        _mk_paper(env, "10.1000/q.1", "Q 篇", "# Q\n\n电渗泵机制与性能指标。" * 10)
+        api.rebuild_fts()
+        packed = api.qa_context("电渗泵机制", top_k=4, budget_chars=4000)
+        assert set(packed) == {"items", "context", "context_chars"}
+        assert packed["context"] and packed["context_chars"] == len(packed["context"])
+        assert packed["context_chars"] <= 4000
+        assert any(it["doi"] == "10.1000/q.1" for it in packed["items"])

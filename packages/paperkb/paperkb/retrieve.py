@@ -27,11 +27,13 @@ logger = logging.getLogger(__name__)
 
 # 注入预算（字符近似 token；英文 ~4 字符/token，中文 ~2）
 BUDGET_CHARS = 16_000          # ≈4-8k token
-NOTES_SHARE = 0.75             # 笔记 6k token 份额
-MAX_NOTES_PER_DOC = 2          # 每篇最多取几个产物文件
 MAX_NEIGHBOR_DOCS = 3          # 引用邻域最多补几篇
 SNIPPET_CHARS = 1200           # 单条注入片段上限（片段级，小节扩展后约 1.2k 字）
 RERANK_MIN_POOL = 12           # 候选池下限（少于它就没什么可重排的）
+# 注入时"读整份产物"的条数（note/wiki/relations 是 1~3KB，整份比片段更能保住数值/条件）
+FULL_PRODUCT_TOP = 3
+FULL_PRODUCT_CHARS = 3000      # 单份产物注入上限（超出按边界截断）
+_PRODUCT_FILES = {"_note.md", "_wiki.md", "_relations.md"}
 
 # 向量命中 → 注入条目用的"文件名"（与 notes_fts 的 filename 对齐，便于跨路去重）
 _VEC_FILE = {"note": "_note.md", "wiki": "_wiki.md", "relations": "_relations.md",
@@ -306,27 +308,61 @@ def paper_compiled_files(store: KBStore, doi: str) -> list[str]:
 
 
 def build_context(items: list[dict], store: KBStore, roots: Roots,
-                  budget_chars: int = BUDGET_CHARS) -> str:
-    """按预算组装注入上下文（笔记优先，元数据/邻域补充）。"""
+                  budget_chars: int = BUDGET_CHARS, *,
+                  full_products: int = FULL_PRODUCT_TOP) -> str:
+    """按预算组装注入上下文：**编译产物整份注入优先**，其余按片段补。
+
+    2026-09-21 重写（两处缺陷）：
+    - 旧实现按 `source` 分两组（notes/cards 与 meta/neighbor/fulltext）——**向量一路
+      `source="vector"` 两组都不在 ⇒ 整条被丢掉**。向量接进召回后这是实打实的证据损失
+      （实测一次问答 5 条命中里 4 条 source=vector，全丢）。
+    - 旧实现对产物类虽读整份，但**先按 source 判身份**：同一份产物被向量命中时只能拿到
+      片段（≤1200 字）。实测后果：`_note.md` 1625 字里「研究结果」的数值落在偏移
+      603~1100，片段在 570 字处断掉，模型只能答"数值被截断"（而产物里明明有）。
+
+    现在按 `file` 判身份：note/wiki/relations 一律 (doi,file) 去重后取前
+    `full_products` 条**读整份产物**（≤3000 字/份，边界截断），卡片按 type 读，
+    其余（meta/neighbor/fulltext）用命中片段。
+    """
+    seen: set[tuple[str, str]] = set()
+    products: list[dict] = []
+    cards: list[dict] = []
+    others: list[dict] = []
+    for it in items:
+        key = ((it.get("doi") or ""), (it.get("file") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        if key[1] in _PRODUCT_FILES:
+            products.append(it)
+        elif key[1] == "cards":
+            cards.append(it)
+        else:
+            others.append(it)
+
     parts: list[str] = []
     used = 0
-    # 笔记类（_note/_wiki/_relations/cards）优先
-    note_items = [it for it in items if it["source"] in ("notes", "cards")]
-    other_items = [it for it in items if it["source"] in ("meta", "neighbor", "fulltext")]
-    for it in note_items[:MAX_NOTES_PER_DOC * 4]:
-        content = store.notes_content(it["doi"], it["file"]) if it["file"] != "cards" else ""
-        if it["file"] == "cards":
-            from .cards import read_cards_for_compile
-            content = read_cards_for_compile(roots.kb_dir, it["doi"], limit_chars=1500)
+    for it in products[:max(0, full_products)]:
+        content = store.notes_content(it["doi"], it["file"]) or ""
         if not content:
             content = it.get("snippet") or ""
-        block = f"### [{it['doi']}] {it['file']}\n{boundary_trim(content, 4000)}"
-        if used + len(block) > int(budget_chars * NOTES_SHARE):
+        block = f"### [{it['doi']}] {it['file']}\n{boundary_trim(content, FULL_PRODUCT_CHARS)}"
+        if used + len(block) > budget_chars:
             break
         parts.append(block)
         used += len(block)
-    for it in other_items:
-        block = f"### [{it['doi']}] ({it['source']})\n{it.get('snippet') or ''}"
+    for it in cards:
+        from .cards import read_cards_for_compile
+
+        content = read_cards_for_compile(roots.kb_dir, it["doi"], limit_chars=1500)
+        block = f"### [{it['doi']}] 卡片\n{boundary_trim(content, 1500)}"
+        if not content or used + len(block) > budget_chars:
+            continue
+        parts.append(block)
+        used += len(block)
+    for it in products[max(0, full_products):] + others:
+        block = (f"### [{it['doi']}] ({it.get('source') or ''})\n"
+                 f"{it.get('snippet') or ''}")
         if used + len(block) > budget_chars:
             break
         parts.append(block)
