@@ -1207,14 +1207,16 @@ def _prompt_l3(meta: dict, self_ctx: str,
                  f"{r['context']}")
         related_blocks.append(block)
     related_text = "\n\n".join(related_blocks)
+    cite_map = "、".join(f"{i}={r['doi']}" for i, r in enumerate(related_ctxs, 1))
 
     task = (
         "你是科研知识关系分析专家。基于下方本文及多篇相关文献的编译结果，"
         "分析它们之间的概念关系、方法论连接和研究演进脉络。\n\n"
         + _NO_LATEX_RULE + "\n"
-        "## 引用约定\n"
-        "相关文献已按【相关文献 N（DOI）】编号；分析中提及某篇时写成「文献N（DOI）」"
-        "（N 与编号一致、DOI 原样写出），便于与文末列表对应并便于检索定位。\n\n"
+        "## 引用约定（硬性要求）\n"
+        f"相关文献编号与 DOI 对照：{cite_map}\n"
+        "正文中每次提及相关文献，必须写成「文献N（DOI）」形式，"
+        "例如：文献2（10.1016/j.snb.2022.132616）；不得只写「文献N」。\n\n"
         "## 本文编译结果\n"
         f"{self_ctx}\n\n"
         "## 相关文献编译结果\n"
@@ -1238,6 +1240,23 @@ def _prompt_l3(meta: dict, self_ctx: str,
 
 def _render_relations(meta, data: dict, related_ctxs: list[dict]) -> str:
     """渲染 `_relations.md`（L3 产物）。"""
+    from .doi import doi_to_dirname
+
+    self_dir = doi_to_dirname(meta.doi)
+
+    def _ref(p: str) -> str:
+        """引用项 → wikilink 目标（目录名）。
+
+        兼容模型写法：裸 DOI / 「文献N（DOI）」（L3 引用约定）/「本文」（指自身）。
+        """
+        s = (p or "").strip()
+        m = re.search(r"(10\.\d{4,9}/[^\s（）()]+)", s)
+        if m:
+            return m.group(1)
+        if s.startswith("本文"):
+            return self_dir
+        return s
+
     lines = [
         f"---\ntype: paper-relations\ndoi: {meta.doi}\n---\n",
         f"# 概念关系分析：{meta.title}\n",
@@ -1251,7 +1270,7 @@ def _render_relations(meta, data: dict, related_ctxs: list[dict]) -> str:
             concept = cm.get("concept", "")
             papers = cm.get("papers", [])
             evolution = cm.get("evolution", "")
-            paper_links = ", ".join(f"[[{p}/_note]]" for p in papers[:5])
+            paper_links = ", ".join(f"[[{_ref(p)}/_note]]" for p in papers[:5])
             lines.append(f"### {concept}\n"
                          f"- 相关文献：{paper_links}\n"
                          f"- 演进：{evolution}\n")
@@ -1260,8 +1279,8 @@ def _render_relations(meta, data: dict, related_ctxs: list[dict]) -> str:
     if method_conns:
         lines.append("## 方法论连接\n")
         for mc in method_conns:
-            lines.append(f"- [[{mc.get('from', '')}/_note]] → "
-                         f"[[{mc.get('to', '')}/_note]]："
+            lines.append(f"- [[{_ref(mc.get('from', ''))}/_note]] → "
+                         f"[[{_ref(mc.get('to', ''))}/_note]]："
                          f"{mc.get('relation', '')}")
 
     trajectory = data.get("research_trajectory", "")
