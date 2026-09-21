@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 # 工具结果回填上限（字符）；kb_recall 检索片段放宽
 _TRIM = 800
 _RECALL_TRIM = 4000
+# kb_paper_products 回填上限：它是**显式取整份**的出口，各份已由 max_chars(≤8000) 限住，
+# 这里只是总量兜底（约 2 份 ×8000）；不要退回 _TRIM，否则等于没取整份。
+_PRODUCTS_TRIM = 16000
 
 # 报告/综述落盘目录名（知识库 root 下）
 _REPORTS_DIRNAME = "_reports"
@@ -29,6 +32,42 @@ _INVALID_FS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def _trim(v, limit: int = _TRIM) -> str:
+    """截断回填（防上下文膨胀）。
+
+    **列表结果按整条取舍**（预算内保留前 N 条**完整**条目）——旧实现对序列化后的 JSON
+    字符串做边界裁剪，会把末条切成半截、JSON 结构也坏掉：模型看到"数值被截断"却不知道
+    缺了什么（2026-09-21 实测模型回报"数值被截断"）。宁可少给一条完整的，也不给半条。
+    字符串输入仍走边界裁剪（段落/行/句，不切进句子或 `$…$`）。
+    """
+    if isinstance(v, list):
+        return _trim_items(v, limit)
+    return _trim_text(v, limit)
+
+
+def _trim_items(items: list, limit: int) -> str:
+    """按条目整条取舍；单条自身就超预算时退回字符串边界裁剪（无法两全）。"""
+    kept: list = []
+    used = 0
+    for it in items:
+        size = len(json.dumps(it, ensure_ascii=False)) + 2      # 2 = ", " 分隔
+        if kept and used + size > limit:
+            break
+        kept.append(it)
+        used += size
+    if used > limit:                    # 首条自身就超预算：退回字符串边界裁剪
+        return _trim_text(items, limit)
+    out = json.dumps(kept, ensure_ascii=False)
+    omitted = len(items) - len(kept)
+    if omitted:
+        hint = f"…[已省略 {omitted} 条]"
+        while len(kept) > 1 and len(out) + len(hint) > limit:
+            kept.pop()
+            out = json.dumps(kept, ensure_ascii=False)
+        out += hint
+    return out
+
+
+def _trim_text(v, limit: int = _TRIM) -> str:
     """截断回填（防上下文膨胀）：优先在段落/行/句边界收尾，不切进句子或公式。
 
     无边界可用时退回硬切（与旧行为一致，见 tests/test_kb_tools.py::test_trim）。
@@ -139,6 +178,19 @@ TOOL_SPECS: list[dict] = [
         "description": "单篇详情：元数据（bib 权威）+ 引用/被引关系 + library/kb 原文层状态。",
         "parameters": {"type": "object",
                        "properties": {"doi": {"type": "string", "description": "DOI（含 /）"}},
+                       "required": ["doi"]}}},
+    {"type": "function", "function": {
+        "name": "kb_paper_products",
+        "description": "取单篇**编译产物整份正文**（L1 笔记 / L2 深度解读 / L3 关系卡片），"
+                       "按份边界对齐截断并报告截断量。kb_recall 只给命中片段、公式或小节"
+                       "可能不完整时用它补全证据。",
+        "parameters": {"type": "object",
+                       "properties": {
+                           "doi": {"type": "string", "description": "DOI（含 /）"},
+                           "files": {"type": "string",
+                                     "description": "逗号分隔，可选 note/wiki/relations；默认 note,wiki"},
+                           "max_chars": {"type": "integer",
+                                         "description": "每份上限（默认 3000，最大 8000）"}},
                        "required": ["doi"]}}},
     {"type": "function", "function": {
         "name": "kb_paper_scores",
@@ -356,6 +408,13 @@ def run_tool(name: str, args: dict, recall_budget: int | None = None, kb=None) -
             st = kb.source_status(doi)
             return {"ok": True, "result": _trim({"meta": meta, "citations": cit,
                                                  "source": st})}
+        if name == "kb_paper_products":
+            doi = (args.get("doi") or "").strip()
+            if not doi:
+                return {"ok": False, "result": "缺少 doi"}
+            out = kb.kb_paper_products(doi, args.get("files") or "note,wiki",
+                                       args.get("max_chars") or 3000)
+            return {"ok": True, "result": _trim(out, _PRODUCTS_TRIM)}
         if name == "kb_paper_scores":
             doi = args.get("doi", "")
             s = kb.value_score(doi)

@@ -2088,8 +2088,56 @@ def _folder_for_doi(roots, doi: str):
     return None
 
 
+# 编译产物文件名（单篇"整份正文"取用）
+_PRODUCT_FILES = {"note": "_note.md", "wiki": "_wiki.md", "relations": "_relations.md"}
+PRODUCT_MAX_CHARS = 8000        # 单份硬上限：防一次取回把上下文撑爆
+
+
+def kb_paper_products(doi: str, files: str = "note,wiki",
+                      max_chars: int = 3000) -> dict:
+    """取该篇**编译产物整份正文**（按份边界对齐截断，默认 3000 字/份）。
+
+    为什么需要它：召回（`recall` / `qa_context`）给的是**块级命中片段**（小节扩展后
+    ≤1200/3000 字），公式、表格或小节结构可能刚好落在窗口外。agent 需要完整证据时应当
+    **显式取整份**，而不是把每一轮召回都撑大（多轮循环会重复付 token）。
+
+    `chars` 里逐份给出 `full/returned/truncated`，让调用方知道被截掉多少——
+    避免"以为拿到全文、其实被截"。
+    """
+    from .textseg import boundary_trim, strip_frontmatter
+
+    store = _need_store()
+    want = [f.strip().lower() for f in (files or "").split(",") if f.strip()]
+    if not want:
+        want = ["note", "wiki"]
+    cap = max(200, min(int(max_chars or 3000), PRODUCT_MAX_CHARS))
+    folder = _folder_for_doi(store.roots, doi)
+    if folder is None:
+        return {"doi": doi, "found": False, "products": {}, "chars": {},
+                "missing": want, "hint": "该篇无 kb 目录（未编译或已移出知识库）"}
+    products: dict[str, str] = {}
+    chars: dict[str, dict] = {}
+    missing: list[str] = []
+    for key in want:
+        name = _PRODUCT_FILES.get(key)
+        if not name:
+            continue
+        path = folder / name
+        if not path.is_file():
+            missing.append(key)
+            continue
+        body = strip_frontmatter(path.read_text(encoding="utf-8",
+                                                errors="replace")).strip()
+        kept = boundary_trim(body, cap)
+        products[key] = kept
+        chars[key] = {"full": len(body), "returned": len(kept),
+                      "truncated": len(kept) < len(body)}
+    return {"doi": doi, "found": True, "dir": folder.name, "products": products,
+            "chars": chars, "missing": missing}
+
+
 def _kb_index(api_key: str = ""):
-    """取向量索引实例（单例数据层；api_key 缺省读环境变量）。"""
+    """取向量索引实例（单例；api_key 缺省读环境变量）。"""
     import os
 
     from .vector import get_kb_vector_index

@@ -2,6 +2,8 @@
 """kb_tools 单测：工具 schema 完整性 + 执行器分发/截断（stub container）。"""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from backend.app.services import kb_tools
@@ -55,6 +57,12 @@ class _Stub:
         return {"doi": doi, "copied": ["en.md"], "skipped": [], "force": force}
     def verify_doc(self, doi, base="kb"):
         return {"ok": True, "expected_count": 1, "found_count": 1}
+    def kb_paper_products(self, doi, files="note,wiki", max_chars=3000):
+        return {"doi": doi, "found": True, "dir": "10.1000_abc",
+                "products": {"note": "N" * 3000, "wiki": "W" * 3000},
+                "chars": {"note": {"full": 3000, "returned": 3000, "truncated": False},
+                          "wiki": {"full": 3000, "returned": 3000, "truncated": False}},
+                "missing": []}
 
 
 @pytest.fixture()
@@ -79,6 +87,47 @@ def test_trim():
     assert _trim("x" * 900) == "x" * 800 + "…[截断 100 字符]"
     assert _trim({"a": 1}) == '{"a": 1}'
     assert len(_trim({"a": 1}, 5)) <= 60
+
+
+def test_trim_list_drops_whole_items_never_half():
+    """列表按整条取舍：末条不得被切成半截（旧实现对序列化串裁剪 → 半条 + 坏 JSON）。"""
+    items = [{"doi": f"10.1/{i}", "snippet": "s" * 400} for i in range(10)]
+    out = _trim(items, 1000)
+    assert len(out) <= 1000
+    assert out.endswith("条]"), out[-20:]
+    kept = json.loads(out[:out.index("…[已省略")])
+    # 每条都完整（snippet 长度原样 400），没有被切过
+    assert kept and all(len(it["snippet"]) == 400 for it in kept)
+    assert all(it["doi"].startswith("10.1/") for it in kept)
+
+
+def test_trim_list_under_budget_untouched():
+    items = [{"a": 1}, {"b": 2}]
+    assert json.loads(_trim(items, 1000)) == items
+
+
+def test_trim_list_single_item_over_budget_falls_back():
+    """单条自身超预算 → 退回字符串边界裁剪（不能给出超预算的整条）。"""
+    out = _trim([{"doi": "10.1/x", "snippet": "s" * 2000}], 300)
+    assert len(out) <= 300 + 20
+
+
+def test_paper_products_tool(stub):
+    """整份产物出口：显式取全文，不被 800 字符的默认回填上限砍掉。"""
+    r = run_tool("kb_paper_products", {"doi": "10.1000/abc"})
+    assert r["ok"] is True
+    assert "10.1000/abc" in r["result"]
+    assert len(r["result"]) > 5000, "取整份时不得按 _TRIM=800 回填"
+    assert "N" * 100 in r["result"] and "W" * 100 in r["result"]
+    # 缺 doi 要给出明确失败，而不是静默取到别篇
+    bad = run_tool("kb_paper_products", {})
+    assert bad["ok"] is False and "doi" in bad["result"]
+
+
+def test_paper_products_declared_in_specs():
+    names = {s["function"]["name"] for s in tool_specs()}
+    assert "kb_paper_products" in names
+
 
 
 def test_unknown_tool(stub):
