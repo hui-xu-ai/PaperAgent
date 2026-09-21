@@ -26,6 +26,7 @@ DIST_ALIAS = {
     "fitz": "pymupdf", "dotenv": "python-dotenv", "yaml": "pyyaml",
     "PIL": "pillow", "docx": "python-docx", "bs4": "beautifulsoup4",
     "webview": "pywebview", "pymupdf": "pymupdf",
+    "faiss": "faiss-cpu",
 }
 # 通过 `pip install -e packages/<x>` 就地安装的兄弟包（不在 pyproject 的 dependencies 里）
 SIBLINGS = {"paperparse", "paperkb", "paperlit"}

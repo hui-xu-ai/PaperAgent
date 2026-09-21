@@ -68,10 +68,21 @@ def _make_kb(roots: Roots, doi: str, files: tuple[str, ...] = ()) -> None:
             p.write_text("x", encoding="utf-8")
 
 
+def _kb(**kw) -> dict:
+    """kb_list 便捷入口（本文件用例）。
+
+    这些用例只验证聚合/过滤/排序/分页逻辑，不铺 kb 目录磁盘态，而 kb_list 自
+    2026-09-19 起默认 on_disk_only=True（过滤磁盘已删的幽灵记录）——不关掉就
+    会被整体过滤成空列表。幽灵过滤的默认行为由 test_kb_list_on_disk_only_default 覆盖。
+    """
+    kw.setdefault("on_disk_only", False)
+    return api.kb_list(**kw)
+
+
 # ---------------------------------------------------------------- 基本聚合
 
 def test_kb_list_empty(kbsetup):
-    r = api.kb_list()
+    r = _kb()
     assert r == {"items": [], "total": 0, "page": 1, "page_size": 50}
 
 
@@ -93,7 +104,7 @@ def test_kb_list_basic_aggregation(kbsetup, fake_scores, roots):
     _make_kb(roots, d1, ("source.pdf", "en.md", "document.json", "images"))
     _make_kb(roots, d2, ("en.md",))
 
-    r = api.kb_list()
+    r = _kb()
     assert r["total"] == 3 and r["page"] == 1 and r["page_size"] == 50
     by_doi = {it["doi"]: it for it in r["items"]}
     assert set(by_doi) == {d1, d2, d3}
@@ -134,20 +145,20 @@ def test_kb_list_filters(kbsetup, fake_scores):
     _add_job(store, d1, "L1", "done")
     _add_job(store, d2, "L1", "queued")           # 排队 ≠ 已编译
 
-    assert [it["doi"] for it in api.kb_list(journal="science")["items"]] == [d2]
-    assert [it["doi"] for it in api.kb_list(journal="SCIENCE")["items"]] == [d2]
-    assert [it["doi"] for it in api.kb_list(journal="nat")["items"]] == [d1]
+    assert [it["doi"] for it in _kb(journal="science")["items"]] == [d2]
+    assert [it["doi"] for it in _kb(journal="SCIENCE")["items"]] == [d2]
+    assert [it["doi"] for it in _kb(journal="nat")["items"]] == [d1]
 
-    assert {it["doi"] for it in api.kb_list(score_min=3.0)["items"]} == {d1, d3}
-    assert {it["doi"] for it in api.kb_list(score_min=5.0)["items"]} == set()
+    assert {it["doi"] for it in _kb(score_min=3.0)["items"]} == {d1, d3}
+    assert {it["doi"] for it in _kb(score_min=5.0)["items"]} == set()
 
-    assert [it["doi"] for it in api.kb_list(compile_status="done")["items"]] == [d1]
-    assert {it["doi"] for it in api.kb_list(compile_status="none")["items"]} == {d2, d3}
-    assert [it["doi"] for it in api.kb_list(compile_status="L1")["items"]] == [d1]
-    assert [it["doi"] for it in api.kb_list(compile_status="l3")["items"]] == []
+    assert [it["doi"] for it in _kb(compile_status="done")["items"]] == [d1]
+    assert {it["doi"] for it in _kb(compile_status="none")["items"]} == {d2, d3}
+    assert [it["doi"] for it in _kb(compile_status="L1")["items"]] == [d1]
+    assert [it["doi"] for it in _kb(compile_status="l3")["items"]] == []
 
     # 组合过滤
-    assert [it["doi"] for it in api.kb_list(score_min=3.0, compile_status="done")["items"]] == [d1]
+    assert [it["doi"] for it in _kb(score_min=3.0, compile_status="done")["items"]] == [d1]
 
 
 def test_kb_list_search_q(kbsetup, fake_scores):
@@ -157,12 +168,12 @@ def test_kb_list_search_q(kbsetup, fake_scores):
     d3 = _add_meta(store, "10.1000/c.3", title="Quantum dots in display", journal="Cell")
     fake_scores({d1: (4.0, "L2"), d2: (3.0, "L2"), d3: (2.0, "L1")})
 
-    got = api.kb_list(q="quantum")
+    got = _kb(q="quantum")
     assert got["total"] == 2
     assert {it["doi"] for it in got["items"]} == {d1, d3}
 
     # q + 其他过滤叠加
-    got = api.kb_list(q="quantum", journal="cell")
+    got = _kb(q="quantum", journal="cell")
     assert [it["doi"] for it in got["items"]] == [d3]
 
 
@@ -171,7 +182,7 @@ def test_kb_list_real_scoring(kbsetup):
     store = api._store  # noqa: SLF001
     _add_meta(store, "10.1000/a.1", title="Real scoring", journal="Nature",
               year="2024", times_cited=50)
-    r = api.kb_list()
+    r = _kb()
     assert r["total"] == 1
     it = r["items"][0]
     assert isinstance(it["value_score"], float) and 0.0 <= it["value_score"] <= 5.0
@@ -196,25 +207,49 @@ def test_kb_list_sort_pagination(kbsetup, fake_scores):
     fake_scores(scores)
     order = [normalize_doi(m[0]) for m in metas]
 
-    assert [it["doi"] for it in api.kb_list(sort="value")["items"]] == \
+    assert [it["doi"] for it in _kb(sort="value")["items"]] == \
         [order[1], order[4], order[3], order[0], order[2]]        # 5.0,4.0,3.0,2.0,1.0
-    assert [it["doi"] for it in api.kb_list(sort="year")["items"]] == order  # 2024→2020
-    assert [it["doi"] for it in api.kb_list(sort="title")["items"]] == \
+    assert [it["doi"] for it in _kb(sort="year")["items"]] == order  # 2024→2020
+    assert [it["doi"] for it in _kb(sort="title")["items"]] == \
         [order[0], order[1], order[3], order[4], order[2]]        # Alpha,Beta,Delta,Epsilon,Gamma
     # 未知 sort 回落 value
-    assert [it["doi"] for it in api.kb_list(sort="bogus")["items"]] == \
+    assert [it["doi"] for it in _kb(sort="bogus")["items"]] == \
         [order[1], order[4], order[3], order[0], order[2]]
 
     # 分页（value 序）：page2/2 → 3.0,2.0
-    r = api.kb_list(sort="value", page=2, page_size=2)
+    r = _kb(sort="value", page=2, page_size=2)
     assert [it["doi"] for it in r["items"]] == [order[3], order[0]]
     assert r["total"] == 5 and r["page"] == 2 and r["page_size"] == 2
 
     # 越界页 → 空 items，total 不变
-    r = api.kb_list(sort="value", page=99, page_size=2)
+    r = _kb(sort="value", page=99, page_size=2)
     assert r["items"] == [] and r["total"] == 5
 
     # page_size 上限 200 / 下限 1；page 下限 1
-    assert api.kb_list(page_size=500)["page_size"] == 200
-    assert api.kb_list(page_size=0)["page_size"] == 1
-    assert api.kb_list(page=0)["page"] == 1
+    assert _kb(page_size=500)["page_size"] == 200
+    assert _kb(page_size=0)["page_size"] == 1
+    assert _kb(page=0)["page"] == 1
+
+
+# ---------------------------------------------------------------- 磁盘幽灵过滤
+
+def test_kb_list_on_disk_only_default(kbsetup, fake_scores, roots):
+    """2026-09-19 默认行为：kb 目录已删的幽灵记录默认不出现。
+
+    这里刻意用裸 api.kb_list()（不套 _kb）验证**默认值**本身；
+    on_disk_only=False 时才把数据库里仍在、磁盘上已无目录的记录放出来。
+    """
+    store = api._store  # noqa: SLF001
+    d1 = _add_meta(store, "10.1000/a.1", title="On disk paper")
+    d2 = _add_meta(store, "10.1000/b.2", title="Ghost paper")
+    fake_scores({d1: (4.0, "L2"), d2: (3.0, "L2")})
+    _make_kb(roots, d1, ("en.md",))          # 只有 d1 落磁盘
+
+    r = api.kb_list()
+    assert r["total"] == 1 and [it["doi"] for it in r["items"]] == [d1]
+    assert r["items"][0]["on_disk"] is True
+
+    got = api.kb_list(on_disk_only=False)
+    assert got["total"] == 2
+    by = {it["doi"]: it for it in got["items"]}
+    assert by[d2]["on_disk"] is False and by[d2]["in_kb"] is False

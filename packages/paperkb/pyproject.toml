@@ -17,10 +17,14 @@ dependencies = [
     # attachments.py 里 `import fitz`（PyMuPDF）/ `import docx`（python-docx）——同样一直漏声明
     "pymupdf>=1.24",
     "python-docx>=1.1",
+    # vector.py 顶层 `import numpy as np`（向量真值载体，必需）
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+# vector.py 的 `import faiss` 在 try/except 内（可选加速，HAS_FAISS=False 回落 numpy 暴力检索）
+vector = ["faiss-cpu>=1.7"]
 
 [tool.setuptools.packages.find]
 where = ["."]
