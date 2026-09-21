@@ -786,9 +786,11 @@ function kbaPapersRender() {
     const top = compiled.slice().sort().pop() || '';
     const hasError = !!it.last_error;
     const hasL3 = compiled.includes('L3');
+    const failedLv = it.last_failed_level || '';
     let stClass = 'st-none', stText = '\u672a\u7f16\u8bd1';
-    if (hasError) { stClass = 'st-fail'; stText = '\u5931\u8d25'; }
-    else if (hasL3) { stClass = 'st-l3'; stText = 'L3 \u5b8c\u6210'; }
+    if (hasL3) { stClass = 'st-l3'; stText = 'L3 \u5b8c\u6210'; }
+    else if (hasError && top) { stClass = 'st-fail'; stText = top + ' \u5b8c\u6210\u00b7' + (failedLv || 'L3') + ' \u5931\u8d25'; }
+    else if (hasError) { stClass = 'st-fail'; stText = '\u5931\u8d25'; }
     else if (top === 'L2') { stClass = 'st-l2'; stText = 'L2 \u5b8c\u6210'; }
     else if (top === 'L1') { stClass = 'st-l1'; stText = 'L1 \u5b8c\u6210'; }
     const doi = escapeHtml(it.doi || '');
@@ -798,8 +800,9 @@ function kbaPapersRender() {
     const scoreVal = it.value_score != null ? Number(it.value_score).toFixed(1) : '\u2014';
     let actions = '';
     if (hasError) actions = '<button class="btn small" data-act="retry" data-doi="' + doi + '">\u91cd\u8bd5</button>';
-    else if (!hasL3) actions = '<button class="btn small" data-act="l3" data-doi="' + doi + '">\u5347\u7ea7L3</button>';
-    else actions = '<span class="muted">\u2014</span>';
+    else if (hasL3) actions = '<span class="muted">\u2014</span>';
+    else if (it.l3_eligible) actions = '<button class="btn small" data-act="l3" data-doi="' + doi + '">\u5347\u7ea7L3</button>';
+    else actions = '<span class="muted" title="\u4ef7\u503c\u5206\u672a\u8fbeL3\u95e8\u69db(4.0)\u6216AI\u8bc4\u5206\u7f3a\u5931">\u2014</span>';
     return '<tr>' +
       '<td><input type="checkbox" data-doi="' + doi + '"' + checked + '></td>' +
       '<td title="' + escapeHtml(it.title || '') + '">' + escapeHtml(shortTitle(it.title || it.doi || '', 50)) +

@@ -4,7 +4,7 @@
 数据源（全部来自现有 paperkb 数据，不新增/不改用户元数据）：
 - papers_meta（store.list_meta）：doi/title/journal/year/imported_at → 导入日期与文献列表
 - knowledge_base/<doi_to_dirname(doi)>/：en.md→已解析；en_zh.md/zh.md/document.json(text_zh)
-  →已翻译；kb 目录存在且已编译(_note/_details/_wiki/summary 等)→已纳入
+  →已翻译；kb 目录存在且已编译(_note/_wiki/_relations 等)→已纳入
 - 纳入日期：kb 目录 mtime（编译/同步写入时间）
 - 用户笔记：knowledge_base/_diary/<YYYY-MM-DD>.md（文件式 markdown，Obsidian 可管理）
 

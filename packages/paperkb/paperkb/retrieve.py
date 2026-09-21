@@ -95,7 +95,7 @@ def recall(store: KBStore, roots: Roots, query: str, *,
 
 def recall_paper(store: KBStore, roots: Roots, doi: str, query: str, *,
                  top_k: int = 4) -> list[dict]:
-    """单篇编译笔记召回（Q5 阶段2）：只取该 DOI 的编译产物（_note/_details 等），
+    """单篇编译笔记召回（Q5 阶段2）：只取该 DOI 的编译产物（_note/_wiki/_relations），
     按 query 相关性排序。返回 [] = 未编译或该篇无命中（上层回退全文片段）。"""
     from .doi import normalize_doi
 
@@ -157,7 +157,7 @@ def build_context(items: list[dict], store: KBStore, roots: Roots,
     """按预算组装注入上下文（笔记优先，元数据/邻域补充）。"""
     parts: list[str] = []
     used = 0
-    # 笔记类（_note/_details/_wiki/cards）优先
+    # 笔记类（_note/_wiki/_relations/cards）优先
     note_items = [it for it in items if it["source"] in ("notes", "cards")]
     other_items = [it for it in items if it["source"] in ("meta", "neighbor", "fulltext")]
     for it in note_items[:MAX_NOTES_PER_DOC * 4]:

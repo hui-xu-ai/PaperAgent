@@ -852,7 +852,7 @@ class KBStore:
     def reindex_from_kb(self, fulltext: bool = False) -> dict:
         """扫 knowledge_base/ 全量重建 notes_fts（+fulltext_fts 可选）。幂等。
 
-        重建源：每篇 _note/_details/_wiki 编译产物 + 该篇 cards/ 下的 card-qa 卡片，
+        重建源：每篇 _note/_wiki/_relations 编译产物 + 该篇 cards/ 下的 card-qa 卡片，
         并单独索引 _global/cards/ 下的知识库 QA 卡片（全局保留键 "_global"）。
         QA 卡片随单篇/全局一并入 notes_fts，全库重建后不丢、命名空间互不串。
         """
@@ -1149,6 +1149,18 @@ class KBStore:
                 "SELECT name, definition FROM concepts WHERE paper_doi=?",
                 (paper_doi,)).fetchall()
         return [dict(r) for r in rows]
+
+    def all_concepts(self) -> list[dict]:
+        """全表概念行（归一化回灌用）。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT paper_doi, name, definition FROM concepts").fetchall()
+        return [dict(r) for r in rows]
+
+    def clear_concepts(self) -> None:
+        """清空概念表（归一化回灌前调用；随后重新 upsert）。"""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM concepts")
 
     # ---------------------------------------------------------- paperlit 同步
     def sync_lit_meta(self, lit_db_path: Path) -> dict:

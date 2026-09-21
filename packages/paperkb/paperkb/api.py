@@ -441,6 +441,11 @@ def compile_now(doi: str, level: str = "L1", force: bool = False) -> dict:
     return _need_compiler().compile(doi, level, force)
 
 
+def rebuild_concept_pages() -> dict:
+    """归一化重建概念表并重新生成 ≥3 文献的概念页（一次性回灌，幂等）。"""
+    return _need_compiler().rebuild_concept_pages()
+
+
 def ensure_paper_registered(doc_json: str, *, paper_id: int = 0, pdf_md5: str = "") -> str:
     """确保 document.json 对应的资源在 papers_meta 里有记录，返回资源键（RID）。
 
@@ -956,6 +961,7 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
          "total": int, "page": int, "page_size": int}
     """
     store = _need_store()
+    from .score import L3_THRESHOLD as _L3_TH
 
     # 1) 候选元数据（q 走 FTS；无 q 全量；一次查询）
     metas = (store.search_meta(q, limit=_KB_LIST_MAX) if q
@@ -974,7 +980,8 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
         doi = j.get("paper_doi") or ""
         if not doi:
             continue
-        agg = jobs.setdefault(doi, {"compiled": [], "queued": [], "error": ""})
+        agg = jobs.setdefault(doi, {"compiled": [], "queued": [], "error": "",
+                                    "failed_level": ""})
         st, lv = (j.get("status") or ""), ((j.get("level") or "").upper())
         if st == "done" and lv in _KB_LEVELS and lv not in agg["compiled"]:
             agg["compiled"].append(lv)
@@ -983,6 +990,7 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             agg["queued"].append(lv)
         if st == "failed" and (j.get("error") or "") and not agg["error"]:
             agg["error"] = j["error"]   # list_jobs 按 started_at DESC → 首个=最近失败
+            agg["failed_level"] = lv
 
     # 3) 逐条组装 + 过滤
     jl = (journal or "").strip().lower()
@@ -997,6 +1005,7 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
         value = float(s.get("score") or 0.0)
         if value < score_min:
             continue
+        ai_ok = bool(((s.get("parts") or {}).get("ai_value") or {}).get("available"))
         jname = m.journal or ""
         if jl and jl not in jname.lower() \
                 and jl not in (m.journal_override or "").lower():
@@ -1013,10 +1022,10 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             continue
         if cs in ("l1", "l2", "l3") and cs.upper() not in compiled:
             continue
-        # "可升级L3"筛选：L2已编译但L3未编译，且价值分>=L3_THRESHOLD
+        # "可升级L3"筛选（方案A）：L2已编译、L3未编译、价值分>=阈值、AI评分可用
         if cs == "l2":
-            from .score import L3_THRESHOLD
-            if "L2" not in compiled or "L3" in compiled or value < L3_THRESHOLD:
+            if ("L2" not in compiled or "L3" in compiled
+                    or value < _L3_TH or not ai_ok):
                 continue
         m_quartile = getattr(m, "quartile", "") or ""
         if quartile and m_quartile not in [q.strip() for q in quartile.split(",")]:
@@ -1056,6 +1065,9 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             "compiled": compiled,
             "queued": queued,
             "last_error": agg.get("error", ""),
+            "last_failed_level": agg.get("failed_level", ""),
+            "l3_eligible": ("L2" in compiled and "L3" not in compiled
+                            and value >= _L3_TH and ai_ok),
             "impact_factor": getattr(m, "impact_factor", 0.0) or 0.0,
             "quartile": getattr(m, "quartile", "") or "",
             "paper_rank": getattr(m, "paper_rank", 0.0) or 0.0,
@@ -1080,7 +1092,14 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
         value = float(skey.get("score") or 0.0)
         if value < score_min:
             continue
+        ai_ok = bool(((skey.get("parts") or {}).get("ai_value") or {}).get("available"))
+        # "可升级L3"筛选（方案A，与主分支同口径）：L2已编译、L3未编译、分>=阈值、AI评分可用
+        if cs == "l2" and ("L2" not in levels or "L3" in levels
+                           or value < _L3_TH or not ai_ok):
+            continue
         agg = jobs.get(key) or {}
+        if cs == "failed" and not agg.get("error", ""):
+            continue
         items.append({
             "doi": key if _looks_like_doi(key) else "",
             "rid": key,
@@ -1102,6 +1121,9 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             "compiled": levels,
             "queued": [],
             "last_error": agg.get("error", ""),
+            "last_failed_level": agg.get("failed_level", ""),
+            "l3_eligible": ("L2" in levels and "L3" not in levels
+                            and value >= _L3_TH and ai_ok),
             "kind": _kind_of_dir(dirname, key, store),
             "impact_factor": 0.0,
             "quartile": "",
@@ -1698,7 +1720,7 @@ def regenerate_index() -> dict:
         if wiki:
             links.append(f"[[{d.name}/_wiki|深度]]")
         if relations:
-            links.append(f"[[{d.name}/_wiki|深度]]")
+            links.append(f"[[{d.name}/_relations|\u5173\u7cfb]]")
         title = ((meta.title if meta else "") or d.name).replace("|", "｜")
         rows.append({
             "title": title, "doi": doi,

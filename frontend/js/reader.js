@@ -374,7 +374,7 @@ async function doImportAtt() {
 
 /* ══════════ 右栏阅读器（F4 图片 + F6 卡片管理）══════════ */
 // O批-5：标签明确对应知识库产物 —— 原文=en.md / 双语对照=en_zh.md(英上中下) /
-// 中文=zh.md / 图片=images/ / 笔记(_note,L1) / 详解(_details,L2) / 深度(_wiki,L3) / PDF=source.pdf
+// 中文=zh.md / 图片=images/ / 笔记(_note,L1) / 深度(_wiki,L2) / 概念关系(_relations,L3) / PDF=source.pdf
 const KB_FILES = [
   { name: 'en.md', label: '📄 原文' },
   { name: 'source.pdf', label: '📄 PDF' },
@@ -383,7 +383,7 @@ const KB_FILES = [
   { name: '__images__', label: '🖼 图片' },
   { name: '_note.md', label: '📝 笔记(L1)' },
   { name: '_wiki.md', label: '📑 深度(L2)' },
-  { name: '_relations.md', label: ' 概念关系(L3)' },
+  { name: '_relations.md', label: '🔗 概念关系(L3)' },
 ];
 const readerState = { dir: null, file: null, content: '', editing: false, source: 'kb', libFile: null, paperId: null };
 let kbFileSetCache = {};   // dir -> Set(顶层文件名)（存在性过滤用，缓存整棵目录树一次）

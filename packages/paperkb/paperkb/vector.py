@@ -90,7 +90,8 @@ class KbVectorIndex:
         return len(self._idx_to_key)
 
     def index_paper(self, doi: str, note_text: str = "",
-                    wiki_text: str = "", concepts: list[dict] | None = None,
+                    wiki_text: str = "", relations_text: str = "",
+                    concepts: list[dict] | None = None,
                     title: str = "", force: bool = False) -> int:
         """索引一篇文献的编译结果（增量更新）。
 
@@ -124,6 +125,13 @@ class KbVectorIndex:
             if force or wiki_key not in self._key_to_idx:
                 passages.append(self._truncate(wiki_text, 3000))
                 keys.append(wiki_key)
+
+        # L3 _relations.md
+        relations_key = f"{doi}__relations"
+        if relations_text and len(relations_text.strip()) > 50:
+            if force or relations_key not in self._key_to_idx:
+                passages.append(self._truncate(relations_text, 3000))
+                keys.append(relations_key)
 
         # 概念定义拼接
         if concepts:

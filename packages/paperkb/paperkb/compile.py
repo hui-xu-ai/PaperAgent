@@ -306,18 +306,26 @@ class Compiler:
 
         llm = get_llm()
 
-        # 第一步：LLM 提取检索关键词
+        # 第一步：LLM 提取检索关键词；失败回退到已聚合概念/bib 关键词（不硬判死）
         keyword_prompt = _prompt_l3_keywords(meta.model_dump(mode="json"), self_ctx)
         keyword_raw = llm.complete(keyword_prompt, context="compile")
         keywords = self._parse_l3_keywords(keyword_raw)
         if not keywords:
-            raise CompileError("L3 关键词提取失败")
+            keywords = self._fallback_keywords(doi, meta)
+            logger.info("L3 关键词提取失败，回退概念/标签: doi=%s kw=%s",
+                        doi, keywords[:5])
 
-        # 第二步：向量搜索候选文献
-        related = self._search_related_by_keywords(keywords, doi, top_k=15)
+        # 第二步：候选检索——向量优先；空则回退混合检索（概念倒排+引用+共被引，零 API）
+        related = (self._search_related_by_keywords(keywords, doi, top_k=15)
+                   if keywords else [])
+        if not related:
+            related = self._find_related_papers(doi, top_k=10)
+            if related:
+                logger.info("L3 向量检索空，回退混合检索: doi=%s n=%d",
+                            doi, len(related))
         if not related:
             raise CompileError(
-                f"L3 向量检索无结果（关键词: {keywords[:3]}）: {doi}")
+                f"L3 无相关文献（向量+混合检索均空，需库内≥2篇已编译同领域文献）: {doi}")
 
         # 第三步：取回候选文献编译结果 + LLM 分析关系
         related_ctxs = []
@@ -326,7 +334,8 @@ class Compiler:
             if ctx:
                 related_ctxs.append({"doi": r["doi"], "context": ctx,
                                      "score": r.get("score", 0),
-                                     "connection": r.get("passage_type", "")})
+                                     "connection": (r.get("passage_type")
+                                                    or r.get("connection") or "")})
 
         if not related_ctxs:
             raise CompileError("L3 候选文献无编译结果")
@@ -342,6 +351,8 @@ class Compiler:
         self._save_ctx(doi, "L3",
                        (data.get("summary") or "")[: _CTX_LIMIT])
         self._mark_done(doi, "L3")
+        self._index_paper_notes(doi)
+        self._maybe_vector_index(doi, {}, {}, title=meta.title)
 
         # 双向 cross_refs：把本文 wiki link 追加到相关文献的 _wiki.md
         self._bidirectional_cross_refs(doi, related_ctxs)
@@ -423,6 +434,26 @@ class Compiler:
                 if not re.search(r'(检索|关键词|提取|搜索|关键词提取)', p, re.IGNORECASE):
                     keywords.append(p)
         return keywords
+
+    def _fallback_keywords(self, doi: str, meta) -> list[str]:
+        """关键词提取失败时的回退：已聚合概念名 + bib 关键词（零 LLM 成本）。"""
+        kws: list[str] = []
+        try:
+            for c in self.store.concepts_for_doi(doi):
+                n = (c.get("name") or "").strip()
+                if n and n not in kws:
+                    kws.append(n)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            raw = getattr(meta, "keywords_json", "") or ""
+            for k in (json.loads(raw) if raw else []):
+                k = str(k).strip()
+                if k and k not in kws:
+                    kws.append(k)
+        except Exception:  # noqa: BLE001
+            pass
+        return kws[:8]
 
     def _find_related_papers(self, doi: str, top_k: int = 10
                              ) -> list[dict]:
@@ -596,15 +627,21 @@ class Compiler:
 
     # ---------------------------------------------------------- 概念页（惰性聚合）
     def _aggregate_concepts(self, doi: str, concepts: list[dict]) -> int:
-        """记录 L2 概念 → 同名概念 ≥3 文献时生成/更新 _concepts/<slug>.md。"""
+        """记录 L2 概念 → 同名概念 ≥3 文献时生成/更新 _concepts/<slug>.md。
+
+        概念名先归一化（去括号限定语/小写/去标点）再入库与计数——否则 LLM 每篇
+        措辞不同（"n-p junction (heterointerface)" vs "n-p Junction Internal ..."）
+        永远撞不满 3 篇阈值，概念页一张都生成不出（2026-09-21 审计：210 行/207 个不同名）。
+        """
         if not concepts:
             return 0
         created = 0
         for c in concepts:
-            name = (c.get("name") or "").strip()
-            if not name:
+            raw_name = (c.get("name") or "").strip()
+            if not raw_name:
                 continue
-            slug = re.sub(r"[^\w\-]+", "-", name.lower()).strip("-")[:60]
+            name = _canon_concept(raw_name)
+            slug = re.sub(r"[^\w\-]+", "-", name).strip("-")[:60]
             if not slug:
                 continue
             self.store.upsert_concept(doi, name, c.get("definition", ""))
@@ -615,6 +652,43 @@ class Compiler:
                 page.write_text(self._render_concept_page(name), encoding="utf-8")
                 created += 1
         return created
+
+    def rebuild_concept_pages(self) -> dict:
+        """一次性回灌：把既有 concepts 行归一化重建，并重新生成 ≥3 文献的概念页。
+
+        旧数据用 LLM 原始名存储（归一化前概念页永远空）；本方法读取全表→归一化去重→
+        重写→按归一名计数生成概念页。幂等，可重复跑。
+        """
+        from collections import Counter
+
+        rows = self.store.all_concepts()
+        canon: dict[tuple[str, str], str] = {}   # (doi, 归一名) -> 定义（取最长）
+        for r in rows:
+            doi = r.get("paper_doi") or ""
+            name = _canon_concept(r.get("name") or "")
+            if not doi or not name:
+                continue
+            defn = r.get("definition") or ""
+            key = (doi, name)
+            if key not in canon or len(defn) > len(canon[key]):
+                canon[key] = defn
+        self.store.clear_concepts()
+        for (doi, name), defn in canon.items():
+            self.store.upsert_concept(doi, name, defn)
+        cnt = Counter(name for (_doi, name) in canon.keys())
+        created = 0
+        for name, n in cnt.items():
+            if n < 3:
+                continue
+            slug = re.sub(r"[^\w\-]+", "-", name).strip("-")[:60]
+            if not slug:
+                continue
+            page = self.roots.kb_dir / "_concepts" / f"{slug}.md"
+            page.parent.mkdir(parents=True, exist_ok=True)
+            page.write_text(self._render_concept_page(name), encoding="utf-8")
+            created += 1
+        return {"rows": len(rows), "canonical": len(canon),
+                "distinct": len(cnt), "pages": created}
 
     def _render_concept_page(self, name: str) -> str:
         rows = self.store.concept_rows(name)
@@ -632,7 +706,7 @@ class Compiler:
 
         folder = self._kb_folder(doi, create=True)
         files = []
-        for name in ("_note.md", "_wiki.md"):
+        for name in ("_note.md", "_wiki.md", "_relations.md"):
             p = folder / name
             if p.exists():
                 files.append({"filename": name,
@@ -669,6 +743,12 @@ class Compiler:
             if wiki_path.exists():
                 wiki_text = wiki_path.read_text(encoding="utf-8", errors="replace")
 
+            relations_text = ""
+            relations_path = self._relations_path(doi)
+            if relations_path.exists():
+                relations_text = relations_path.read_text(encoding="utf-8",
+                                                          errors="replace")
+
             concepts = l1_data.get("concepts") or []
             if l2_data and l2_data.get("concepts"):
                 existing_names = {c.get("name") for c in concepts}
@@ -677,6 +757,7 @@ class Compiler:
                         concepts.append(c)
 
             added = idx.index_paper(doi, note_text=note_text, wiki_text=wiki_text,
+                                    relations_text=relations_text,
                                     concepts=concepts, title=title)
             if added:
                 logger.info("向量索引已更新: doi=%s added=%d", doi, added)
@@ -1223,6 +1304,21 @@ def _salvage_l1(text: str) -> dict:
             return obj
         start = text.find("{", start + 1)
     return {}
+
+
+def _canon_concept(name: str) -> str:
+    """概念名归一化：去括号限定语 → 去标点/连字符 → 折叠空白 → 小写。
+
+    让 LLM 每篇的措辞变体聚合到同一键，例如
+    "n-p Junction (LIG/CoP_x)" / "n-p junction (heterointerface)" → "n p junction"，
+    "back-relaxation" / "back relaxation" → "back relaxation"。
+    保留中英文字、数字、空格与斜杠；连字符及其余标点一律转为空格。
+    """
+    n = (name or "").strip()
+    n = re.sub(r"\([^)]*\)", " ", n)        # 去括号限定语
+    n = re.sub(r"[^\w\s/]", " ", n)          # 去标点与连字符（保留 空格 与 /）
+    n = re.sub(r"\s+", " ", n).strip().lower()
+    return n
 
 
 def _ctx_from_l1(data: dict) -> str:
