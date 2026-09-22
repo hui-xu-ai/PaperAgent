@@ -357,12 +357,19 @@ def _do_batch(llm, shared: str, paras: list[dict], batch: list[int],
 
 
 def _make_batches(paras: list[dict], targets: list[int],
-                  *, compact: bool = False) -> tuple[list[list[int]], int]:
+                  *, compact: bool = False,
+                  max_body: int | None = None) -> tuple[list[list[int]], int]:
     """按段数 + 字符数分批（现有 /targets 分批逻辑），返回 (batches, truncated)。
 
     compact=True：使用紧凑模式常量（更小的批，更多的批次数）。
+
+    max_body：**每批正文字符上限**（用户可调，见 `设置 → 编译/翻译策略`）。None/0 = 用默认
+    （主模型路径 `MAX_BODY_CHARS` / 紧凑路径 `COMPACT_MAX_BODY_CHARS`）。
+
+    语义硬约束（不随上限变化）：**只在段边界切批**——上面 `len(t)` 是整段长度，永远整段入批；
+    单段自身超过 `max_body` 时它与前后段都不合并，**独占一批**（尽量整段发送）。
     """
-    max_body = COMPACT_MAX_BODY_CHARS if compact else MAX_BODY_CHARS
+    max_body = int(max_body) if max_body else (COMPACT_MAX_BODY_CHARS if compact else MAX_BODY_CHARS)
     max_paras = COMPACT_MAX_BATCH_PARAS if compact else MAX_BATCH_PARAS
     max_calls = COMPACT_MAX_CALLS if compact else MAX_CALLS
     batches: list[list[int]] = []
@@ -394,6 +401,15 @@ def _make_batches(paras: list[dict], targets: list[int],
             acc += chars
             kept.append(batch)
         batches = kept
+    # 超限告警（用户据此调批次上限）：单段自身就超过上限 ⇒ 整段独占一批发出去
+    for batch in batches:
+        if len(batch) == 1:
+            n = len(paras[batch[0]].get("text_en") or "")
+            if n > max_body:
+                logger.warning(
+                    "翻译批次：单段 %d 字符 > 上限 %d，该段整段单独发送"
+                    "（若报错/漏译，请把批次上限调到 ≥%d，或接受按句切块）",
+                    n, max_body, n)
     return batches, truncated
 
 
@@ -452,28 +468,32 @@ def _chunks_task(chunk_ids: list[str], chunks: list[str],
 
 def _translate_oversized(llm, paras: list[dict], targets: list[int],
                          math_list: list[str], context: str,
-                         calls: list[int]) -> tuple[int, int]:
-    """紧凑模式：翻译超过 COMPACT_UNIT_MAX 的超长段落（句子切块 → 逐块组批 → 拼接）。
+                         calls: list[int], *, unit_max: int = COMPACT_UNIT_MAX
+                         ) -> tuple[int, int]:
+    """紧凑模式：翻译超过 unit_max 的超长段落（句子切块 → 逐块组批 → 拼接）。
 
-    返回 (translated, rejected)。块组批按输出预算（COMPACT_UNIT_MAX）打包，块标记用
+    返回 (translated, rejected)。块组批按输出预算（unit_max）打包，块标记用
     f"{para_id}__c{序号}"，解析后按序拼接回父段 text_zh。
+
+    unit_max = 用户的「翻译批次上限」。**只按句子边界切块**（`_split_sentences`），不切断句子；
+    调大上限 ⇒ 更多长段能整段发送、不再走此通道。
     """
     translated = rejected = 0
     for idx in targets:
         text = (paras[idx].get("text_en") or "").strip()
-        if len(text) <= COMPACT_UNIT_MAX:
+        if len(text) <= unit_max:
             continue
         pid = paras[idx].get("para_id") or ""
-        chunks = _split_sentences(text, COMPACT_UNIT_MAX)
+        chunks = _split_sentences(text, unit_max)
         chunk_ids = [f"{pid}__c{ci}" for ci in range(len(chunks))]
 
-        # 组批：块总字符 ≤ COMPACT_UNIT_MAX（输出预算内不截断）
+        # 组批：块总字符 ≤ unit_max（输出预算内不截断）
         cb_batches: list[tuple[list[str], list[str]]] = []
         cur_ids: list[str] = []
         cur_chunks: list[str] = []
         size = 0
         for cid, ct in zip(chunk_ids, chunks):
-            if cur_ids and size + len(ct) > COMPACT_UNIT_MAX:
+            if cur_ids and size + len(ct) > unit_max:
                 cb_batches.append((cur_ids, cur_chunks))
                 cur_ids, cur_chunks, size = [], [], 0
             cur_ids.append(cid)
@@ -530,25 +550,35 @@ def _translate_oversized(llm, paras: list[dict], targets: list[int],
 
 def _run_batches(llm, shared: str, paras: list[dict], targets: list[int],
                  para_id_to_idx: dict[str, int], math_list: list[str], context: str,
-                 calls: list[int], *, compact: bool = False) -> tuple[tuple[int, int], int]:
-    """分批翻译全部 target，返回 ((translated, rejected), truncated）。
+                 calls: list[int], *, compact: bool = False,
+                 max_body: int | None = None) -> tuple[tuple[int, int], int, dict]:
+    """分批翻译全部 target，返回 ((translated, rejected), truncated, stats)。
 
     紧凑模式兜底：模型输出超限会只译出批次开头若干段（后面的被截断，纯文本解析照过不误），
     因此每批后比对"应译 vs 实译"，把未译段落按更小的单段批补跑（单段必不超输出容量）。
+
+    stats：{"max_batch_chars", "truncated_batches", "batch_limit", "oversized_paras"}
+    —— 供上层汇总上报，也方便用户拿日志里的数字去调「翻译批次上限」。
     """
-    # 紧凑模式：超长段落（>COMPACT_UNIT_MAX）从普通批次剔除，走句子切块专用通道
-    #（普通批次按 COMPACT_MAX_BODY_CHARS=COMPACT_UNIT_MAX 装不下它们，硬塞必截断）。
+    limit = int(max_body) if max_body else (COMPACT_MAX_BODY_CHARS if compact else MAX_BODY_CHARS)
+    unit_max = limit   # 超长单段判据 = 同一上限（调大 ⇒ 更少按句切块，更接近整段发送）
+    # 紧凑模式：超长段落（>unit_max）从普通批次剔除，走句子切块专用通道
+    #（普通批次按同一上限装不下它们，硬塞必截断）。
     if compact:
         normal = [i for i in targets
-                  if len((paras[i].get("text_en") or "")) <= COMPACT_UNIT_MAX]
+                  if len((paras[i].get("text_en") or "")) <= unit_max]
         oversized = [i for i in targets if i not in set(normal)]
     else:
         normal = targets
         oversized = []
-    batches, truncated = _make_batches(paras, normal, compact=compact)
+    batches, truncated = _make_batches(paras, normal, compact=compact, max_body=limit)
     translated = rejected = 0
+    truncated_batches = 0
+    max_batch_chars = 0
     prev_zh_tail = ""  # 前一批译文末尾，作为下一批连续性上下文
     for batch in batches:
+        batch_chars = sum(len(paras[i].get("text_en") or "") for i in batch)
+        max_batch_chars = max(max_batch_chars, batch_chars)
         tr_map, rej = _do_batch(llm, shared, paras, batch, para_id_to_idx,
                                 math_list, context, calls, compact=compact,
                                 prev_context=prev_zh_tail)
@@ -565,8 +595,13 @@ def _run_batches(llm, shared: str, paras: list[dict], targets: list[int],
         # 单段补跑输出小、必不触顶，保证不漏译（旧实现仅紧凑模式补跑 ⇒ 同模型整批丢失）。
         missing = [i for i in batch if i not in tr_map]
         if missing:
-            logger.warning("批截断：%d/%d 段未译，按单段补跑", len(missing), len(batch))
+            truncated_batches += 1
+            logger.warning(
+                "批截断：%d/%d 段未译（本批 %d 字符，上限 %d），按单段补跑；"
+                "若频繁出现，请把「翻译批次上限」降到 ≤%d",
+                len(missing), len(batch), batch_chars, limit, max(1000, batch_chars // 2))
             for idx in missing:
+                one_chars = len(paras[idx].get("text_en") or "")
                 try:
                     m_map, m_rej = _do_batch(llm, shared, paras, [idx],
                                              para_id_to_idx, math_list, context,
@@ -576,15 +611,20 @@ def _run_batches(llm, shared: str, paras: list[dict], targets: list[int],
                         paras[mi]["text_zh"] = zh
                         translated += 1
                 except Exception as e:  # noqa: BLE001 - 单段补跑失败保留原文
-                    logger.warning("单段补跑失败（%s）保留原文: %s",
-                                   paras[idx].get("para_id"), e)
+                    logger.error(
+                        "单段补跑失败（%s，%d 字符）保留原文: %s；"
+                        "建议把「翻译批次上限」降到 ≤%d",
+                        paras[idx].get("para_id"), one_chars, e,
+                        max(1000, one_chars // 2))
     # 紧凑模式：超长段落句子切块翻译
     if oversized:
         o_tr, o_rej = _translate_oversized(llm, paras, oversized, math_list,
-                                           context, calls)
+                                           context, calls, unit_max=unit_max)
         translated += o_tr
         rejected += o_rej
-    return (translated, rejected), truncated
+    stats = {"max_batch_chars": max_batch_chars, "truncated_batches": truncated_batches,
+             "batch_limit": limit, "oversized_paras": len(oversized)}
+    return (translated, rejected), truncated, stats
 
 
 def _try_whole(llm, shared: str, paras: list[dict], targets: list[int],
@@ -627,17 +667,22 @@ def _try_whole(llm, shared: str, paras: list[dict], targets: list[int],
 
 def run_translate(doc_path: str | Path, llm, *, context: str = "translate",
                   context_path: str | Path | None = None,
-                  compact: bool = False) -> dict:
+                  compact: bool = False,
+                  max_body_chars: int | None = None) -> dict:
     """翻译 document.json：**整篇一次优先**，失败回退分批，写回 text_zh。
 
     - **正常模式**（compact=False）：共享全文前缀 + 翻译任务后缀（大上下文模型，提示词缓存命中）。
     - **紧凑模式**（compact=True）：段落内联、无共享前缀、更小分批（小上下文翻译专用模型，
       如 Hunyuan-MT-7B 32K）。JSON 解析失败时自动回退纯文本标记解析。
 
-    compact 模式跳过共享前缀（专用模型无需与编译共享缓存），每批 ≤ COMPACT_MAX_BODY_CHARS。
+    compact 模式跳过共享前缀（专用模型无需与编译共享缓存），每批 ≤ 批次上限。
+
+    max_body_chars：**每批正文字符上限**（用户可调，来自 `设置 → 📚 知识库 → 编译/翻译策略`）。
+    None/0 = 用默认（紧凑路径 `COMPACT_MAX_BODY_CHARS` / 主模型路径 `MAX_BODY_CHARS`）。
 
     llm: paperkb.llm.LLMClient 实现。
-    返回: {"translated", "rejected", "targets", "calls", "summary", "truncated"}
+    返回: {"translated", "rejected", "targets", "calls", "summary", "truncated",
+           "batch_limit", "max_batch_chars", "truncated_batches", "oversized_paras"}
     """
     p = Path(doc_path)
     data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
@@ -663,6 +708,11 @@ def run_translate(doc_path: str | Path, llm, *, context: str = "translate",
 
     calls_box = [0]
     translated = rejected = truncated = 0
+    limit = int(max_body_chars) if max_body_chars else (
+        COMPACT_MAX_BODY_CHARS if compact else MAX_BODY_CHARS)
+    logger.info("翻译开始：路径=%s 批次上限=%d 字符 待译 %d 段 / 合计 %d 字符",
+                "紧凑(专用模型)" if compact else "主模型",
+                limit, len(targets), total_chars)
 
     # 整篇一次 = 优化（大输出模型一发命中、共享前缀缓存友好）；**分批是兜底真相源**：
     # 整篇一次未覆盖（输出触顶截断/解析不全/正文超限）的 target 一律交分批补译，
@@ -678,14 +728,28 @@ def run_translate(doc_path: str | Path, llm, *, context: str = "translate",
             translated += 1
             covered.add(idx)
 
+    stats: dict = {"max_batch_chars": 0, "truncated_batches": 0,
+                   "batch_limit": limit, "oversized_paras": 0}
     remaining = [i for i in targets if i not in covered]
     if remaining:
-        (b_tr, b_rej), truncated = _run_batches(
+        (b_tr, b_rej), truncated, stats = _run_batches(
             llm, shared, paras, remaining, para_id_to_idx, math_list, context,
-            calls_box, compact=compact)
+            calls_box, compact=compact, max_body=limit)
         translated += b_tr
         rejected += b_rej
+        if stats["truncated_batches"]:
+            logger.warning(
+                "本次翻译有 %d 批触发截断（最大批 %d 字符，上限 %d）；"
+                "建议把「翻译批次上限」降到 ≤%d",
+                stats["truncated_batches"], stats["max_batch_chars"], limit,
+                max(1000, stats["max_batch_chars"] // 2))
+        if stats["oversized_paras"]:
+            logger.warning(
+                "本次翻译有 %d 个超长段（>%d 字符）按句子边界切块（未切断句子）；"
+                "若想整段发送，请把「翻译批次上限」调到 ≥ 最长段字符数",
+                stats["oversized_paras"], limit)
 
     p.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"translated": translated, "rejected": rejected, "targets": len(targets),
-            "calls": calls_box[0], "summary": {}, "truncated": truncated}
+            "calls": calls_box[0], "summary": {}, "truncated": truncated,
+            **stats}

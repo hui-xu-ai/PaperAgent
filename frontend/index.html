@@ -607,6 +607,11 @@
                 </select>
                 <span class="hint" id="translate-effort-desc">「自动」= <b>不发送档位参数，由服务端默认策略决定</b>（= 你一直以来的行为，质量不变）。翻译里思考承担：<b>术语/缩略语前后一致、公式 [[MATHn]] 标签不被展开改写、长句结构判断</b>。想省输出 token 建议先试 <b>低（low）</b>，改完抽查一篇的术语一致性与公式标签完整性。</span>
               </label>
+              <label class="fitem" for="translate-batch-chars">翻译批次上限（每批正文字符数）
+                <input type="number" id="translate-batch-chars" min="1000" max="200000" step="1000"
+                       placeholder="留空＝默认（专用模型 6000 / 主模型 12000）">
+                <span class="hint" id="translate-batch-chars-desc">每次请求发给模型的<b>最多正文字符数</b>。<b>分批只在段落边界切，绝不切断句子</b>；单段超过上限时该段整段单独发送（不与其他段合并）。调大＝调用次数更少、更快，但<b>超出模型输出能力会截断</b>（截断会自动按单段补跑，不漏译，只是白花 token）。改完看日志：出现 <code>批截断</code> 就是上限偏大，按日志里的建议值往小调。</span>
+              </label>
             </fieldset>
             <p class="muted">两档只作用于 <b>编译（L1/L2/L3）</b> 与 <b>翻译</b>；文献问答不受影响。</p>
           </section>

@@ -368,6 +368,28 @@ def save_translate_effort(body: CompileEffortModel) -> dict:
     return {"ok": True, "effort": effort}
 
 
+class TranslateBatchModel(BaseModel):
+    """翻译批次上限（字符）。0/空 = 清除，回落默认（紧凑 6000 / 主模型 12000）。"""
+    chars: int | str | None = 0
+
+
+@router.post("/translate-batch")
+def save_translate_batch(body: TranslateBatchModel) -> dict:
+    """翻译**每批正文字符上限**（2026-09-22 用户要求可调）。
+
+    控制变量用字符而不是 token：分批算法吃字符、日志/告警也是字符，用户可观测可验证。
+    只在段边界切批、单段超限独占一批（尽量整段发送），超长单段才按句子边界切块。
+    """
+    try:
+        chars = container.get_settings_service().save_translate_batch_chars(body.chars)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    msg = (f"翻译批次上限已设为 {chars} 字符" if chars
+           else "翻译批次上限已清除（用默认：紧凑 6000 / 主模型 12000 字符）")
+    container.get_event_bus().publish("info", "settings", "translate", msg, {"chars": chars})
+    return {"ok": True, "chars": chars}
+
+
 @router.post("/chat-reasoning-effort")
 def save_chat_reasoning_effort(body: ChatReasoningEffortModel) -> dict:
     """对话思考强度（契约 3）：low / high / auto。

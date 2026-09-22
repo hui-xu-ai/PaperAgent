@@ -630,3 +630,25 @@ def test_zhipu_writeback_keeps_single_key_group(tmp_path, store, monkeypatch):
     text = env_path.read_text(encoding="utf-8")
     keys = [ln.split("=", 1)[0] for ln in text.splitlines() if ln.startswith("ZHIPU_")]
     assert sorted(keys) == ["ZHIPU_API_KEY", "ZHIPU_BASE_URL", "ZHIPU_MODEL"]
+
+
+# ---------------------------------------- 翻译批次上限（2026-09-22 用户要求可调）
+def test_translate_batch_chars_roundtrip_and_clear(store, monkeypatch):
+    """0/留空 = 用默认（paperkb 侧 紧凑6000/主模型12000）；设了就存下来。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert svc.get_translate_batch_chars() == 0
+    assert svc.save_translate_batch_chars(8000) == 8000
+    assert svc.get_translate_batch_chars() == 8000
+    assert svc.save_translate_batch_chars("") == 0        # 留空 = 清除
+    assert svc.get_translate_batch_chars() == 0
+    assert svc.get_all()["translate_batch_chars"] == 0    # 汇总里带出去给前端
+
+
+def test_translate_batch_chars_clamped_and_rejects_garbage(store, monkeypatch):
+    """越界钳到 [1000, 200000]（防手滑）；非数字抛 ValueError（API 层转 400）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert svc.save_translate_batch_chars(50) == 1000
+    assert svc.save_translate_batch_chars(999999) == 200000
+    assert svc.get_translate_batch_chars() == 200000
+    with pytest.raises(ValueError):
+        svc.save_translate_batch_chars("abc")

@@ -148,7 +148,14 @@ class KbMetaService:
             compact = get_translation_ai() is not None
         except Exception:  # noqa: BLE001
             pass
-        return kbapi.translate_paper(doc_json, compact=compact)
+        # 每批正文字符上限（设置中心可调；0/空 = paperkb 用默认 紧凑6000 / 主模型12000）
+        try:
+            from . import container
+            batch_chars = container.get_settings_service().get_translate_batch_chars()
+        except Exception as e:  # noqa: BLE001 - 读设置失败不阻塞翻译
+            logger.warning("读取翻译批次上限失败（用默认值）: %s", e)
+            batch_chars = 0
+        return kbapi.translate_paper(doc_json, compact=compact, batch_chars=batch_chars)
 
     def compile_now(self, doi: str, level: str = "L1", force: bool = False) -> dict:
         """立即编译（同步；LLM 调用可能较慢）。

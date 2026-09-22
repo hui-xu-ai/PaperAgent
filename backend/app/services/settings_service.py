@@ -99,6 +99,13 @@ CHAT_REASONING_EFFORTS = ("low", "high", "auto")
 # （实测 L2 输出 9,673 token 而产物仅 3,019 字符 ⇒ 约 7k 是思考）。
 KEY_COMPILE_EFFORT = "compile_reasoning_effort"
 KEY_TRANSLATE_EFFORT = "translate_reasoning_effort"
+# 翻译**每批正文字符上限**（2026-09-22 用户要求可调，方便按模型输出能力取舍）。
+# 留空/0 = 用默认：紧凑路径（专用翻译模型）6000 / 主模型路径 12000。
+# 语义硬约束在 paperkb 侧保证：只在段边界切批、单段超限独占一批、超长单段按句切块。
+KEY_TRANSLATE_BATCH_CHARS = "translate_batch_chars"
+# 下限/上限（防手滑填 0/±天文数字）：1 千 ~ 20 万字符
+TRANSLATE_BATCH_CHARS_MIN = 1000
+TRANSLATE_BATCH_CHARS_MAX = 200000
 # 思考档**取值单一来源**（编译/翻译共用同一套；服务端实测：拒绝字面 "auto"，
 # 接受 none/minimal/low/medium/high）
 REASONING_EFFORT_LEVELS = ("auto", "none", "minimal", "low", "medium", "high")
@@ -919,7 +926,35 @@ class SettingsService:
         self.store.set_setting(KEY_TRANSLATE_EFFORT, val)
         return val
 
-    # ---------------------------------------------------------- 自动编译（Q5）
+    # ---------------------------------------------------------- 翻译批次上限（2026-09-22）
+    def get_translate_batch_chars(self) -> int:
+        """每批正文字符上限；**留空/0 = 0**，表示用默认（紧凑 6000 / 主模型 12000）。"""
+        raw = (self.store.get_setting(KEY_TRANSLATE_BATCH_CHARS) or "").strip()
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return 0
+        if val <= 0:
+            return 0
+        return min(max(val, TRANSLATE_BATCH_CHARS_MIN), TRANSLATE_BATCH_CHARS_MAX)
+
+    def save_translate_batch_chars(self, chars: int | str | None) -> int:
+        """保存批次上限（字符）。空/0 = 清除（回落默认）；越界钳到
+        [1000, 200000]；非数字抛 ValueError（API 层转 400）。"""
+        raw = "" if chars is None else str(chars).strip()
+        if raw in ("", "0"):
+            self.store.set_setting(KEY_TRANSLATE_BATCH_CHARS, "")
+            return 0
+        try:
+            val = int(float(raw))
+        except (TypeError, ValueError):
+            raise ValueError("翻译批次上限必须是正整数（字符数）或留空") from None
+        if val <= 0:
+            self.store.set_setting(KEY_TRANSLATE_BATCH_CHARS, "")
+            return 0
+        val = min(max(val, TRANSLATE_BATCH_CHARS_MIN), TRANSLATE_BATCH_CHARS_MAX)
+        self.store.set_setting(KEY_TRANSLATE_BATCH_CHARS, str(val))
+        return val
     def get_auto_compile(self) -> bool:
         """翻译完成后自动把该篇 L1 编译入队（默认开；执行仍由队列手动触发）。"""
         return self.store.get_setting(KEY_AUTO_COMPILE, "1") != "0"
@@ -1271,6 +1306,7 @@ class SettingsService:
             "chat_reasoning_effort": self.get_chat_reasoning_effort(),
             "compile_reasoning_effort": self.get_compile_effort(),
             "translate_reasoning_effort": self.get_translate_effort(),
+            "translate_batch_chars": self.get_translate_batch_chars(),
             "system_prompt_extra": self.get_system_prompt_extra(),
             "custom_css": self.get_custom_css(),
             "md_template": self.get_md_template(),

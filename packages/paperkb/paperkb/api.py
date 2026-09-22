@@ -651,7 +651,8 @@ def card_read_for_compile(doi: str, types: list[str] | None = None,
 
 # ---------------------------------------------------------------- 翻译（M3b）
 
-def translate_paper(doc_json: str | Path, *, compact: bool = False) -> dict:
+def translate_paper(doc_json: str | Path, *, compact: bool = False,
+                    batch_chars: int | None = None) -> dict:
     """翻译 document.json（共享全文前缀 + 译文任务；写回 text_zh，供双语/中文版本）。
 
     **批4（2026-09-12 用户要求"编译与翻译的全文必须一样"）**：构造全文前缀的那份 document.json
@@ -661,6 +662,9 @@ def translate_paper(doc_json: str | Path, *, compact: bool = False) -> dict:
     译文仍**写回传入的 `doc_json`**（翻译真相源在 library，P0-B）。
 
     compact=True：紧凑模式（小上下文翻译专用模型），段落内联、无共享前缀、更小分批。
+
+    batch_chars：**每批正文字符上限**（用户可调）。None/0 = 用默认（紧凑 6000 / 主模型 12000）。
+    只在段边界切批、单段超限独占一批；超长单段才按句子边界切块（不切断句子）。
 
     产物落盘，不进入用户后续提问上下文（问答检索只读编译产物，D20）。
     不做「独立 summary 步骤」（D16：六维总结合成到 L1 编译 _note.md，含在 _note 内）。
@@ -678,7 +682,7 @@ def translate_paper(doc_json: str | Path, *, compact: bool = False) -> dict:
         logger.warning("翻译上下文同源定位失败（退回传入路径）: %s", e)
         ctx_path = ""
     return run_translate(target, get_llm(), context_path=(ctx_path or target),
-                         compact=compact)
+                         compact=compact, max_body_chars=batch_chars)
 
 
 # ---------------------------------------------------------------- 检索/问答（M4）

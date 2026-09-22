@@ -26,7 +26,8 @@ const SETTINGS_DIRTY_GROUPS = [
   { group: 'ui', btn: 'ui-save-all', flag: 'ui-dirty', page: 'stab-ui',
     items: ['disp-md-template', 'sys-prompt-input', 'custom-css-input'] },
   { group: 'kb', btn: 'kb-save', flag: 'kb-dirty', page: 'stab-kb',
-    items: ['kb-copy-mode', 'retrieval-mode', 'compile-effort', 'translate-effort'] },
+    items: ['kb-copy-mode', 'retrieval-mode', 'compile-effort', 'translate-effort',
+            'translate-batch-chars'] },
 ];
 const DIRTY_BY_ID = (() => {
   const m = {};
@@ -248,6 +249,9 @@ async function openSettings() {
     $('kb-copy-mode').value = s.kb_copy_mode || 'copy';
     if ($('compile-effort')) $('compile-effort').value = s.compile_reasoning_effort || 'auto';
     if ($('translate-effort')) $('translate-effort').value = s.translate_reasoning_effort || 'auto';
+    if ($('translate-batch-chars')) {
+      $('translate-batch-chars').value = s.translate_batch_chars ? String(s.translate_batch_chars) : '';
+    }
     // 2026-09-13：MinerU Key 归属移动到 parse.mineru_api_key（旧字段 mineru.api_key 兼容兜底）
     $('mineru-key').value = s.parse?.mineru_api_key || s.mineru?.api_key || '';
     // P12：PDF 解析设置（双通道 + PaddleOCR-VL 辅通道 + P12F 复核门控）
@@ -867,13 +871,21 @@ async function saveKbSettings() {
         body: JSON.stringify({ effort: $('translate-effort').value }),
       });
     }
+    let r5 = { chars: 0 };
+    if ($('translate-batch-chars')) {
+      r5 = await api('/api/settings/translate-batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chars: $('translate-batch-chars').value.trim() }),
+      });
+    }
     if (el) {
       el.classList.remove('warn');
       el.classList.add('ok');
       el.textContent = `✅ 已保存（${r1.copy_mode === 'link' ? '硬链接' : '复制副本'} · 检索范围 `
         + `${({ notes: '仅笔记', fragments: '片段检索', full: '全文阅读' })[r2.mode] || r2.mode}`
         + ` · 编译思考档 ${r3.effort === 'auto' ? '自动' : r3.effort}`
-        + ` · 翻译思考档 ${r4.effort === 'auto' ? '自动' : r4.effort}）`;
+        + ` · 翻译思考档 ${r4.effort === 'auto' ? '自动' : r4.effort}`
+        + ` · 翻译批次上限 ${r5.chars ? r5.chars + ' 字符' : '默认'}）`;
     }
     return true;
   } catch (e) {
