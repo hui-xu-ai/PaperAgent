@@ -641,7 +641,7 @@ async function saveTranslateProvider() {
   const editing = tpEditingIndex >= 0 ? settingsState.translation_providers[tpEditingIndex] : null;
   const apiKey = keyPlaceholder ? (editing?.api_key || '') : keyVal;
   // 输出上限（max_tokens）不再让用户填：它是「批次上限」的从属量——实测「输出 token ≈ 源字符 × 0.2」，
-  // 故 14000 字符批次只需约 2900 token。新建条目给 8192（余量 ~2.8 倍），已有条目沿用原值（值不动）。
+  // 故 14000 字符批次只需约 2800 token。新建条目给 8192（余量 ~2.9 倍），已有条目沿用原值（值不动）。
   const maxTokens = editing?.max_tokens || 8192;
   const body = {
     id: editing?.id || '',
