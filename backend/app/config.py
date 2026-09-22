@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +33,44 @@ else:
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
-# 加载 .env（APP_DATA_DIR 优先，其次 backend/）
-# P2-A：utf-8-sig 兼容 UTF-8 BOM；原实现默认编码遇 BOM/异编码会静默吞 key
-def _load_dotenv_utf8(path: Path) -> None:
-    if path.exists():
-        load_dotenv(path, encoding="utf-8-sig")
+# 加载 .env（**文件优先**：APP_DATA_DIR/.env ＞ backend/.env ＞ 系统环境变量）
+# 2026-09-22 用户拍板（严格单一来源）：`.env` 里出现的键**一律覆盖** `os.environ`，
+# **空值也算**（在 .env 里把 Key 清空 ⇒ 它就真的失效）。
+#
+# 为什么必须改：dotenv 默认 `override=False`，而 Windows 用户环境变量里若留着旧 Key，它会
+# **永远压住** .env 里的新 Key——用户在设置页/文件里改了半天也不生效。实测（2026-09-22）：
+# `SILICONFLOW_API_KEY` 的系统变量是死值（401 code 30014），.env 里是新值（200），
+# 而程序读到的始终是系统里的死值 ⇒ embedding 通道与「硅基流动」供应商预设全坏。
+# `_warn_env_anomalies()` 也查不出这种"被遮蔽"（值非空就不报警），故这里主动报告。
+def _apply_dotenv_files(paths: list[Path]) -> None:
+    """按"越靠后越优先"的顺序把 .env 应用到 os.environ（含空值覆盖）。"""
+    before = dict(os.environ)          # 覆盖前快照：用于报告"哪些键被遮蔽"
+    applied: list[str] = []
+    shadowed: list[str] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            vals = dotenv_values(path, encoding="utf-8-sig")   # 兼容 UTF-8 BOM
+        except Exception as e:  # noqa: BLE001 - 配置文件坏了不该拦住启动，但要大声报
+            logger.error("读取 .env 失败（%s）: %s", path, e)
+            continue
+        for key, val in vals.items():
+            if val is None:            # 没有 `=` 的畸形行（如注释被截断）不当作配置
+                continue
+            os.environ[key] = val
+            applied.append(key)
+            if key in before and before[key] != val:
+                shadowed.append(key)
+    if applied:
+        logger.info("已从 .env 应用 %d 个配置项（文件优先，含空值覆盖）", len(applied))
+    if shadowed:
+        # 只报键名，**绝不打印值**（可能是密钥）
+        logger.warning("以下环境变量被 .env 覆盖（.env 优先，请以此文件为准）: %s",
+                       ", ".join(sorted(set(shadowed))))
 
-_load_dotenv_utf8(APP_DATA_DIR / ".env")
-_load_dotenv_utf8(BACKEND_DIR / ".env")
+
+_apply_dotenv_files([BACKEND_DIR / ".env", APP_DATA_DIR / ".env"])
 
 
 def _warn_env_anomalies() -> None:

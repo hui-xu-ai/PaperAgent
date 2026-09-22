@@ -355,7 +355,13 @@ class SettingsService:
 
     def _sync_env_file(self, env_prefix: str, provider: dict) -> None:
         """按实际填写结果更新 .env 对应键（只改**未注释**的 KEY= 行；无该键则追加，
-        保留注释与原有顺序）。"""
+        保留注释与原有顺序），并**同步 os.environ**。
+
+        2026-09-22（用户要求"密钥以 .env 为唯一可见来源"）：原先这里只写文件不同步进程环境
+        ⇒ 保存 Key 后本次运行仍用旧值（另一套 `_write_env_keys` 会同步，两套行为不一致）。
+        现在启动侧已改为 **.env 覆盖系统环境变量**（见 `config._apply_dotenv_files`），
+        这里补齐"写文件即生效"，保证 文件 = os.environ = 程序实际使用值。
+        """
         env_path = Path(self.env_path)
         if not env_path.exists():
             return
@@ -377,6 +383,8 @@ class SettingsService:
                 changed = True
         if changed:
             env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            for key, val in zip(self._ENV_KEYS[env_prefix], vals):
+                os.environ[key] = val        # 运行中进程立即可见（与文件保持一致）
 
     # 自定义供应商 → .env 持久化（P5 点1 修复：用户填自定义供应商（如智谱 glm）
     # 保存时也写 .env，满足"保存后 .env 可见 + 跨 DB 重置仍存活"预期）
@@ -441,8 +449,9 @@ class SettingsService:
     # ------------------------------------------------ .env 通用写回 + 回读断言（批1）
     def _write_env_keys(self, values: dict[str, str]) -> None:
         """把 `{KEY: value}` 写入 .env（只改**未注释**的 `KEY=` 行；无该键则追加；文件不存在
-        则创建）并同步 `os.environ`（运行中进程立即生效：`load_dotenv` 不覆盖已有变量 ⇒
-        os.environ 即权威值）。
+        则创建）并同步 `os.environ`（运行中进程立即生效）。**优先级口径（2026-09-22 用户拍板）**：
+        `.env` ＞ 系统环境变量，且 .env 里的**空值也覆盖**（在 .env 里清空 Key ⇒ 真的失效）；
+        启动侧由 `config._apply_dotenv_files` 统一应用，这里负责"写文件即生效"。
 
         ⚠️ **空值会写空**（用于"显式清空"）；需要"跳过空值"的调用方自行过滤。
         供应商那两套历史实现（`_sync_env_file`/`_sync_custom_env`）暂未合并——它们有

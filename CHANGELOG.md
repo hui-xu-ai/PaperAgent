@@ -41,6 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`.env` 成为配置的唯一权威来源（文件优先于系统环境变量）**（2026-09-22 用户拍板）：
+  程序启动时把 `.env` 里出现的键**一律覆盖** `os.environ`，**空值也覆盖**（在 `.env` 里清空某行
+  ⇒ 该配置真的失效）；`.env` 里没有的键仍沿用系统环境变量；两个 `.env` 文件之间
+  `APP_DATA_DIR/.env` 优先于 `backend/.env`。
+  - **为什么改**：dotenv 默认 `override=False`，Windows 用户环境变量里的**旧 Key 会永远压住**
+    `.env` 里的新值（实测：`SILICONFLOW_API_KEY` 系统变量是死值 401 `code 30014`、`.env` 里是新值
+    200，程序读到的始终是死的 ⇒ embedding 通道与「硅基流动」供应商预设全坏），而启动自检
+    `_warn_env_anomalies` 只查"完全没加载"，查不出"被遮蔽"（值非空就不报警）。
+  - 启动时记录被覆盖的键名（**只报键名，绝不打印值**）：`以下环境变量被 .env 覆盖…`。
+  - `SettingsService._sync_env_file`（保存供应商路径）写 `.env` 后**同时同步 `os.environ`**，
+    与 `_write_env_keys` 行为统一（此前只写文件 ⇒ 保存 Key 后本次运行仍用旧值）。
+  - 文档：`.env.example` 头部写明优先级与"不要设 Windows 环境变量"。
 - **翻译模型池改为"单选激活"**（2026-09-22 用户决定）：池里仍可保存多个备选，
   但同一时刻只有一个生效；在 `设置 → 🤖 模型 → 翻译模型` 点圆圈激活，一个都不激活
   （或点 `不用专用模型（回落主模型）`）则回落主模型。
