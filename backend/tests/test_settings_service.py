@@ -634,7 +634,7 @@ def test_zhipu_writeback_keeps_single_key_group(tmp_path, store, monkeypatch):
 
 # ---------------------------------------- 翻译批次上限（2026-09-22 用户要求可调）
 def test_translate_batch_chars_roundtrip_and_clear(store, monkeypatch):
-    """0/留空 = 用默认（paperkb 侧 紧凑6000/主模型12000）；设了就存下来。"""
+    """0/留空 = 用默认（paperkb 侧 紧凑14000/主模型12000）；设了就存下来。"""
     svc = SettingsService(store, app_settings=_make_env_settings())
     assert svc.get_translate_batch_chars() == 0
     assert svc.save_translate_batch_chars(8000) == 8000
@@ -652,6 +652,37 @@ def test_translate_batch_chars_clamped_and_rejects_garbage(store, monkeypatch):
     assert svc.get_translate_batch_chars() == 200000
     with pytest.raises(ValueError):
         svc.save_translate_batch_chars("abc")
+
+
+def test_translate_output_budget_is_derived_from_batch_limit(store, monkeypatch):
+    """2026-09-23：翻译池的输出预算由批次上限推导（只增不减），且只在运行时口径生效。
+
+    实测输出 token ≈ 源字符 × 0.2，取 0.4 = 2 倍余量。用户把上限调大 ⇒ 预算自动跟上
+    （旧行为：上限调大、预算仍卡在 8192 ⇒ 难懂的截断）。
+    """
+    from app.services.llm_service import translate_output_budget, DEFAULT_MAX_OUTPUT_TOKENS
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_translation_providers([{
+        "id": "t1", "name": "Q", "base_url": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen2.5-7B-Instruct", "api_key": "sk-fake", "max_tokens": 8192,
+        "enabled": True}])
+
+    # 没设批次上限（= 用默认 14000）⇒ 14000×0.4=5600 < 8192 ⇒ 沿用模型自配值
+    assert svc.get_enabled_translation_providers(masked=False)[0]["max_tokens"] == 8192
+    # 上限 14000 ⇒ 5600 < 8192 ⇒ 仍是 8192
+    svc.save_translate_batch_chars(14000)
+    assert svc.get_enabled_translation_providers(masked=False)[0]["max_tokens"] == 8192
+    # 上限 100000 ⇒ 40000 > 8192 ⇒ 预算抬到 40000（不落库）
+    svc.save_translate_batch_chars(100000)
+    assert svc.get_enabled_translation_providers(masked=False)[0]["max_tokens"] == 40000
+    # 界面口径（masked=True）看到的仍是用户存的原值
+    assert svc.get_translation_providers(masked=True)[0]["max_tokens"] == 8192
+
+    # 纯函数语义：只增不减；两个都为 0 ⇒ 兜底默认
+    assert translate_output_budget(14000, 8192) == 8192
+    assert translate_output_budget(100000, 8192) == 40000
+    assert translate_output_budget(1000, 64000) == 64000
+    assert translate_output_budget(0, 0) == DEFAULT_MAX_OUTPUT_TOKENS
 
 
 # ---------------------------------------- 批次上限探测结果（2026-09-22）

@@ -37,13 +37,17 @@ def _chars(paras, batch):
 
 # ---------------------------------------------------------------- 上限可调
 def test_default_limit_used_when_none():
-    """max_body=None ⇒ 沿用旧常量（主模型 12000 / 紧凑 6000），默认行为不变。"""
+    """max_body=None ⇒ 沿用常量（主模型 12000 / 紧凑 14000）。
+
+    2026-09-23：紧凑默认 6000→14000（实测 Qwen2.5-7B 到 24312 字符仍全数译出，截断源于
+    请求侧 max_tokens 预算而非模型硬顶）。故两个 7000 字符段现在能同批装下。
+    """
     paras = _paras(["a" * 7000, "b" * 7000])
     normal, _ = _make_batches(paras, [0, 1], compact=False)
     assert len(normal) == 2, "两个 7000 字符段 > 12000 装不下一批"
     compact, _ = _make_batches(paras, [0, 1], compact=True)
-    assert len(compact) == 2, "紧凑默认 6000 同样装不下"
-    assert MAX_BODY_CHARS == 12000 and COMPACT_MAX_BODY_CHARS == 6000
+    assert len(compact) == 1, "紧凑默认 14000 ≥ 14000，两个 7000 字符段同批"
+    assert MAX_BODY_CHARS == 12000 and COMPACT_MAX_BODY_CHARS == 14000
 
 
 def test_custom_limit_packs_more_into_one_batch():

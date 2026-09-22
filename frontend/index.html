@@ -353,8 +353,11 @@
                     <button type="button" class="btn small" id="tpf-key-toggle" title="显示/隐藏密钥">显示</button>
                   </span>
                 </label>
-                <label class="pform-row">输出上限 max_tokens（留空=64000）
-                  <input id="tpf-max" type="number" step="1" min="1" placeholder="8192"></label>
+                <!-- 输出上限 max_tokens 不再让用户填（2026-09-23）：它是「批次上限」的从属量 -->
+                <div class="pform-row" style="color:#888;font-size:12px;line-height:1.5">
+                  输出上限已自动匹配「翻译批次上限」：实测输出 token ≈ 源字符 × 0.2，
+                  14000 字符批次约需 2900 token，程序会留足余量，无需手动填写。
+                </div>
                 <div class="pform-actions">
                   <button class="btn small" id="tpf-test">测试连接</button>
                   <span id="tpf-test-result" class="muted"></span>
@@ -609,7 +612,7 @@
               </label>
               <label class="fitem" for="translate-batch-chars">翻译批次上限（每批正文字符数）
                 <input type="number" id="translate-batch-chars" min="1000" max="200000" step="1000"
-                       placeholder="留空＝默认（专用模型 6000 / 主模型 12000）">
+                       placeholder="留空＝默认（专用模型 14000 / 主模型 12000）">
                 <span class="hint" id="translate-batch-chars-desc">每次请求发给模型的<b>最多正文字符数</b>。<b>分批只在段落边界切，绝不切断句子</b>；单段超过上限时该段整段单独发送（不与其他段合并）。调大＝调用次数更少、更快，但<b>超出模型输出能力会截断</b>（截断会自动按单段补跑，不漏译，只是白花 token）。改完看日志：出现 <code>批截断</code> 就是上限偏大，按日志里的建议值往小调。</span>
               </label>
               <div class="fitem">

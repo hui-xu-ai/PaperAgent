@@ -31,6 +31,22 @@ logger = logging.getLogger(__name__)
 # 供应商 max_tokens 可配置（GUI 表单/ProviderModel/DB/.env，env 用 *_MAX_TOKENS 覆盖），默认 64000。
 DEFAULT_MAX_OUTPUT_TOKENS = 64000
 
+#: 翻译请求输出预算推导系数：实测输出 token ≈ 源英文字符 × 0.20（2026-09-23 Qwen2.5-7B 真机 usage
+#: 计数），取 0.4 = 2 倍余量——吸收模型/语言密度差异，也让「批次上限调大」时预算自动跟上。
+TRANSLATE_OUTPUT_TOKENS_PER_CHAR = 0.4
+
+
+def translate_output_budget(batch_chars: int | None, configured: int | None = None) -> int:
+    """翻译请求的输出预算 = max(供应商自配值, 批次上限 × 0.4)。
+
+    批次上限是用户可调项（`设置 → 知识库 → 翻译批次上限`，或探测按钮写入），输出预算必须跟着走，
+    否则「上限调大了、预算还卡在 8192」会表现为难懂的截断。**只增不减**：供应商自配的更大值优先
+    （更弱/更小的模型由 `🔬 测试安全上限` 如实测出，用户再按需调）。只用于翻译专用池，
+    不碰主模型（主模型的 max_tokens 与编译/对话共用，不能因翻译而变）。
+    """
+    need = int(max(0, int(batch_chars or 0)) * TRANSLATE_OUTPUT_TOKENS_PER_CHAR)
+    return max(int(configured or 0), need) or DEFAULT_MAX_OUTPUT_TOKENS
+
 # ---------------------------------------------------------------- reasoning_effort（思考强度）
 # 用户决策：GLM 始终思考不能关，但请求不传 reasoning_effort 会自由深度思考，推理 token 全计入
 # 输出（如 32462 输出/3566 输入）。策略：按任务 context 设 reasoning_effort——翻译类 low（省 token、
@@ -328,6 +344,10 @@ class DeepSeekAI(AIProvider):
         # 供「翻译批次安全上限探测」做**第二判据**：供应商自报 length ⇒ 该批输出被截断。
         # 单实例私有状态（探测必须用独立实例，别与线上翻译共用 ⇒ 竞态）。
         self.last_finish_reason: str | None = None
+        # 最近一次调用返回的 usage（prompt_tokens/completion_tokens…）。
+        # 探测据此把"源字符 ↔ 输出 token"的换算**实测出来**（而不是靠注释里的经验值），
+        # 并反推该模型的输出上限 ≈ completion_tokens（截断档即上限）。
+        self.last_usage: dict | None = None
         self._reasoning_supported = bool(reasoning_effort) or any(
             h in (model or "").lower() for h in REASONING_MODEL_HINTS)
         # P12-4：魔塔免费额度失败提示（用户可在设置中心切换供应商）
@@ -448,6 +468,7 @@ class DeepSeekAI(AIProvider):
                     raise DeepSeekError(
                         f"响应无内容（finish_reason={ch.get('finish_reason')}）: {str(data)[:200]}")
                 usage = data.get("usage")
+                self.last_usage = usage if isinstance(usage, dict) else None
                 if usage is not None and self.guard:
                     cache_hit = cache_hit_tokens(usage)
                     self.guard.record_usage(

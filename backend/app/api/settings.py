@@ -369,7 +369,7 @@ def save_translate_effort(body: CompileEffortModel) -> dict:
 
 
 class TranslateBatchModel(BaseModel):
-    """翻译批次上限（字符）。0/空 = 清除，回落默认（紧凑 6000 / 主模型 12000）。"""
+    """翻译批次上限（字符）。0/空 = 清除，回落默认（紧凑 14000 / 主模型 12000）。"""
     chars: int | str | None = 0
 
 
@@ -380,12 +380,19 @@ def save_translate_batch(body: TranslateBatchModel) -> dict:
     控制变量用字符而不是 token：分批算法吃字符、日志/告警也是字符，用户可观测可验证。
     只在段边界切批、单段超限独占一批（尽量整段发送），超长单段才按句子边界切块。
     """
+    svc = container.get_settings_service()
     try:
-        chars = container.get_settings_service().save_translate_batch_chars(body.chars)
+        chars = svc.save_translate_batch_chars(body.chars)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    # 批次上限变了 → 翻译池的输出预算跟着变（预算 = max(该模型已配值, 上限 × 0.4)），
+    # 故重建翻译池实例让新预算立即生效（纯本地重建，不发网络请求）。
+    try:
+        container.apply_translation_providers(svc.get_enabled_translation_providers(masked=False))
+    except Exception as e:  # noqa: BLE001 - 重建失败不影响上限本身已落盘
+        logger.warning("批次上限变更后重建翻译池失败（预算下次启动生效）: %s", e)
     msg = (f"翻译批次上限已设为 {chars} 字符" if chars
-           else "翻译批次上限已清除（用默认：紧凑 6000 / 主模型 12000 字符）")
+           else "翻译批次上限已清除（用默认：紧凑 14000 / 主模型 12000 字符）")
     container.get_event_bus().publish("info", "settings", "translate", msg, {"chars": chars})
     return {"ok": True, "chars": chars}
 

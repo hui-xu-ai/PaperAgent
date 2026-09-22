@@ -560,7 +560,8 @@ function editTranslateProvider(index = -1) {
   $('tpf-base').value = tp?.base_url || '';
   $('tpf-model').value = tp?.model || '';
   $('tpf-key').value = (tp?.api_key && tp.api_key !== '未设置') ? KEY_MASK : '';
-  $('tpf-max').value = tp?.max_tokens ?? '';
+  // 输出上限不再由用户填写（2026-09-23）：它是「批次上限」的从属量（实测 ≈0.2 token/源字符），
+  // 交给用户填只会造成困惑；表单里改成一行说明。保存时沿用该条目已存值。
   $('tpf-test-result').textContent = '';
   $('translate-provider-form').style.display = 'flex';
 }
@@ -639,16 +640,16 @@ async function saveTranslateProvider() {
     keyVal.includes('…') || keyVal.includes('*');
   const editing = tpEditingIndex >= 0 ? settingsState.translation_providers[tpEditingIndex] : null;
   const apiKey = keyPlaceholder ? (editing?.api_key || '') : keyVal;
-  const maxTxt = $('tpf-max').value.trim();
-  const maxNum = Number(maxTxt);
-  const maxTokens = (maxTxt === '' || !Number.isFinite(maxNum) || maxNum <= 0) ? undefined : maxNum;
+  // 输出上限（max_tokens）不再让用户填：它是「批次上限」的从属量——实测「输出 token ≈ 源字符 × 0.2」，
+  // 故 14000 字符批次只需约 2900 token。新建条目给 8192（余量 ~2.8 倍），已有条目沿用原值（值不动）。
+  const maxTokens = editing?.max_tokens || 8192;
   const body = {
     id: editing?.id || '',
     name: $('tpf-name').value || '翻译模型',
     base_url: $('tpf-base').value,
     model: $('tpf-model').value,
     api_key: apiKey,
-    max_tokens: maxTokens ?? editing?.max_tokens ?? 64000,
+    max_tokens: maxTokens,
     reasoning_effort: editing?.reasoning_effort ?? null,
     enabled: editing ? !!editing.enabled : true,   // 新增默认启用
   };

@@ -148,7 +148,7 @@ class KbMetaService:
             compact = get_translation_ai() is not None
         except Exception:  # noqa: BLE001
             pass
-        # 每批正文字符上限（设置中心可调；0/空 = paperkb 用默认 紧凑6000 / 主模型12000）
+        # 每批正文字符上限（设置中心可调；0/空 = paperkb 用默认 紧凑14000 / 主模型12000）
         try:
             from . import container
             batch_chars = container.get_settings_service().get_translate_batch_chars()

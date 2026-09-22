@@ -100,7 +100,7 @@ CHAT_REASONING_EFFORTS = ("low", "high", "auto")
 KEY_COMPILE_EFFORT = "compile_reasoning_effort"
 KEY_TRANSLATE_EFFORT = "translate_reasoning_effort"
 # 翻译**每批正文字符上限**（2026-09-22 用户要求可调，方便按模型输出能力取舍）。
-# 留空/0 = 用默认：紧凑路径（专用翻译模型）6000 / 主模型路径 12000。
+# 留空/0 = 用默认：紧凑路径（专用翻译模型）14000 / 主模型路径 12000。
 # 语义硬约束在 paperkb 侧保证：只在段边界切批、单段超限独占一批、超长单段按句切块。
 KEY_TRANSLATE_BATCH_CHARS = "translate_batch_chars"
 # 下限/上限（防手滑填 0/±天文数字）：1 千 ~ 20 万字符
@@ -647,9 +647,21 @@ class SettingsService:
         return providers
 
     def get_enabled_translation_providers(self, masked: bool = False) -> list[dict]:
-        """池内**已启用**的翻译供应商（实际参与翻译路由的）。"""
-        return [p for p in self.get_translation_providers(masked=masked)
+        """池内**已启用**的翻译供应商（实际参与翻译路由的）。
+
+        2026-09-23：masked=False（= 运行时口径，喂给 `build_ai`）时把每条的输出预算
+        `max_tokens` 换成**由当前批次上限推导**的值（`llm_service.translate_output_budget`）。
+        批次上限是用户可调项（含探测按钮写入），预算必须跟着走；只在读取时推导，**不落库**，
+        故界面（masked=True）看到的仍是用户存的原值。
+        """
+        pool = [p for p in self.get_translation_providers(masked=masked)
                 if p.get("enabled")]
+        if masked:
+            return pool
+        from .llm_service import translate_output_budget
+        batch = self.get_translate_batch_chars()
+        return [{**p, "max_tokens": translate_output_budget(batch, p.get("max_tokens"))}
+                for p in pool]
 
     def save_translation_providers(self, providers: list[dict]) -> None:
         """保存翻译供应商池（整体替换；脱敏 key 保留原值；补 id/enabled 缺省）。
@@ -939,7 +951,7 @@ class SettingsService:
 
     # ---------------------------------------------------------- 翻译批次上限（2026-09-22）
     def get_translate_batch_chars(self) -> int:
-        """每批正文字符上限；**留空/0 = 0**，表示用默认（紧凑 6000 / 主模型 12000）。"""
+        """每批正文字符上限；**留空/0 = 0**，表示用默认（紧凑 14000 / 主模型 12000）。"""
         raw = (self.store.get_setting(KEY_TRANSLATE_BATCH_CHARS) or "").strip()
         try:
             val = int(raw)
