@@ -538,10 +538,13 @@ class SettingsService:
             raise ValueError(f"供应商不存在: {provider_id}")
         self.store.set_setting(KEY_ACTIVE, provider_id)
 
-    # ---------------------------------------------------------- 翻译模型池（多模型：切换/并行）
+    # ---------------------------------------------------------- 翻译模型池（多模型备选，单选激活）
     # 2026-09-19 从单个翻译供应商升级为**池**：`translation_providers` 为 JSON 列表，每个条目
-    # 带 `enabled` 标志。**启用 1 个 = 切换模式**（只用该模型）；**启用多个 = 并行模式**
-    # （轮询分发各批次，提速）。都不启用 = 回落主模型。旧单条 `translation_provider` 自动迁移入池。
+    # 带 `enabled` 标志。
+    # 2026-09-22 用户决定：**改为单选**——池里可存多个模型（方便切换），但同一时刻只有一个
+    # `enabled`；全部关闭 = 回落主模型。旧语义"启用多个 = 并行轮询提速"已删除：实测它并非
+    # 并行（`_run_batches` 是串行循环），只是把各批**分发**给不同模型 ⇒ 同一篇译文风格/术语
+    # 不一致。想换模型 = 在设置里点另一个（热切换立即生效）。
     _TRANSLATE_ENV_RE = re.compile(
         r"^TRANSLATE_(\d+)_(BASE_URL|MODEL|API_KEY|MAX_TOKENS|ENABLED)$")
 
@@ -631,7 +634,13 @@ class SettingsService:
                 if p.get("enabled")]
 
     def save_translation_providers(self, providers: list[dict]) -> None:
-        """保存翻译供应商池（整体替换；脱敏 key 保留原值；补 id/enabled 缺省）。"""
+        """保存翻译供应商池（整体替换；脱敏 key 保留原值；补 id/enabled 缺省）。
+
+        2026-09-22 用户决定：**池可存多条，但同时只有一条生效**（用户在设置里单选激活哪个）。
+        旧语义是"启用多个 = 按批轮询分发"，实测会让同一篇译文各批落到不同模型 ⇒ 风格/术语
+        不一致，且并非真并行（`_run_batches` 是串行循环）。此处兜底：多条 enabled 只留第一条，
+        其余强制关闭；**全部关闭是合法的**（= 回落主模型翻译）。
+        """
         current = {p["id"]: p for p in self.get_translation_providers(masked=False)}
         cleaned = []
         for p in providers:
@@ -643,6 +652,13 @@ class SettingsService:
                 p["api_key"] = cur.get("api_key", "")
             p["enabled"] = bool(p.get("enabled"))
             cleaned.append(p)
+        seen_active = False
+        for p in cleaned:
+            if p["enabled"] and seen_active:
+                logger.info("翻译池单选兜底：%s 与已激活项并存 → 强制关闭", p["id"])
+                p["enabled"] = False
+            elif p["enabled"]:
+                seen_active = True
         self.store.set_setting(KEY_TRANSLATION_PROVIDERS,
                                json.dumps(cleaned, ensure_ascii=False))
         # 迁移后清掉旧单条键（避免回读歧义）

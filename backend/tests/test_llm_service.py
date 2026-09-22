@@ -306,3 +306,25 @@ def test_build_ai_passes_reasoning_effort(monkeypatch):
     ai2 = build_ai({"api_key": "k", "base_url": "u", "model": "m"})
     assert ai2.reasoning_effort is None
     assert ai2._reasoning_supported is False    # 模型名不命中思考型 → 不送
+
+
+# ---------------------------------------------------------------- 翻译池单选激活（2026-09-22）
+def test_next_translation_ai_is_deterministic(monkeypatch):
+    """删掉"按批轮询"后必须恒返回同一个模型。
+
+    旧行为：每次 complete() 轮询取下一个 ⇒ 一篇译文各批落到不同模型，风格/术语不一致
+    （且 `_run_batches` 是串行循环，所谓"并行提速"并不存在）。
+    """
+    from app.services import llm_service as L
+
+    a, b = object(), object()
+    monkeypatch.setattr(L, "_translate_ais", [a, b])
+    assert [L.next_translation_ai() for _ in range(5)] == [a] * 5
+
+
+def test_next_translation_ai_none_when_pool_empty(monkeypatch):
+    """空池返回 None ⇒ 调用方回落主模型。"""
+    from app.services import llm_service as L
+
+    monkeypatch.setattr(L, "_translate_ais", [])
+    assert L.next_translation_ai() is None

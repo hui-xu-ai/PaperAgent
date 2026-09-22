@@ -500,7 +500,7 @@ async function activateProvider(i) {
   } catch (e) { alert('激活失败：' + e.message); }
 }
 
-// ---------------------------------------------------------------- T1：翻译模型池（多模型：切换/并行）
+// ---------------------------------------------------------------- T1：翻译模型池（可存多个，单选激活）
 let tpEditingIndex = -1;   // 当前编辑的池下标（-1 = 新增）
 
 function renderTranslateProvider() {
@@ -509,17 +509,18 @@ function renderTranslateProvider() {
   const infoEl = $('translate-provider-info');
   const tbody = $('translate-provider-tbody');
   if (!pool.length) {
+    noneEl.textContent = '未配置翻译专用模型（使用主模型翻译）';
     noneEl.style.display = '';
     infoEl.style.display = 'none';
     return;
   }
   noneEl.style.display = 'none';
   infoEl.style.display = '';
-  const enabledCount = pool.filter(p => p.enabled).length;
+  const activeIdx = pool.findIndex(p => p.enabled);
   tbody.innerHTML = pool.map((p, i) => `<tr>
-    <td><input type="checkbox" data-tp-toggle="${i}" ${p.enabled ? 'checked' : ''}
-         title="启用后参与翻译（启用多个=并行轮询）"></td>
-    <td>${escapeHtml(p.name)}${p.enabled ? ' <em class="muted">(启用)</em>' : ''}</td>
+    <td><input type="radio" name="tp-active" data-tp-toggle="${i}" ${p.enabled ? 'checked' : ''}
+         title="点击激活该模型（同时只有一个生效；全部不选 = 用主模型翻译）"></td>
+    <td>${escapeHtml(p.name)}${p.enabled ? ' <em class="muted">(当前)</em>' : ''}</td>
     <td title="${escapeHtml(p.base_url)}">${escapeHtml(shortTitle(p.base_url, 24))}</td>
     <td>${escapeHtml(p.model)}</td>
     <td><button class="btn small" data-tp-edit="${i}">编辑</button>
@@ -532,8 +533,9 @@ function renderTranslateProvider() {
     b.addEventListener('click', () => editTranslateProvider(Number(b.dataset.tpEdit))));
   tbody.querySelectorAll('[data-tp-del]').forEach(b =>
     b.addEventListener('click', () => deleteTranslateProvider(Number(b.dataset.tpDel))));
-  if (enabledCount > 1) {
-    noneEl.style.display = 'none';
+  if (activeIdx < 0) {
+    noneEl.textContent = '当前未激活任何翻译专用模型（使用主模型翻译）';
+    noneEl.style.display = '';
   }
 }
 
@@ -552,7 +554,9 @@ function editTranslateProvider(index = -1) {
 async function toggleTranslateProvider(index) {
   const pool = settingsState.translation_providers;
   if (index < 0 || index >= pool.length) return;
-  pool[index].enabled = !pool[index].enabled;
+  const prev = pool.map(p => !!p.enabled);
+  // 单选语义：激活第 index 条 = 其余全部关闭（同时只有一个生效）
+  pool.forEach((p, i) => { p.enabled = (i === index); });
   try {
     const saved = await api('/api/settings/translation-providers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -561,8 +565,30 @@ async function toggleTranslateProvider(index) {
     settingsState.translation_providers = saved.translation_providers || pool;
     renderTranslateProvider();
   } catch (e) {
-    pool[index].enabled = !pool[index].enabled;   // 回滚
-    alert('切换失败：' + e.message);
+    pool.forEach((p, i) => { p.enabled = prev[i]; });   // 回滚
+    renderTranslateProvider();
+    alert('激活失败：' + e.message);
+  }
+}
+
+/* 全部关闭 = 回落主模型（池保留，方便随时再激活） */
+async function clearTranslateActive() {
+  const pool = settingsState.translation_providers;
+  if (!pool.length) return;
+  const prev = pool.map(p => !!p.enabled);
+  pool.forEach(p => { p.enabled = false; });
+  try {
+    const saved = await api('/api/settings/translation-providers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pool),
+    });
+    settingsState.translation_providers = saved.translation_providers || pool;
+    renderTranslateProvider();
+    alert('已改为使用主模型翻译');
+  } catch (e) {
+    pool.forEach((p, i) => { p.enabled = prev[i]; });
+    renderTranslateProvider();
+    alert('操作失败：' + e.message);
   }
 }
 
@@ -668,6 +694,8 @@ async function testTranslateProvider() {
 function bindTranslateProviderEvents() {
   const editBtn = $('translate-provider-edit');
   if (editBtn) editBtn.addEventListener('click', () => editTranslateProvider(-1));
+  const noneBtn = $('translate-provider-none-btn');
+  if (noneBtn) noneBtn.addEventListener('click', () => guardBtn(noneBtn, () => clearTranslateActive(), '切换中…'));
   const saveBtn = $('tpf-save');
   if (saveBtn) saveBtn.addEventListener('click', (e) => guardBtn(e.currentTarget, () => saveTranslateProvider(), '保存中…'));
   const cancelBtn = $('tpf-cancel');

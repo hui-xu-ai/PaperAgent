@@ -201,7 +201,7 @@ class _KBLLMAdapter:
 
     def complete(self, prompt: str, context: str = "compile") -> str:
         mapped = {"translate": "translate", "ask": "ask"}.get(context, "engine")
-        # 翻译路由：轮询取池内下一个专用 AI（多模型并行时分发批次），空池回落主模型
+        # 翻译路由：取当前**激活**的专用 AI（单选，2026-09-22 删掉按批轮询），空池回落主模型
         if context == "translate":
             try:
                 from .llm_service import next_translation_ai

@@ -568,6 +568,37 @@ def test_translation_pool_db_wins_over_env_seed(store, monkeypatch):
     assert [p["model"] for p in pool] == ["user-model"]
 
 
+def test_translation_pool_single_active_enforced(store, monkeypatch):
+    """2026-09-22 用户决定：池可存多条备选，但**同时只有一条生效**（设置里单选激活）。
+
+    旧语义"启用多个 = 并行轮询分发批次"已删除：实测并非并行（`_run_batches` 串行），
+    只是把各批分给不同模型 ⇒ 同一篇译文风格/术语不一致。
+    """
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_translation_providers([
+        {"id": "t1", "name": "A", "base_url": "https://a.example/v1", "model": "m-a",
+         "api_key": "sk-a", "enabled": True},
+        {"id": "t2", "name": "B", "base_url": "https://b.example/v1", "model": "m-b",
+         "api_key": "sk-b", "enabled": True},
+    ])
+    pool = svc.get_translation_providers(masked=False)
+    assert [p["id"] for p in pool] == ["t1", "t2"]        # 两条都留着（方便切换）
+    assert [p["enabled"] for p in pool] == [True, False]  # 只留第一条生效
+    enabled = svc.get_enabled_translation_providers(masked=False)
+    assert [p["id"] for p in enabled] == ["t1"]
+
+
+def test_translation_pool_all_off_falls_back_to_main(store, monkeypatch):
+    """全部不激活是合法状态 = 回落主模型（池保留，随时可再激活）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_translation_providers([
+        {"id": "t1", "name": "A", "base_url": "https://a.example/v1", "model": "m-a",
+         "api_key": "sk-a", "enabled": False},
+    ])
+    assert svc.get_translation_providers(masked=False)[0]["enabled"] is False
+    assert svc.get_enabled_translation_providers(masked=False) == []
+
+
 def test_zhipu_env_slot(store, monkeypatch):
     """智谱 GLM 内置槽位：填 ZHIPU_API_KEY 即出现（不走 CUSTOM_PROVIDER_，避免 .env 越写越乱）。"""
     monkeypatch.setenv("ZHIPU_API_KEY", "zp-1234567890")

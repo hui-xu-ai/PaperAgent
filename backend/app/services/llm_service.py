@@ -734,9 +734,8 @@ class ChatCompleter:
 _ai: DeepSeekAI | None = None
 _chat: ChatCompleter | None = None
 _translate_ai: DeepSeekAI | None = None  # T1：翻译专用 AI（可选，None=用主模型）
-# 2026-09-19 翻译模型池：多个已启用的翻译 AI，轮询分发批次（并行提速）。
+# 2026-09-22 翻译池改**单选激活**：列表最多一个元素（保留列表形状以兼容注入点）。
 _translate_ais: list[DeepSeekAI] = []
-_translate_rr: int = 0  # round-robin 游标（线程不安全但翻译批分发可容忍）
 
 # 专用翻译模型：compact 小批次（≤1200 字符、正常 2-6s 返回）→ 短超时快速失败重试，
 # 绕过硅基流动免费端点偶发的静默挂起（详见 build_ai docstring，2026-09-19 实测）。
@@ -829,10 +828,9 @@ def init_translation_ai(provider: dict, guard: TokenGuard | None = None) -> Deep
     """初始化翻译专用 AI（单条，兼容旧调用；会重建为单元素池）。"""
     ai = build_ai(provider, guard, timeout_sec=_TRANSLATE_TIMEOUT_SEC,
                   max_retries=_TRANSLATE_MAX_RETRIES)
-    global _translate_ai, _translate_ais, _translate_rr
+    global _translate_ai, _translate_ais
     _translate_ai = ai
     _translate_ais = [ai]
-    _translate_rr = 0
     logger.info("翻译 AI 已初始化: provider=%s model=%s",
                 provider.get("id"), ai.model)
     return ai
@@ -840,18 +838,16 @@ def init_translation_ai(provider: dict, guard: TokenGuard | None = None) -> Deep
 
 def init_translation_ais(providers: list[dict],
                          guard: TokenGuard | None = None) -> list[DeepSeekAI]:
-    """初始化翻译 AI 池（多模型并行/切换）。空列表 = 清除（回落主模型）。"""
-    global _translate_ai, _translate_ais, _translate_rr
+    """初始化翻译 AI 池（单选激活；正常只有 1 个）。空列表 = 清除（回落主模型）。"""
+    global _translate_ai, _translate_ais
     if not providers:
         _translate_ai = None
         _translate_ais = []
-        _translate_rr = 0
         logger.info("翻译 AI 池已清空（回落主模型）")
         return []
     _translate_ais = [build_ai(p, guard, timeout_sec=_TRANSLATE_TIMEOUT_SEC,
                                max_retries=_TRANSLATE_MAX_RETRIES) for p in providers]
     _translate_ai = _translate_ais[0]
-    _translate_rr = 0
     logger.info("翻译 AI 池已初始化: %d 个模型 (%s)",
                 len(_translate_ais),
                 ", ".join(a.model for a in _translate_ais))
@@ -864,22 +860,21 @@ def get_translation_ai() -> DeepSeekAI | None:
 
 
 def next_translation_ai() -> DeepSeekAI | None:
-    """轮询取下一个翻译 AI（多模型并行时分发批次；单模型恒返回它；空池返回 None）。
+    """取当前**激活**的翻译 AI（空池返回 None → 调用方回落主模型）。
 
-    每次 complete() 调用取一个 → 各批次自然分散到池内各模型，实现并行提速。
+    2026-09-22 用户决定：池改**单选激活**，此函数**确定性地**返回激活项，不再轮询。
+    旧实现按调用次数轮询分发批次（"多模型并行提速"）已删除 —— 实测并非并行
+    （`_run_batches` 是串行循环），只是把各批分给不同模型，导致同一篇译文风格/术语不一致。
+    函数名保留（调用点 `kbmeta_service` 不改），语义 = "当前生效的翻译模型"。
     """
     if not _translate_ais:
         return None
-    global _translate_rr
-    ai = _translate_ais[_translate_rr % len(_translate_ais)]
-    _translate_rr += 1
-    return ai
+    return _translate_ais[0]
 
 
 def clear_translation_ai() -> None:
     """清除翻译专用 AI（单条+池，回落主模型）。"""
-    global _translate_ai, _translate_ais, _translate_rr
+    global _translate_ai, _translate_ais
     _translate_ai = None
     _translate_ais = []
-    _translate_rr = 0
     logger.info("翻译 AI 已清除（回落主模型）")

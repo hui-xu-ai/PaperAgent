@@ -327,18 +327,19 @@
 
           <!-- T1：翻译模型（独立路由，可选） -->
           <section class="scard wide">
-            <h4>翻译模型 <span class="muted" style="font-weight:normal;font-size:0.9em">（可选；启用 1 个=切换，启用多个=并行轮询提速，都不启用=用主模型）</span></h4>
+            <h4>翻译模型 <span class="muted" style="font-weight:normal;font-size:0.9em">（可选；可存多个备选，点圆圈激活其中一个；一个都不激活 = 用主模型）</span></h4>
             <div id="translate-provider-display">
               <p class="muted" id="translate-provider-none">未配置翻译专用模型（使用主模型翻译）</p>
               <div id="translate-provider-info" style="display:none">
                 <table class="provider-table">
-                  <thead><tr><th>启用</th><th>名称</th><th>Base URL</th><th>模型</th><th>操作</th></tr></thead>
+                  <thead><tr><th title="点击圆圈激活（同时只有一个生效）">激活</th><th>名称</th><th>Base URL</th><th>模型</th><th>操作</th></tr></thead>
                   <tbody id="translate-provider-tbody"></tbody>
                 </table>
               </div>
             </div>
             <div class="form-actions">
               <button class="btn small" id="translate-provider-edit">添加翻译模型</button>
+              <button class="btn small" id="translate-provider-none-btn" title="池保留，但不使用任何专用模型（回落主模型翻译）">不用专用模型（回落主模型）</button>
             </div>
             <div class="provider-form modal-mask" id="translate-provider-form" style="display:none">
               <div class="pform-modal modal">

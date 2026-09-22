@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [未发布]
+
+### Changed
+
+- **翻译模型池改为"单选激活"**（2026-09-22 用户决定）：池里仍可保存多个备选，
+  但同一时刻只有一个生效；在 `设置 → 🤖 模型 → 翻译模型` 点圆圈激活，一个都不激活
+  （或点 `不用专用模型（回落主模型）`）则回落主模型。
+  **删除了"启用多个 = 并行轮询提速"**：实测它并非并行（`_run_batches` 是串行循环），
+  只是把同一篇译文的各批**分发**给不同模型 ⇒ 风格/术语不一致。
+  兜底：`save_translation_providers` 遇到多条 enabled 只保留第一条，其余强制关闭。
+
 ## [1.3.0] - 2026-09-21
 
 > **升级影响：不会丢数据，无需重新解析。**

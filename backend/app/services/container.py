@@ -170,7 +170,7 @@ def init_container(settings: Settings) -> None:
         _chat = None
         _llm_ready = False
         logger.warning("未配置 LLM 供应商：翻译/对话功能不可用（设置中心配置后保存即生效）")
-    # T1：翻译专用 AI 池（可选，独立于主模型；启用多个 = 轮询并行）
+    # T1：翻译专用 AI（可选，独立于主模型；池里单选激活，只有一个生效）
     translate_pool = _settings_svc.get_enabled_translation_providers(masked=False)
     if translate_pool:
         try:

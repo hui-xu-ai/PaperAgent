@@ -127,9 +127,9 @@ def activate_provider(provider_id: str) -> dict:
     return {"ok": True, "active_provider": provider_id, "llm_ready": ready}
 
 
-# ---------------------------------------------------------------- T1：翻译模型池（多模型：切换/并行）
+# ---------------------------------------------------------------- T1：翻译模型池（可存多个，单选激活）
 class TranslationProviderModel(BaseModel):
-    """翻译专用供应商配置（可选）。enabled=是否启用（启用多个=并行轮询）。"""
+    """翻译专用供应商配置（可选）。enabled=是否为当前激活项（同时只有一个）。"""
     id: str = ""
     name: str = ""
     base_url: str = ""
