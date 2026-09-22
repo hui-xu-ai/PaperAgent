@@ -685,6 +685,37 @@ def translate_paper(doc_json: str | Path, *, compact: bool = False,
                          compact=compact, max_body_chars=batch_chars)
 
 
+def probe_translate_batch(llm, *, ladder=None, safety_factor: float | None = None,
+                          progress_cb=None) -> dict:
+    """探测某个翻译模型的**安全批次上限**（字符）——阶梯实测，只返回建议值。
+
+    2026-09-22 用户要求："点一下自动测出安全上限，按经验给个安全系数，别按测试极限填"。
+    语料用**知识库/解析库里真实论文的英文正文段**（整段，不切句），阶梯 3000→48000 字符，
+    首败即停，双判据（finish_reason=length 或 应译段未回全）判失败，推荐值 = 最高通过档 × 0.6。
+
+    llm 由调用方构造（**必须是探测专用实例**：探测会读写 `llm.last_finish_reason`，
+    借用线上实例会与该模型的并发翻译互相踩状态）。
+    progress_cb: `(current, total, phase)`，供前端显示进度。
+    **不写任何设置**——是否采纳由用户界面决定。
+    """
+    from .translate.probe import (LADDER, SAFETY_FACTOR, collect_english_text,
+                                  probe_safe_batch_chars)
+
+    tiers = tuple(ladder or LADDER)
+    factor = SAFETY_FACTOR if safety_factor is None else float(safety_factor)
+    roots = _need_store().roots
+    # 多收 3 倍：探测只挑"长段"（贴近真实批次形状），碎段会被跳过，且单篇往往凑不出顶档
+    src = collect_english_text(roots, int(max(tiers) * 3))
+    if not src["paras"]:
+        raise RuntimeError("知识库/解析库里找不到可用的英文正文（请先解析或导入至少一篇文献）")
+    return probe_safe_batch_chars(llm, src["paras"], ladder=tiers, safety_factor=factor,
+                                  sources=src["sources"],
+                                  max_tokens=getattr(llm, "max_tokens", None),
+                                  model=getattr(llm, "model", ""),
+                                  provider_name=getattr(llm, "provider_name", ""),
+                                  progress_cb=progress_cb)
+
+
 # ---------------------------------------------------------------- 检索/问答（M4）
 
 def recall(query: str, top_k: int = 8, include_fulltext: bool = False,

@@ -390,6 +390,29 @@ def save_translate_batch(body: TranslateBatchModel) -> dict:
     return {"ok": True, "chars": chars}
 
 
+# ---------------------------------------------------------------- 批次上限「安全上限」探测
+@router.post("/translate-probe")
+def start_translate_probe() -> dict:
+    """启动探测（后台线程；返回 task_id，前端轮询 GET 同名端点看进度）。
+
+    2026-09-22 用户要求：点一下就自动测出"这个翻译模型一次能扛多少字符"，并按安全系数给建议值。
+    被测模型 = 当前激活的**翻译专用模型** → 没有则回落**主模型**（与线上翻译路由同序）。
+    **会真实消耗 token**（最多 5 次翻译调用）；结果**只作建议**，写不写由用户的「写入」按钮决定。
+    """
+    return container.get_translate_probe().start()
+
+
+@router.get("/translate-probe")
+def get_translate_probe() -> dict:
+    """查询探测进度/结果（前端 1-2s 轮询；status: running/done/error/idle）。"""
+    svc = container.get_translate_probe()
+    state = svc.progress()
+    if state.get("status") == "idle":
+        # 没跑过就回显上次落盘的结果（刷新页面后仍能看到建议值与探测时间）
+        state["last_result"] = container.get_settings_service().get_translate_probe_result()
+    return state
+
+
 @router.post("/chat-reasoning-effort")
 def save_chat_reasoning_effort(body: ChatReasoningEffortModel) -> dict:
     """对话思考强度（契约 3）：low / high / auto。

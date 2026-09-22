@@ -324,6 +324,10 @@ class DeepSeekAI(AIProvider):
         # _reasoning_supported：该 supplier/model 是否支持/需要 reasoning_effort——显式配置或模型名
         # 命中思考型提示（GLM 等）才发送，避免给 DeepSeek-chat 等不支持的端点传参报错。
         self.reasoning_effort = reasoning_effort
+        # 最近一次 complete() 的 finish_reason（"stop"/"length"/…）。
+        # 供「翻译批次安全上限探测」做**第二判据**：供应商自报 length ⇒ 该批输出被截断。
+        # 单实例私有状态（探测必须用独立实例，别与线上翻译共用 ⇒ 竞态）。
+        self.last_finish_reason: str | None = None
         self._reasoning_supported = bool(reasoning_effort) or any(
             h in (model or "").lower() for h in REASONING_MODEL_HINTS)
         # P12-4：魔塔免费额度失败提示（用户可在设置中心切换供应商）
@@ -431,6 +435,7 @@ class DeepSeekAI(AIProvider):
                         continue
                     raise DeepSeekError(f"响应结构异常: {str(data)[:200]}") from e
                 # 兼容 message / 流式 delta 双信封 + 思考型 reasoning_content 回退
+                self.last_finish_reason = ch.get("finish_reason")
                 msg = ch.get("message") or ch.get("delta") or {}
                 text = str(msg.get("content") or "").strip()
                 if not text:

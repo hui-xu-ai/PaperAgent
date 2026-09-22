@@ -348,6 +348,13 @@ def get_compile_worker():
     return _compile_worker
 
 
+def get_translate_probe():
+    """翻译批次「安全上限」探测服务（2026-09-22）。模块级单例，无需容器持有实例。"""
+    from .translate_probe_service import get_translate_probe_service
+
+    return get_translate_probe_service()
+
+
 def apply_provider(provider: dict | None) -> bool:
     """应用供应商配置：重建 LLM 通道（热切换，无需重启）。返回 llm 是否就绪。"""
     global _chat, _llm_ready

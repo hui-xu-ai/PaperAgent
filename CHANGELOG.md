@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     整篇结束汇总 `本次翻译有 K 批触发截断（最大批 X 字符，上限 M）…`。
   - `run_translate` 返回值新增 `batch_limit` / `max_batch_chars` / `truncated_batches`
     / `oversized_paras`。
+- **翻译批次「安全上限」自动探测**（`设置 → 📚 知识库 → 🔬 测试安全上限`，2026-09-22 用户要求
+  "点一下自动测、按经验给安全系数、别按测试极限填"）：
+  - 语料用**知识库/解析库里真实论文的英文正文段**（`document.json` + 与翻译同源的
+    `context_paragraphs` 过滤，整段取用、绝不切句；优先长段以贴近真实批次形状）。
+  - **阶梯** 3000 → 6000 → 12000 → 24000 → 48000 字符逐档单次真译，**首档失败即停**
+    （截断随批次单调），通常只跑 2~3 次。
+  - **双判据**判失败：`finish_reason == "length"`（`DeepSeekAI` 新增 `last_finish_reason`
+    暴露该字段）**或** 应译段未回全——思考型模型常把 finish_reason 报成 `stop` 却只译一半，
+    只看前者会漏判。
+  - **安全系数 0.6**：建议值 = 最高通过档 × 0.6（**绝不等于测试极限**）；向下取整到百位。
+  - **只给建议不自动写**：结果落 `settings.translate_probe_result`（含模型/时间/阶梯明细，
+    超 30 天界面提示重测），写不写由用户点`写入`（复用既有 `/api/settings/translate-batch`）。
+  - 新增端点 `POST/GET /api/settings/translate-probe`（后台线程 + 进度轮询；被测模型 =
+    当前激活的翻译专用模型 → 回落主模型，与线上翻译路由同序）；`paperkb.api.probe_translate_batch`
+    + `paperkb/translate/probe.py`；`KbMetaService.probe_translate_batch`、
+    `TranslateProbeService`、`container.get_translate_probe()`。
+  - 语料粒度提示：按库里段落的**中位长度 × 12 段/批**给出"你这批语料单批最多约 N 字符"，
+    说明上限调到更大不会让单批变大（真实分批还有"每批 ≤12 段"这条约束）。
 
 ### Changed
 

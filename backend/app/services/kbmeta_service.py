@@ -157,6 +157,17 @@ class KbMetaService:
             batch_chars = 0
         return kbapi.translate_paper(doc_json, compact=compact, batch_chars=batch_chars)
 
+    def probe_translate_batch(self, llm, progress_cb=None) -> dict:
+        """探测**某个翻译模型**的安全批次上限（阶梯实测；详见 paperkb.translate.probe）。
+
+        与 `translate_now` 的区别：这里用的 llm 是**探测专用实例**（由调用方按激活的翻译模型
+        构造），不走 `_KBLLMAdapter` 的线上路由，也不写回任何 document.json；结果只作建议。
+
+        2026-09-22 用户要求："点一下自动测出安全上限，别按测试极限填"。
+        """
+        self._ensure()
+        return kbapi.probe_translate_batch(llm, progress_cb=progress_cb)
+
     def compile_now(self, doi: str, level: str = "L1", force: bool = False) -> dict:
         """立即编译（同步；LLM 调用可能较慢）。
 

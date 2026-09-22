@@ -106,6 +106,8 @@ KEY_TRANSLATE_BATCH_CHARS = "translate_batch_chars"
 # 下限/上限（防手滑填 0/±天文数字）：1 千 ~ 20 万字符
 TRANSLATE_BATCH_CHARS_MIN = 1000
 TRANSLATE_BATCH_CHARS_MAX = 200000
+# 「安全上限探测」上次结果（JSON：建议值/模型/时间/阶梯明细）——界面回显 + 判断是否该重测。
+KEY_TRANSLATE_PROBE = "translate_probe_result"
 # 思考档**取值单一来源**（编译/翻译共用同一套；服务端实测：拒绝字面 "auto"，
 # 接受 none/minimal/low/medium/high）
 REASONING_EFFORT_LEVELS = ("auto", "none", "minimal", "low", "medium", "high")
@@ -955,6 +957,24 @@ class SettingsService:
         val = min(max(val, TRANSLATE_BATCH_CHARS_MIN), TRANSLATE_BATCH_CHARS_MAX)
         self.store.set_setting(KEY_TRANSLATE_BATCH_CHARS, str(val))
         return val
+
+    # ---------------------------------------------------------- 批次上限探测结果（2026-09-22）
+    def get_translate_probe_result(self) -> dict | None:
+        """上次探测的建议值（含模型/时间/阶梯明细）；无记录或脏数据 → None。"""
+        raw = self.store.get_setting(KEY_TRANSLATE_PROBE) or ""
+        if not raw.strip():
+            return None
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("批次探测记录损坏（已忽略）")
+            return None
+        return data if isinstance(data, dict) else None
+
+    def save_translate_probe_result(self, result: dict) -> None:
+        """落盘探测结果（供界面回显建议值 + 判断是否该重测）。"""
+        self.store.set_setting(KEY_TRANSLATE_PROBE,
+                               json.dumps(result or {}, ensure_ascii=False))
     def get_auto_compile(self) -> bool:
         """翻译完成后自动把该篇 L1 编译入队（默认开；执行仍由队列手动触发）。"""
         return self.store.get_setting(KEY_AUTO_COMPILE, "1") != "0"
@@ -1307,6 +1327,7 @@ class SettingsService:
             "compile_reasoning_effort": self.get_compile_effort(),
             "translate_reasoning_effort": self.get_translate_effort(),
             "translate_batch_chars": self.get_translate_batch_chars(),
+            "translate_probe_result": self.get_translate_probe_result(),
             "system_prompt_extra": self.get_system_prompt_extra(),
             "custom_css": self.get_custom_css(),
             "md_template": self.get_md_template(),

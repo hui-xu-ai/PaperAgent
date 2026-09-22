@@ -652,3 +652,28 @@ def test_translate_batch_chars_clamped_and_rejects_garbage(store, monkeypatch):
     assert svc.get_translate_batch_chars() == 200000
     with pytest.raises(ValueError):
         svc.save_translate_batch_chars("abc")
+
+
+# ---------------------------------------- 批次上限探测结果（2026-09-22）
+def test_translate_probe_result_roundtrip(store, monkeypatch):
+    """探测结果落盘并能读回（界面回显建议值 + 判断是否该重测；无记录 = None）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    assert svc.get_translate_probe_result() is None          # 没测过
+    assert svc.get_all()["translate_probe_result"] is None
+    res = {"recommended": 3600, "highest_pass": 6024, "safety_factor": 0.6,
+           "model": "glm-4.5-air", "probed_at": "2026-09-22T23:10:00",
+           "tested": [{"tier": 6000, "chars": 6024, "ok": True}]}
+    svc.save_translate_probe_result(res)
+    got = svc.get_translate_probe_result()
+    assert got["recommended"] == 3600 and got["tested"][0]["tier"] == 6000
+    assert svc.get_all()["translate_probe_result"]["model"] == "glm-4.5-air"
+
+
+def test_translate_probe_result_tolerates_corrupt_value(store, monkeypatch):
+    """脏值（非法 JSON / 非对象）→ 返回 None，不能让设置读取整体崩掉。"""
+    from app.services.settings_service import KEY_TRANSLATE_PROBE
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    store.set_setting(KEY_TRANSLATE_PROBE, "{不是 json")
+    assert svc.get_translate_probe_result() is None
+    store.set_setting(KEY_TRANSLATE_PROBE, "[1,2,3]")
+    assert svc.get_translate_probe_result() is None
