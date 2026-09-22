@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-"""翻译批次「安全上限」探测服务（后台线程 + 进度 + 结果落设置）。
+"""翻译批次「安全上限」探测服务（后台线程 + 进度 + 结果回填表单）。
 
 2026-09-22 用户要求："生成一个代码，让用户点击之后，自动测试一下模型的安全能力，然后自动填写"
 + "实际填写值不能按照测试极限来填，按经验设一个安全系数"。
+2026-09-23 简化（用户："安全冗余是模型属性，你这太绕了"）：
+- 按钮搬到**翻译模型表单里**（挨着「测试连接」），测的就是**表单里正在编辑的那个模型**——
+  传传入草稿 provider 即可，不必先保存、不必先激活；
+- 结果**直接回填该表单的「单批上限」输入框**（用户点保存才随条目生效，仍不静默改运行时）；
+- 不再落盘"上次建议值"（值本身已存在模型条目里，少一处状态）。
 
 职责边界（算法在 paperkb，接线在这里）：
-- **选模型**：优先当前激活的**翻译专用模型**，没有就回落**主模型**（与线上翻译路由同序）；
 - **建独立实例**：探测走 `build_ai(...)` 新建一个客户端，**不复用线上翻译实例**——探测要读写
   `last_finish_reason`，共用实例会与正在进行的翻译互相踩状态；
-- **后台跑**：最长 5 档真译（可能几分钟），故放线程 + 进度轮询；结果落 settings 供界面回显；
-- **只给建议**：本服务**不写** `translate_batch_chars`，是否采纳由用户在界面上点「写入」。
+- **后台跑**：最长 5 档真译（可能几分钟），故放线程 + 进度轮询。
 
 ⚠️ 探测会真实消耗 token（最多 5 次翻译调用，输入合计约 0.9-12 万字符），界面必须事先说明。
 """
@@ -32,6 +35,8 @@ class TranslateProbeService:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._draft: dict | None = None      # 表单里正在编辑的模型（本次探测的被测对象）
+        self._draft_via = ""
         self._state: dict = {
             "task_id": "", "status": "idle", "current": 0, "total": 0,
             "phase": "尚未探测", "model": "", "via": "", "elapsed": 0,
@@ -48,17 +53,23 @@ class TranslateProbeService:
             self._state.update(kw)
 
     # ---------------------------------------------------------- 启动
-    def start(self) -> dict:
-        """启动探测（已在跑则直接返回当前状态，不重复起线程）。"""
+    def start(self, provider: dict | None = None, via: str = "") -> dict:
+        """启动探测（已在跑则直接返回当前状态，不重复起线程）。
+
+        provider：**正在编辑的翻译模型草稿**（含明文或已解析的真实 Key）。给了就用它测，
+        没给则回落"当前激活的翻译模型 → 主模型"（与线上翻译路由同序）。
+        """
         with self._lock:
             if self._state["status"] == "running":
                 return {"ok": True, "already_running": True,
                         "task_id": self._state["task_id"], **dict(self._state)}
+            self._draft = dict(provider) if provider else None
+            self._draft_via = via
             task_id = "probe_%d" % int(time.time() * 1000)
             self._state.update({
                 "task_id": task_id, "status": "running", "current": 0, "total": 0,
-                "phase": "准备语料…", "model": "", "via": "", "elapsed": 0,
-                "result": None, "error": None,
+                "phase": "准备语料…", "model": (provider or {}).get("model", ""),
+                "via": via, "elapsed": 0, "result": None, "error": None,
             })
         self._thread = threading.Thread(target=self._run, name="translate-probe",
                                         daemon=True)
@@ -67,7 +78,9 @@ class TranslateProbeService:
 
     # ---------------------------------------------------------- 执行
     def _resolve_provider(self) -> tuple[dict, str]:
-        """选被测模型：激活的翻译专用模型 → 主模型（与线上翻译路由同序）。"""
+        """被测模型：**表单草稿** → 激活的翻译专用模型 → 主模型（与线上翻译路由同序）。"""
+        if self._draft:
+            return self._draft, self._draft_via or "当前编辑的模型"
         from . import container
         svc = container.get_settings_service()
         pool = [p for p in svc.get_enabled_translation_providers(masked=False)
@@ -105,10 +118,6 @@ class TranslateProbeService:
             result["via"] = via
             result["provider_name"] = provider.get("name") or result.get("provider_name") or ""
             result["elapsed"] = round(time.time() - t0, 1)
-            try:
-                container.get_settings_service().save_translate_probe_result(result)
-            except Exception as e:  # noqa: BLE001 - 存不下不影响本次结果回显
-                logger.warning("探测结果落盘失败（不影响本次结果）: %s", e)
             self._set(status="done", result=result, phase="完成",
                       elapsed=round(time.time() - t0, 1))
             logger.info("翻译上限探测完成：模型=%s 最高通过=%s 推荐值=%s 用时=%.1fs",

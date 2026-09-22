@@ -100,14 +100,14 @@ CHAT_REASONING_EFFORTS = ("low", "high", "auto")
 KEY_COMPILE_EFFORT = "compile_reasoning_effort"
 KEY_TRANSLATE_EFFORT = "translate_reasoning_effort"
 # 翻译**每批正文字符上限**（2026-09-22 用户要求可调，方便按模型输出能力取舍）。
+# 2026-09-23：**优先用翻译模型条目自带的 `batch_chars`**（安全冗余是模型属性，见
+# `get_effective_translate_batch_chars`）；本全局值只在"条目没单独设"或"回落主模型"时生效。
 # 留空/0 = 用默认：紧凑路径（专用翻译模型）14000 / 主模型路径 12000。
 # 语义硬约束在 paperkb 侧保证：只在段边界切批、单段超限独占一批、超长单段按句切块。
 KEY_TRANSLATE_BATCH_CHARS = "translate_batch_chars"
 # 下限/上限（防手滑填 0/±天文数字）：1 千 ~ 20 万字符
 TRANSLATE_BATCH_CHARS_MIN = 1000
 TRANSLATE_BATCH_CHARS_MAX = 200000
-# 「安全上限探测」上次结果（JSON：建议值/模型/时间/阶梯明细）——界面回显 + 判断是否该重测。
-KEY_TRANSLATE_PROBE = "translate_probe_result"
 # 思考档**取值单一来源**（编译/翻译共用同一套；服务端实测：拒绝字面 "auto"，
 # 接受 none/minimal/low/medium/high）
 REASONING_EFFORT_LEVELS = ("auto", "none", "minimal", "low", "medium", "high")
@@ -564,18 +564,20 @@ class SettingsService:
     # 并行（`_run_batches` 是串行循环），只是把各批**分发**给不同模型 ⇒ 同一篇译文风格/术语
     # 不一致。想换模型 = 在设置里点另一个（热切换立即生效）。
     _TRANSLATE_ENV_RE = re.compile(
-        r"^TRANSLATE_(\d+)_(BASE_URL|MODEL|API_KEY|MAX_TOKENS|ENABLED)$")
+        r"^TRANSLATE_(\d+)_(BASE_URL|MODEL|API_KEY|MAX_TOKENS|ENABLED|BATCH_CHARS)$")
 
     def _env_translation_presets(self) -> list[dict]:
-        """[种子] `.env` 的 `TRANSLATE_<idx>_*` → 翻译池条目（仅 DB 池为空时兜底）。
+        """`.env` 的 `TRANSLATE_<idx>_*` → 翻译池条目（**权威**：见 `get_translation_providers`）。
 
         - **API_KEY 留空 → 回落 `SILICONFLOW_API_KEY`**（与 `get_lit_api_keys` 同一约定：
           硅基流动一个 Key 同时服务翻译 / embedding / reranker）；
         - **启用但拿不到任何 Key 的条目不播种**——宁可回落主模型，也不要"界面看着启用了、
           实际调不通"；
-        - `ENABLED=0` 照原样播进来（界面可见但**不参与路由**），尊重用户显式关闭。
+        - `ENABLED=0` 照原样播进来（界面可见但**不参与路由**），尊重用户显式关闭；
+        - `BATCH_CHARS` = 该模型单独的单批正文字符上限（0/缺省 = 用条目默认，见
+          `get_effective_translate_batch_chars`）。
         写回侧：界面保存走 `save_translation_providers` → `_sync_translate_env`（按序号
-        重写 `TRANSLATE_<idx>_*`），因此种子条目不会污染 `CUSTOM_PROVIDER_*`。
+        重写 `TRANSLATE_<idx>_*`，并清掉多余旧键），因此界面保存后两边始终一致。
         """
         groups: dict[int, dict] = {}
         for key, val in os.environ.items():
@@ -596,20 +598,32 @@ class SettingsService:
                 max_tokens = int(f.get("max_tokens") or 8192)
             except ValueError:
                 max_tokens = 8192
+            try:
+                batch_chars = int(float(f.get("batch_chars") or 0))
+            except ValueError:
+                batch_chars = 0
+            if batch_chars > 0:
+                batch_chars = min(max(batch_chars, TRANSLATE_BATCH_CHARS_MIN),
+                                  TRANSLATE_BATCH_CHARS_MAX)
             out.append({
                 "id": f"translate_{idx}",
                 "name": f"{f['model'].split('/')[-1]}（.env 翻译预设）",
                 "base_url": f["base_url"], "model": f["model"], "api_key": api_key,
                 "enabled": enabled, "env": "TRANSLATE",
-                "max_tokens": max_tokens, "reasoning_effort": None,
+                "max_tokens": max_tokens, "batch_chars": max(0, batch_chars),
+                "reasoning_effort": None,
             })
         return out
     def get_translation_providers(self, masked: bool = True) -> list[dict]:
         """获取翻译供应商池（全部，含未启用的）。[] = 未配置（回落主模型）。
 
-        2026-09-21：DB 池为空时回落 **.env 种子**（`TRANSLATE_<idx>_*`）——让"只填一个
-        硅基流动 Key 就能用免费 Qwen2.5-7B 翻译"成立，新装用户不必先去界面点一遍。
-        DB 有记录（含用户显式清空前的保存）时**永不覆盖**：DB 是权威，env 只负责首次播种。
+        **权威来源 = `.env` 的 `TRANSLATE_<idx>_*`（2026-09-23 用户拍板）**：与密钥同一规则，
+        手改 `.env` 即生效。合并规则按**序号**：
+          - 池里第 i 条 ← `.env` 第 i 槽（存在即覆盖，含 ENABLED/KEY/单批上限）；
+          - `.env` 没有的序号 → 保留池里原条目；
+          - `.env` 多出的序号 → 追加。
+        界面保存时 `_sync_translate_env` 会把整池按序号回写 `.env`（并清多余旧键）⇒ 保存后两边
+        恒等，故"界面改了却像没生效"不会发生；反之手改 `.env` 就是唯一权威。
         """
         raw = self.store.get_setting(KEY_TRANSLATION_PROVIDERS)
         providers: list[dict] = []
@@ -633,10 +647,7 @@ class SettingsService:
                             json.dumps(providers, ensure_ascii=False))
                 except json.JSONDecodeError:
                     pass
-        if not providers:
-            # 2026-09-21：DB 池为空 → .env 种子（TRANSLATE_<idx>_*）。让"只填一个硅基流动
-            # Key 就能用免费 Qwen2.5-7B 翻译"成立，新装用户不必先去界面点一遍。
-            providers = self._env_translation_presets()
+        providers = self._merge_translate_env_presets(providers)
         if masked:
             out = []
             for p in providers:
@@ -646,22 +657,59 @@ class SettingsService:
             return out
         return providers
 
+    def _merge_translate_env_presets(self, providers: list[dict]) -> list[dict]:
+        """`.env` 预设按序号权威覆盖**翻译池**条目（见 `get_translation_providers` 的规则说明）。"""
+        presets = self._env_translation_presets()
+        if not presets:
+            return providers
+        by_idx = {p["id"]: p for p in presets}   # id = "translate_<idx>"
+        merged: list[dict] = []
+        for i, p in enumerate(providers):
+            key = f"translate_{i}"
+            if key in by_idx:
+                merged.append(by_idx.pop(key))
+            else:
+                merged.append(p)
+        for key in sorted(by_idx, key=lambda k: int(k.split("_")[1])):
+            merged.append(by_idx[key])
+        return merged
+
     def get_enabled_translation_providers(self, masked: bool = False) -> list[dict]:
         """池内**已启用**的翻译供应商（实际参与翻译路由的）。
 
-        2026-09-23：masked=False（= 运行时口径，喂给 `build_ai`）时把每条的输出预算
-        `max_tokens` 换成**由当前批次上限推导**的值（`llm_service.translate_output_budget`）。
-        批次上限是用户可调项（含探测按钮写入），预算必须跟着走；只在读取时推导，**不落库**，
-        故界面（masked=True）看到的仍是用户存的原值。
+        masked=False（= 运行时口径，喂给 `build_ai`）时把每条的 `max_tokens` 换成**按该条目单批
+        上限推导**的值（`llm_service.translate_output_budget`）：批次上限调大 ⇒ 输出预算跟着走。
+        只在读取时推导、**不落库**，故界面（masked=True）看到的仍是用户存的原值。
         """
         pool = [p for p in self.get_translation_providers(masked=masked)
                 if p.get("enabled")]
         if masked:
             return pool
         from .llm_service import translate_output_budget
-        batch = self.get_translate_batch_chars()
-        return [{**p, "max_tokens": translate_output_budget(batch, p.get("max_tokens"))}
+        global_batch = self.get_translate_batch_chars()
+        return [{**p, "max_tokens": translate_output_budget(
+                    self._entry_batch_chars(p, global_batch), p.get("max_tokens"))}
                 for p in pool]
+
+    @staticmethod
+    def _entry_batch_chars(entry: dict, global_batch: int = 0) -> int:
+        """条目自己的单批上限（0/缺省 ⇒ 用全局设置，仍为 0 ⇒ 交给 paperkb 的代码默认）。"""
+        try:
+            own = int(entry.get("batch_chars") or 0)
+        except (TypeError, ValueError):
+            own = 0
+        return own if own > 0 else int(global_batch or 0)
+
+    def get_effective_translate_batch_chars(self) -> int:
+        """翻译时实际用的单批正文字符上限：激活条目自带值 → 全局设置 → 0（用代码默认）。
+
+        条目值优先是因为**安全冗余是模型属性**：换模型即换该模型自己的实测值，不必重填全局。
+        """
+        batch = self.get_translate_batch_chars()
+        for p in self.get_translation_providers(masked=False):
+            if p.get("enabled"):
+                return self._entry_batch_chars(p, batch)
+        return batch
 
     def save_translation_providers(self, providers: list[dict]) -> None:
         """保存翻译供应商池（整体替换；脱敏 key 保留原值；补 id/enabled 缺省）。
@@ -670,6 +718,9 @@ class SettingsService:
         旧语义是"启用多个 = 按批轮询分发"，实测会让同一篇译文各批落到不同模型 ⇒ 风格/术语
         不一致，且并非真并行（`_run_batches` 是串行循环）。此处兜底：多条 enabled 只留第一条，
         其余强制关闭；**全部关闭是合法的**（= 回落主模型翻译）。
+
+        2026-09-23：条目自带 `batch_chars`（该模型的单批正文字符上限，0 = 用默认/全局）——
+        安全冗余是模型属性，故随模型一起存；保存后经 `_sync_translate_env` 回写 `.env`。
         """
         current = {p["id"]: p for p in self.get_translation_providers(masked=False)}
         cleaned = []
@@ -681,6 +732,7 @@ class SettingsService:
             if _is_masked_key(p.get("api_key", ""), cur.get("api_key", "")):
                 p["api_key"] = cur.get("api_key", "")
             p["enabled"] = bool(p.get("enabled"))
+            p["batch_chars"] = self._clamp_batch_chars(p.get("batch_chars"))
             cleaned.append(p)
         seen_active = False
         for p in cleaned:
@@ -707,6 +759,19 @@ class SettingsService:
                     self._sync_translate_env(non_qwen)
             except Exception as e:  # noqa: BLE001
                 logger.warning("写翻译模型 .env 失败: %s", e)
+
+    @staticmethod
+    def _clamp_batch_chars(raw) -> int:
+        """条目单批上限归一化：空/0/非法 → 0（用默认）；否则钳 [MIN, MAX]。"""
+        if raw in (None, ""):
+            return 0
+        try:
+            val = int(float(raw))
+        except (TypeError, ValueError):
+            return 0
+        if val <= 0:
+            return 0
+        return min(max(val, TRANSLATE_BATCH_CHARS_MIN), TRANSLATE_BATCH_CHARS_MAX)
 
     # 兼容旧调用点（单数语义 = 第一个启用的）
     def get_translation_provider(self, masked: bool = True) -> dict | None:
@@ -749,6 +814,7 @@ class SettingsService:
             model = (p.get("model") or "").strip()
             api_key = (p.get("api_key") or "").strip()
             max_tokens = str(p.get("max_tokens") or "")
+            batch_chars = self._clamp_batch_chars(p.get("batch_chars"))
             enabled = "1" if p.get("enabled") else "0"
             if base_url:
                 lines.append(f"TRANSLATE_{idx}_BASE_URL={base_url}")
@@ -758,6 +824,8 @@ class SettingsService:
                 lines.append(f"TRANSLATE_{idx}_API_KEY={api_key}")
             if max_tokens:
                 lines.append(f"TRANSLATE_{idx}_MAX_TOKENS={max_tokens}")
+            if batch_chars:
+                lines.append(f"TRANSLATE_{idx}_BATCH_CHARS={batch_chars}")
             lines.append(f"TRANSLATE_{idx}_ENABLED={enabled}")
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         # 运行中进程即时生效
@@ -768,6 +836,11 @@ class SettingsService:
                 if val:
                     os.environ[f"TRANSLATE_{idx}_{suffix}"] = val
             os.environ[f"TRANSLATE_{idx}_ENABLED"] = "1" if p.get("enabled") else "0"
+            batch_chars = self._clamp_batch_chars(p.get("batch_chars"))
+            if batch_chars:
+                os.environ[f"TRANSLATE_{idx}_BATCH_CHARS"] = str(batch_chars)
+            else:
+                os.environ.pop(f"TRANSLATE_{idx}_BATCH_CHARS", None)
 
     def _clear_translate_env(self) -> None:
         """清除 .env 中所有 TRANSLATE_<idx>_ 键。"""
@@ -979,23 +1052,9 @@ class SettingsService:
         self.store.set_setting(KEY_TRANSLATE_BATCH_CHARS, str(val))
         return val
 
-    # ---------------------------------------------------------- 批次上限探测结果（2026-09-22）
-    def get_translate_probe_result(self) -> dict | None:
-        """上次探测的建议值（含模型/时间/阶梯明细）；无记录或脏数据 → None。"""
-        raw = self.store.get_setting(KEY_TRANSLATE_PROBE) or ""
-        if not raw.strip():
-            return None
-        try:
-            data = json.loads(raw)
-        except (TypeError, ValueError):
-            logger.warning("批次探测记录损坏（已忽略）")
-            return None
-        return data if isinstance(data, dict) else None
-
-    def save_translate_probe_result(self, result: dict) -> None:
-        """落盘探测结果（供界面回显建议值 + 判断是否该重测）。"""
-        self.store.set_setting(KEY_TRANSLATE_PROBE,
-                               json.dumps(result or {}, ensure_ascii=False))
+    # ---------------------------------------------------------- 批次上限探测（2026-09-22）
+    # 2026-09-23 简化：探测结果**不再落盘**——单批上限现在是模型条目自己的字段，探测按钮就在
+    # 该模型表单里、结果直接回填输入框，不需要"上次建议值"这类全局记忆（少一处状态少一处困惑）。
     def get_auto_compile(self) -> bool:
         """翻译完成后自动把该篇 L1 编译入队（默认开；执行仍由队列手动触发）。"""
         return self.store.get_setting(KEY_AUTO_COMPILE, "1") != "0"
@@ -1348,7 +1407,6 @@ class SettingsService:
             "compile_reasoning_effort": self.get_compile_effort(),
             "translate_reasoning_effort": self.get_translate_effort(),
             "translate_batch_chars": self.get_translate_batch_chars(),
-            "translate_probe_result": self.get_translate_probe_result(),
             "system_prompt_extra": self.get_system_prompt_extra(),
             "custom_css": self.get_custom_css(),
             "md_template": self.get_md_template(),

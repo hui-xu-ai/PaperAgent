@@ -129,13 +129,18 @@ def activate_provider(provider_id: str) -> dict:
 
 # ---------------------------------------------------------------- T1：翻译模型池（可存多个，单选激活）
 class TranslationProviderModel(BaseModel):
-    """翻译专用供应商配置（可选）。enabled=是否为当前激活项（同时只有一个）。"""
+    """翻译专用供应商配置（可选）。enabled=是否为当前激活项（同时只有一个）。
+
+    `batch_chars`：该模型自己的**单批正文字符上限**（0/空 = 用默认）。存进条目而不放全局，
+    因为安全冗余是模型属性：换模型即用该模型自己实测（🔬 计算单批上限）出的值。
+    """
     id: str = ""
     name: str = ""
     base_url: str = ""
     model: str = ""
     api_key: str = ""
     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    batch_chars: int = 0
     reasoning_effort: str | None = None
     enabled: bool = True
 
@@ -149,12 +154,19 @@ def get_translation_providers() -> dict:
 
 @router.post("/translation-providers")
 def save_translation_providers(providers: list[TranslationProviderModel]) -> dict:
-    """保存翻译供应商池（整体替换；空列表=清除回落主模型）。热切换立即生效。"""
+    """保存翻译供应商池（整体替换；空列表=清除回落主模型）。热切换立即生效。
+
+    2026-09-23：条目不完整（缺 Base URL/模型/Key）→ **400 明说**，不再静默丢弃——
+    "我填了模型却没加载"就是被旧的静默过滤造成的。保存后同步回写 `.env`（`.env` 是权威来源）。
+    """
     svc = container.get_settings_service()
     payload = [p.model_dump() for p in providers]
-    # 过滤空配置（无 base_url/model/api_key 的条目）
-    payload = [p for p in payload
-               if p.get("base_url") and p.get("model") and p.get("api_key")]
+    for p in payload:
+        missing = [k for k in ("base_url", "model", "api_key") if not p.get(k)]
+        if missing:
+            raise HTTPException(
+                400, f"翻译模型「{p.get('name') or p.get('model') or '未填模型'}」缺少 "
+                     f"{'/'.join({'base_url': 'Base URL', 'model': '模型', 'api_key': 'API Key'}[m] for m in missing)}")
     if not payload:
         svc.clear_translation_provider()
         container.apply_translation_providers(None)
@@ -375,8 +387,10 @@ class TranslateBatchModel(BaseModel):
 
 @router.post("/translate-batch")
 def save_translate_batch(body: TranslateBatchModel) -> dict:
-    """翻译**每批正文字符上限**（2026-09-22 用户要求可调）。
+    """翻译**每批正文字符上限**（**默认值**；2026-09-22 用户要求可调）。
 
+    2026-09-23：每个翻译模型可在自己条目里单独设 `batch_chars`（**条目值优先**，安全冗余是
+    模型属性）；本端点设的是"没有单独设时"的默认值，以及回落主模型翻译时的上限。
     控制变量用字符而不是 token：分批算法吃字符、日志/告警也是字符，用户可观测可验证。
     只在段边界切批、单段超限独占一批（尽量整段发送），超长单段才按句子边界切块。
     """
@@ -385,39 +399,76 @@ def save_translate_batch(body: TranslateBatchModel) -> dict:
         chars = svc.save_translate_batch_chars(body.chars)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    # 批次上限变了 → 翻译池的输出预算跟着变（预算 = max(该模型已配值, 上限 × 0.4)），
+    # 默认值变了 → 未单独设置上限的翻译模型，其输出预算跟着变（预算 = max(配值, 上限×0.4)），
     # 故重建翻译池实例让新预算立即生效（纯本地重建，不发网络请求）。
     try:
         container.apply_translation_providers(svc.get_enabled_translation_providers(masked=False))
     except Exception as e:  # noqa: BLE001 - 重建失败不影响上限本身已落盘
         logger.warning("批次上限变更后重建翻译池失败（预算下次启动生效）: %s", e)
-    msg = (f"翻译批次上限已设为 {chars} 字符" if chars
-           else "翻译批次上限已清除（用默认：紧凑 14000 / 主模型 12000 字符）")
+    msg = (f"翻译批次上限（默认值）已设为 {chars} 字符" if chars
+           else "翻译批次上限（默认值）已清除（用默认：紧凑 14000 / 主模型 12000 字符）")
     container.get_event_bus().publish("info", "settings", "translate", msg, {"chars": chars})
     return {"ok": True, "chars": chars}
 
 
-# ---------------------------------------------------------------- 批次上限「安全上限」探测
+# ---------------------------------------------------------------- 单批上限「安全上限」探测
+class TranslateProbeModel(BaseModel):
+    """探测对象（= 翻译模型表单里正在编辑的那条）。
+
+    不传 = 用"当前激活的翻译模型 → 主模型"（与线上翻译路由同序）。传了就**用这条草稿测**：
+    不必先保存、不必先激活；`api_key` 传空/掩码占位时按 `id` 取池里已存的真实 Key。
+    """
+    id: str = ""
+    name: str = ""
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+    max_tokens: int | None = None
+    reasoning_effort: str | None = None
+
+
+def _resolve_translate_key(p: TranslateProbeModel) -> str:
+    """翻译池条目的探测用 Key：明文优先；空/掩码占位 → 取池里该 id 已存的真实 Key。"""
+    key = str(p.api_key or "").strip()
+    stored = ""
+    try:
+        for prov in container.get_settings_service().get_translation_providers(masked=False):
+            if p.id and prov.get("id") == p.id:
+                stored = str(prov.get("api_key") or "")
+                break
+    except Exception as e:  # noqa: BLE001 - 取已存 Key 失败按"无 Key"处理（报错更明确）
+        logger.warning("探测读取已存翻译 Key 失败 id=%s: %s", p.id, e)
+        return key
+    if not key or _is_masked_key(key, stored):
+        return stored
+    return key
+
+
 @router.post("/translate-probe")
-def start_translate_probe() -> dict:
+def start_translate_probe(body: TranslateProbeModel | None = None) -> dict:
     """启动探测（后台线程；返回 task_id，前端轮询 GET 同名端点看进度）。
 
     2026-09-22 用户要求：点一下就自动测出"这个翻译模型一次能扛多少字符"，并按安全系数给建议值。
-    被测模型 = 当前激活的**翻译专用模型** → 没有则回落**主模型**（与线上翻译路由同序）。
-    **会真实消耗 token**（最多 5 次翻译调用）；结果**只作建议**，写不写由用户的「写入」按钮决定。
+    2026-09-23：被测对象 = **前端翻译模型表单里的草稿**（不必先保存/激活）；不传则回落
+    激活的翻译专用模型 → 主模型。**会真实消耗 token**（最多 5 次翻译调用）；
+    结果不回写任何设置——前端把建议值**回填到表单的「单批上限」**，用户点保存才随条目生效。
     """
-    return container.get_translate_probe().start()
+    provider = None
+    if body is not None and (body.base_url or body.model):
+        provider = body.model_dump()
+        provider["api_key"] = _resolve_translate_key(body)
+        if not (provider.get("base_url") and provider.get("model") and provider["api_key"]):
+            raise HTTPException(400, "请先填好 Base URL、模型和 API Key 再测")
+        provider["id"] = provider.get("id") or "probe-draft"
+        provider["name"] = provider.get("name") or "当前编辑的模型"
+    return container.get_translate_probe().start(
+        provider, via="当前编辑的模型" if provider else "")
 
 
 @router.get("/translate-probe")
 def get_translate_probe() -> dict:
     """查询探测进度/结果（前端 1-2s 轮询；status: running/done/error/idle）。"""
-    svc = container.get_translate_probe()
-    state = svc.progress()
-    if state.get("status") == "idle":
-        # 没跑过就回显上次落盘的结果（刷新页面后仍能看到建议值与探测时间）
-        state["last_result"] = container.get_settings_service().get_translate_probe_result()
-    return state
+    return container.get_translate_probe().progress()
 
 
 @router.post("/chat-reasoning-effort")

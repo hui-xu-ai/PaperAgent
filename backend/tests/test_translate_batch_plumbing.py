@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """翻译批次上限的**传递链**（2026-09-22 用户要求可调）。
 
-界面上的「翻译批次上限」必须真的走到 paperkb 的分批算法里，否则旋钮是假的。
-链路：设置中心 → SettingsService.get_translate_batch_chars()
+界面上的单批上限必须真的走到 paperkb 的分批算法里，否则旋钮是假的。
+链路：设置中心 → `SettingsService.get_effective_translate_batch_chars()`
+      （= 激活的翻译模型条目自带 `batch_chars` 优先，其次全局默认）
       → kbmeta_service.translate_now() → paperkb.api.translate_paper(batch_chars=)
       → translate.run_translate(max_body_chars=) → _make_batches(max_body=)
 """
@@ -13,7 +14,7 @@ class _Settings:
     def __init__(self, chars: int):
         self._chars = chars
 
-    def get_translate_batch_chars(self) -> int:
+    def get_effective_translate_batch_chars(self) -> int:
         return self._chars
 
 
@@ -43,7 +44,7 @@ def test_translate_now_forwards_batch_chars(monkeypatch):
 
 
 def test_translate_now_passes_zero_when_unset(monkeypatch):
-    """没设（0）⇒ 传 0，让 paperkb 用默认（紧凑 6000 / 主模型 12000）。"""
+    """没设（0）⇒ 传 0，让 paperkb 用默认（紧凑 14000 / 主模型 12000）。"""
     ks, svc = _svc(monkeypatch, 0)
     seen: dict = {}
     monkeypatch.setattr(ks.kbapi, "translate_paper",
@@ -63,7 +64,7 @@ def test_setting_read_failure_does_not_block_translate(monkeypatch):
         raise RuntimeError("db 挂了")
 
     monkeypatch.setattr(container, "get_settings_service", lambda: type(
-        "S", (), {"get_translate_batch_chars": staticmethod(_boom)})())
+        "S", (), {"get_effective_translate_batch_chars": staticmethod(_boom)})())
     monkeypatch.setattr(llm_service, "get_translation_ai", lambda: None)
     monkeypatch.setattr(ks.kbapi, "configure_llm", lambda c: None)
     seen: dict = {}

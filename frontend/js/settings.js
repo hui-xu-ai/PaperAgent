@@ -278,15 +278,9 @@ async function openSettings() {
     $('disp-md-template').value = s.md_template || 'obsidian_bilingual';
     $('retrieval-mode').value = s.retrieval_mode || 'notes';
     SETTINGS_DIRTY_GROUPS.forEach(g => markDirty(g.flag, false));   // 回填后清脏（change 不触发，双保险）
-    refreshTranslateProbe();   // 批次上限探测：回显上次结果 / 若正在跑则续上进度轮询
+    // 探测结果不再落盘（2026-09-23）：值存在各模型条目里，探测按钮在模型表单内、结果回填该表单，
+    // 所以打开设置时无需同步任何全局探测面板。若上次探测仍在后台跑，用户回到表单点按钮会看到进度。
   } catch (e) { alert('加载设置失败：' + e.message); }
-}
-
-/* 打开设置时同步探测面板：正在跑 → 续轮询；否则回显上次落盘的建议值。 */
-async function refreshTranslateProbe() {
-  if (!$('translate-probe-result')) return;
-  if (probePollTimer) { clearTimeout(probePollTimer); probePollTimer = null; }
-  pollTranslateProbe();
 }
 
 /* ── MinerU 参数 / PaddleOCR 选项：契约字段缺失时按默认值回填（后端可能未部署完成） ── */
@@ -560,8 +554,12 @@ function editTranslateProvider(index = -1) {
   $('tpf-base').value = tp?.base_url || '';
   $('tpf-model').value = tp?.model || '';
   $('tpf-key').value = (tp?.api_key && tp.api_key !== '未设置') ? KEY_MASK : '';
-  // 输出上限不再由用户填写（2026-09-23）：它是「批次上限」的从属量（实测 ≈0.2 token/源字符），
-  // 交给用户填只会造成困惑；表单里改成一行说明。保存时沿用该条目已存值。
+  // 单批上限：该模型自己的安全值（🔬 计算单批上限 自动填；留空 = 用全局默认）
+  if ($('tpf-batch')) $('tpf-batch').value = tp?.batch_chars ? String(tp.batch_chars) : '';
+  // 输出上限 max_tokens 不再由用户填写（2026-09-23）：它是「单批上限」的从属量（实测 ≈0.2 token/源字符），
+  // 交给用户填只会造成困惑；保存时沿用该条目已存值。
+  if ($('tpf-probe-status')) $('tpf-probe-status').textContent = '';
+  if ($('tpf-probe-result')) { $('tpf-probe-result').hidden = true; $('tpf-probe-result').innerHTML = ''; }
   $('tpf-test-result').textContent = '';
   $('translate-provider-form').style.display = 'flex';
 }
@@ -640,9 +638,13 @@ async function saveTranslateProvider() {
     keyVal.includes('…') || keyVal.includes('*');
   const editing = tpEditingIndex >= 0 ? settingsState.translation_providers[tpEditingIndex] : null;
   const apiKey = keyPlaceholder ? (editing?.api_key || '') : keyVal;
-  // 输出上限（max_tokens）不再让用户填：它是「批次上限」的从属量——实测「输出 token ≈ 源字符 × 0.2」，
+  // 输出上限（max_tokens）不再让用户填：它是「单批上限」的从属量——实测「输出 token ≈ 源字符 × 0.2」，
   // 故 14000 字符批次只需约 2800 token。新建条目给 8192（余量 ~2.9 倍），已有条目沿用原值（值不动）。
   const maxTokens = editing?.max_tokens || 8192;
+  // 单批上限：**该模型自己的安全值**（🔬 计算单批上限 回填；留空/0 = 用全局默认）
+  const batchTxt = ($('tpf-batch')?.value || '').trim();
+  const batchNum = Number(batchTxt);
+  const batchChars = (batchTxt === '' || !Number.isFinite(batchNum) || batchNum <= 0) ? 0 : Math.round(batchNum);
   const body = {
     id: editing?.id || '',
     name: $('tpf-name').value || '翻译模型',
@@ -650,6 +652,7 @@ async function saveTranslateProvider() {
     model: $('tpf-model').value,
     api_key: apiKey,
     max_tokens: maxTokens,
+    batch_chars: batchChars,
     reasoning_effort: editing?.reasoning_effort ?? null,
     enabled: editing ? !!editing.enabled : true,   // 新增默认启用
   };
@@ -727,29 +730,23 @@ function bindTranslateProviderEvents() {
   });
 }
 
-/* ══════════ 批次上限「安全上限」探测（2026-09-22）══════════
-   用户要求："点一下自动测出安全上限，按经验给个安全系数，别按测试极限填"。
-   流程：POST 启动（后台线程真译几档）→ 每 1.5s 轮询 → 出建议值 + 「写入」按钮。
-   **只给建议**：写不写由用户点「写入」（走既有 /translate-batch，无新写入口）。 */
+/* ══════════ 单批上限「安全上限」探测（2026-09-22；2026-09-23 搬进翻译模型表单）══════════
+   用户要求："点一下自动测出安全上限，按经验给个安全系数，别按测试极限填"；
+   2026-09-23 再简化："安全冗余是模型属性" ⇒ 按钮就放在**翻译模型表单里**（挨着「测试连接」），
+   测的就是表单里正在编辑的那条（不必先保存/激活），结果**自动回填「单批上限」输入框**
+   （仍要点保存才随条目生效 —— 不静默改运行时）。
+   流程：读表单 → POST 启动（后台线程真译几档）→ 每 1.5s 轮询 → 回填 + 展示每档明细。 */
 let probePollTimer = null;
-const PROBE_STALE_DAYS = 30;   // 超过 30 天提示重测（模型/服务端输出上限可能已变）
 
 function probeTimeText(iso) {
   if (!iso) return '未知时间';
   return String(iso).replace('T', ' ').slice(0, 16);
 }
 
-function probeAgeDays(iso) {
-  const t = Date.parse(iso || '');
-  if (!Number.isFinite(t)) return null;
-  return Math.floor((Date.now() - t) / 86400000);
-}
-
-function renderProbeResult(r, lastResult) {
-  const box = $('translate-probe-result');
-  const statusEl = $('translate-probe-status');
+function renderProbeResult(res) {
+  const box = $('tpf-probe-result');
+  const statusEl = $('tpf-probe-status');
   if (!box) return;
-  const res = r || lastResult;
   if (!res) { box.hidden = true; return; }
   box.hidden = false;
   const rows = (res.tested || []).map(t => {
@@ -757,54 +754,28 @@ function renderProbeResult(r, lastResult) {
       : (t.skipped ? '⏭ 未测（语料不足）' : `❌ ${escapeHtml(t.reason || '失败')}`);
     return `<div>档位 ${t.tier} 字符 → 实发 <b>${t.chars}</b> 字符 / ${t.paras} 段：${mark}</div>`;
   }).join('');
-  const days = probeAgeDays(res.probed_at);
-  const stale = days !== null && days >= PROBE_STALE_DAYS;
-  const meta = `模型 ${escapeHtml(res.model || '?')}（${escapeHtml(res.provider_name || res.via || '')}`
-    + `${res.via ? ' · ' + escapeHtml(res.via) : ''}）· 探测于 ${probeTimeText(res.probed_at)}`
+  const meta = `模型 ${escapeHtml(res.model || '?')}（${escapeHtml(res.provider_name || res.via || '')}）`
     + `${res.elapsed ? ' · 用时 ' + res.elapsed + 's' : ''}`;
-  const writeBtn = res.recommended
-    ? `<button class="btn small primary" type="button" id="translate-probe-write"
-         data-chars="${res.recommended}">写入 ${res.recommended} 字符</button>`
-    : '';
   const recLine = res.recommended
     ? `<div>建议值：<b>${res.recommended} 字符</b> `
       + `<span class="muted">（= 最高通过档 ${res.highest_pass} × 安全系数 ${res.safety_factor}，`
-      + `留 ${Math.round((1 - res.safety_factor) * 100)}% 余量；<b>不是测试极限</b>）</span></div>`
+      + `留 ${Math.round((1 - res.safety_factor) * 100)}% 余量；<b>不是测试极限</b>）`
+      + ` → 已填入「单批上限」，点保存生效</span></div>`
     : `<div><b>未测出可用值</b>：${escapeHtml(res.hint || '')}</div>`;
   box.innerHTML = `
-    <div style="margin-top:6px;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:0.92em;line-height:1.7">
+    <div style="margin-top:6px;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:0.92em;line-height:1.7;text-align:left">
       ${rows}
       <hr style="border:none;border-top:1px solid #eee;margin:6px 0">
       ${recLine}
-      <div class="form-actions" style="margin-top:6px">${writeBtn}</div>
       <div class="muted" style="margin-top:4px">${meta}</div>
-      ${res.recommended ? `<div class="muted">${escapeHtml(res.hint || '')}</div>` : ''}
       ${res.corpus_note ? `<div class="muted">${escapeHtml(res.corpus_note)}</div>` : ''}
-      ${stale ? `<div style="color:#e67e22">⚠ 距上次探测已 ${days} 天，模型/服务端输出上限可能已变，建议重测。</div>` : ''}
     </div>`;
-  const wb = $('translate-probe-write');
-  if (wb) wb.addEventListener('click', () => guardBtn(wb, () => writeProbeRecommended(res.recommended), '写入中…'));
-  if (statusEl) {
-    statusEl.textContent = res.recommended
-      ? `上次探测：${probeTimeText(res.probed_at)} · 建议 ${res.recommended} 字符`
-      : `上次探测：${probeTimeText(res.probed_at)} · 未测出可用值`;
-  }
-}
-
-async function writeProbeRecommended(chars) {
-  const r = await api('/api/settings/translate-batch', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chars }),
-  });
-  if ($('translate-batch-chars')) $('translate-batch-chars').value = r.chars ? String(r.chars) : '';
-  markDirty('kb-dirty', false);   // 已经落盘生效，不是"未保存"
-  const statusEl = $('translate-probe-status');
-  if (statusEl) statusEl.textContent = `✅ 已写入并生效：翻译批次上限 = ${r.chars} 字符`;
+  if (statusEl && !res.recommended) statusEl.textContent = '未测出可用值（见下方说明）';
 }
 
 async function pollTranslateProbe() {
-  const btn = $('translate-probe-btn');
-  const statusEl = $('translate-probe-status');
+  const btn = $('tpf-probe');
+  const statusEl = $('tpf-probe-status');
   let st;
   try {
     st = await api('/api/settings/translate-probe');
@@ -819,8 +790,7 @@ async function pollTranslateProbe() {
     if (statusEl) {
       statusEl.textContent = `探测中… ${st.phase || ''}`
         + `${st.current && st.total ? `（第 ${st.current}/${st.total} 档）` : ''}`
-        + `${st.elapsed ? ` · 已用 ${st.elapsed}s` : ''}`
-        + `${st.model ? ` · 模型 ${st.model}` : ''}`;
+        + `${st.elapsed ? ` · 已用 ${st.elapsed}s` : ''}`;
     }
     probePollTimer = setTimeout(pollTranslateProbe, 1500);
     return;
@@ -831,20 +801,52 @@ async function pollTranslateProbe() {
     if (statusEl) statusEl.textContent = '❌ 探测失败：' + (st.error || '未知错误');
     return;
   }
-  if (st.status === 'done' && st.result) renderProbeResult(st.result, null);
-  else if (st.last_result) renderProbeResult(null, st.last_result);   // 刷新后回显上次结果
+  if (st.status === 'done' && st.result) {
+    const r = st.result;
+    renderProbeResult(r);
+    if (r.recommended && $('tpf-batch')) {
+      $('tpf-batch').value = String(r.recommended);      // 自动回填（保存后随条目生效）
+      if (statusEl) {
+        statusEl.textContent = `✅ 测出建议 ${r.recommended} 字符，已填入「单批上限」——点「保存」生效`;
+      }
+    }
+  }
 }
 
 async function startTranslateProbe() {
-  const btn = $('translate-probe-btn');
-  const statusEl = $('translate-probe-status');
-  const ok = await askConfirm('探测会用**当前激活的翻译模型**真实翻译最多 5 档文本'
-    + '（3000→48000 字符，累计输入约 0.9~12 万字符，会计入你的用量），'
-    + '可能需要几分钟。中途请不要关闭程序。现在开始吗？');
+  const btn = $('tpf-probe');
+  const statusEl = $('tpf-probe-status');
+  const keyVal = $('tpf-key').value.trim();
+  const masked = !keyVal || keyVal.startsWith('•') ||
+    keyVal.includes('…') || keyVal.includes('*');
+  const editing = tpEditingIndex >= 0 ? settingsState.translation_providers[tpEditingIndex] : null;
+  const body = {
+    id: editing?.id || '',
+    name: $('tpf-name').value || '',
+    base_url: $('tpf-base').value,
+    model: $('tpf-model').value,
+    // 掩码占位 = 用户没改密钥 → 传空，由后端按 id 取池里已存的真实 Key（与「测试连接」同一约定）
+    api_key: masked ? '' : keyVal,
+  };
+  if (!body.base_url || !body.model) {
+    if (statusEl) statusEl.textContent = '请先填 Base URL 与模型';
+    return;
+  }
+  if (masked && !editing?.api_key) {
+    if (statusEl) statusEl.textContent = '请先填写 API Key';
+    return;
+  }
+  const ok = await askConfirm(`会用「${body.model}」真实翻译最多 5 档文本`
+    + '（3000→48000 字符，累计输入约 0.9~12 万字符，会计入你的用量），可能需要几分钟。'
+    + '现在开始吗？');
   if (!ok) return;
   if (statusEl) statusEl.textContent = '正在启动…';
+  if ($('tpf-probe-result')) $('tpf-probe-result').hidden = true;
   try {
-    const st = await api('/api/settings/translate-probe', { method: 'POST' });
+    const st = await api('/api/settings/translate-probe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
     if (st.already_running && statusEl) statusEl.textContent = '已有探测在跑，继续等待…';
   } catch (e) {
     if (statusEl) statusEl.textContent = '❌ 启动失败：' + e.message;
@@ -855,7 +857,7 @@ async function startTranslateProbe() {
 }
 
 function bindTranslateProbeEvents() {
-  const btn = $('translate-probe-btn');
+  const btn = $('tpf-probe');
   if (btn) btn.addEventListener('click', () => guardBtn(btn, () => startTranslateProbe(), '启动中…'));
 }
 

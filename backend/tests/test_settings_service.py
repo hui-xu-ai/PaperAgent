@@ -555,17 +555,46 @@ def test_translation_pool_seed_skipped_without_any_key(store, monkeypatch):
     assert svc.get_enabled_translation_providers(masked=False) == []
 
 
-def test_translation_pool_db_wins_over_env_seed(store, monkeypatch):
-    """DB 有记录（用户已在界面保存过）⇒ env 种子一律不生效。"""
+def test_translation_pool_env_is_authoritative_over_db(store, monkeypatch):
+    """2026-09-23 用户拍板：`.env` 的 TRANSLATE_* 是**权威**（与密钥同一规则，手改即生效）。
+
+    旧语义"DB 有记录 ⇒ env 一律不生效"会让手改 .env 加翻译模型看似无效
+    （用户实例实测：.env 里 TRANSLATE_1=glm-4.5-air 写了却加载不出来）。现按序号覆盖。
+    """
     _seed_translate_env(monkeypatch)
     monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-fake-not-a-real-key")
     svc = SettingsService(store, app_settings=_make_env_settings())
+    # 用户先在界面上存过一条（DB 有记录）
     svc.save_translation_providers([{
         "id": "t-db", "name": "用户选的", "base_url": "https://example.com/v1",
-        "model": "user-model", "api_key": "sk-db", "enabled": True}])
+        "model": "user-model", "api_key": "sk-db", "enabled": False}])
+    # 再手改 .env 第 0 槽 → 覆盖池里第 0 条，手改即生效
     pool = svc.get_translation_providers(masked=False)
-    assert [p["id"] for p in pool] == ["t-db"]
-    assert [p["model"] for p in pool] == ["user-model"]
+    assert [p["id"] for p in pool] == ["translate_0"], pool
+    assert [p["model"] for p in pool] == ["Qwen/Qwen2.5-7B-Instruct"]
+
+
+def test_translation_pool_env_slots_merge_by_index(store, monkeypatch):
+    """.env 第 i 槽覆盖池里第 i 条；.env 多出的槽追加；池里多出的条目保留。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_translation_providers([
+        {"id": "a", "name": "A", "base_url": "https://a.example/v1", "model": "m-a",
+         "api_key": "sk-a", "enabled": True},
+        {"id": "b", "name": "B", "base_url": "https://b.example/v1", "model": "m-b",
+         "api_key": "sk-b", "enabled": False},
+    ])
+    monkeypatch.setenv("TRANSLATE_1_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
+    monkeypatch.setenv("TRANSLATE_1_MODEL", "glm-4.5-air")
+    monkeypatch.setenv("TRANSLATE_1_API_KEY", "sk-env")
+    monkeypatch.setenv("TRANSLATE_1_ENABLED", "1")
+    monkeypatch.setenv("TRANSLATE_2_BASE_URL", "https://x.example/v1")
+    monkeypatch.setenv("TRANSLATE_2_MODEL", "m-env-2")
+    monkeypatch.setenv("TRANSLATE_2_API_KEY", "sk-env-2")
+    pool = svc.get_translation_providers(masked=False)
+    assert [p["model"] for p in pool] == ["m-a", "glm-4.5-air", "m-env-2"], pool
+    # 槽 1 覆盖了池里第 1 条（含 ENABLED），但第 0 条（.env 无槽）保留原样
+    assert [p["enabled"] for p in pool] == [True, True, True]
+    assert pool[0]["id"] == "a" and pool[1]["id"] == "translate_1"
 
 
 def test_translation_pool_single_active_enforced(store, monkeypatch):
@@ -685,26 +714,48 @@ def test_translate_output_budget_is_derived_from_batch_limit(store, monkeypatch)
     assert translate_output_budget(0, 0) == DEFAULT_MAX_OUTPUT_TOKENS
 
 
-# ---------------------------------------- 批次上限探测结果（2026-09-22）
-def test_translate_probe_result_roundtrip(store, monkeypatch):
-    """探测结果落盘并能读回（界面回显建议值 + 判断是否该重测；无记录 = None）。"""
-    svc = SettingsService(store, app_settings=_make_env_settings())
-    assert svc.get_translate_probe_result() is None          # 没测过
-    assert svc.get_all()["translate_probe_result"] is None
-    res = {"recommended": 3600, "highest_pass": 6024, "safety_factor": 0.6,
-           "model": "glm-4.5-air", "probed_at": "2026-09-22T23:10:00",
-           "tested": [{"tier": 6000, "chars": 6024, "ok": True}]}
-    svc.save_translate_probe_result(res)
-    got = svc.get_translate_probe_result()
-    assert got["recommended"] == 3600 and got["tested"][0]["tier"] == 6000
-    assert svc.get_all()["translate_probe_result"]["model"] == "glm-4.5-air"
+# ---------------------------------------- 单批上限：条目自带值优先（2026-09-23 用户要求）
+def test_entry_batch_chars_roundtrip_and_env_sync(store, monkeypatch, tmp_path):
+    """每个翻译模型条目可单独设单批上限：随条目留存，并回写 .env `TRANSLATE_<i>_BATCH_CHARS`。"""
+    env_path = tmp_path / ".env"
+    env_path.write_text("DEEPSEEK_API_KEY=sk-x\n", encoding="utf-8")   # 同步只在文件已存在时进行
+    svc = SettingsService(store, app_settings=_make_env_settings(), env_sync=True,
+                          env_path=str(env_path))
+    svc.save_translation_providers([{
+        "id": "t1", "name": "千问", "base_url": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen2.5-7B-Instruct", "api_key": "sk-a", "enabled": True,
+        "batch_chars": 14000}])
+    assert svc.get_translation_providers(masked=False)[0]["batch_chars"] == 14000
+    assert "TRANSLATE_0_BATCH_CHARS=14000" in env_path.read_text(encoding="utf-8")
+    # 越界钳制 / 非法归零
+    svc.save_translation_providers([{
+        "id": "t1", "name": "千问", "base_url": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen2.5-7B-Instruct", "api_key": "sk-a", "enabled": True,
+        "batch_chars": 50}])
+    assert svc.get_translation_providers(masked=False)[0]["batch_chars"] == 1000
+    svc.save_translation_providers([{
+        "id": "t1", "name": "千问", "base_url": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen2.5-7B-Instruct", "api_key": "sk-a", "enabled": True,
+        "batch_chars": "abc"}])
+    assert svc.get_translation_providers(masked=False)[0]["batch_chars"] == 0
 
 
-def test_translate_probe_result_tolerates_corrupt_value(store, monkeypatch):
-    """脏值（非法 JSON / 非对象）→ 返回 None，不能让设置读取整体崩掉。"""
-    from app.services.settings_service import KEY_TRANSLATE_PROBE
+def test_effective_batch_chars_entry_wins_over_global(store, monkeypatch):
+    """运行时上限 = 激活条目自带值 → 全局默认（安全冗余是模型属性，条目优先）。"""
     svc = SettingsService(store, app_settings=_make_env_settings())
-    store.set_setting(KEY_TRANSLATE_PROBE, "{不是 json")
-    assert svc.get_translate_probe_result() is None
-    store.set_setting(KEY_TRANSLATE_PROBE, "[1,2,3]")
-    assert svc.get_translate_probe_result() is None
+    svc.save_translate_batch_chars(9000)                      # 全局默认
+    svc.save_translation_providers([{
+        "id": "t1", "name": "千问", "base_url": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen2.5-7B-Instruct", "api_key": "sk-a", "enabled": False,
+        "batch_chars": 0}])
+    assert svc.get_effective_translate_batch_chars() == 9000   # 都关着 ⇒ 用全局
+    svc.save_translation_providers([{
+        "id": "t1", "name": "千问", "base_url": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen2.5-7B-Instruct", "api_key": "sk-a", "enabled": True,
+        "batch_chars": 0}])
+    assert svc.get_effective_translate_batch_chars() == 9000   # 条目没单独设 ⇒ 仍用全局
+    svc.save_translation_providers([{
+        "id": "t1", "name": "千问", "base_url": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen2.5-7B-Instruct", "api_key": "sk-a", "enabled": True,
+        "batch_chars": 14000}])
+    assert svc.get_effective_translate_batch_chars() == 14000  # 条目值优先

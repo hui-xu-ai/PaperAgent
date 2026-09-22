@@ -148,10 +148,11 @@ class KbMetaService:
             compact = get_translation_ai() is not None
         except Exception:  # noqa: BLE001
             pass
-        # 每批正文字符上限（设置中心可调；0/空 = paperkb 用默认 紧凑14000 / 主模型12000）
+        # 每批正文字符上限：**激活的翻译模型条目自带值优先**（安全冗余是模型属性），
+        # 其次全局默认，0 = paperkb 用代码默认（紧凑 14000 / 主模型 12000）。
         try:
             from . import container
-            batch_chars = container.get_settings_service().get_translate_batch_chars()
+            batch_chars = container.get_settings_service().get_effective_translate_batch_chars()
         except Exception as e:  # noqa: BLE001 - 读设置失败不阻塞翻译
             logger.warning("读取翻译批次上限失败（用默认值）: %s", e)
             batch_chars = 0
