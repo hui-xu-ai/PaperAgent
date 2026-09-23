@@ -22,10 +22,12 @@ N 字符量级的译文；超过它的输出天花板（服务端硬顶 / 请求
    次次成功（温度、文本密度、并发都会浮动），留 40% 余量才耐用；
 5. **真实语料**：用知识库/解析库里**真实的英文正文段**（整段取用，绝不切句），不用造题；
 6. **只给建议**：本模块只返回数字与理由，**不写任何设置**——是否采纳由用户在界面上决定；
-7. **墙钟上限**（2026-09-23 用户报"卡在第 5 档、没有结果返回"后加）：每档自带墙钟预算（按字符数
-   线性给，见 `_tier_budget`），超了即判该档失败并**照样给结论**；整个探测另有总预算
-   （`TOTAL_BUDGET_SEC`），用尽则余下档位标"未测"。理由：LLM 客户端的 timeout 是"每次读"级别，
-   服务端持续吐 token 就永不触发；
+7. **墙钟上限 = 生产客户端的读超时（90s）**（2026-09-23 用户报"卡在第 5 档"与"多次重试超时"后
+   两次收紧）：生产请求是**非流式**的，`requests` 的 read timeout 就等于"整批必须在 N 秒内返回"。
+   探测必须用**同一个数**，否则会把"生产必然超时的批次"推荐给用户（实测代价：13852 字符的批
+   3 次超时 = 270s 白等 + 3 次输入白烧，然后才回落主模型；同一模型拿 3777 字符的小批立即成功
+   ⇒ 是时间不够，不是能力不够）。客户端自己的读超时也被识别为"该档超时"（同一结论、同一文案）；
+   整个探测另有总预算（`TOTAL_BUDGET_SEC`），用尽则余下档位标"未测"。
 8. **效率评价**（2026-09-23 用户："增加一个翻译效率评价，监测到模型翻译效率很低很慢后，则认为
    这就是极限"）：每档记 `sec` / `sec_per_1k`（按输入字符归一）。**译完了但每千字符慢于
    `SLOW_SEC_PER_1K` ⇒ 同样视为极限**（阶梯停在该档、不计入最高通过档），因为真实翻译的等待
@@ -67,17 +69,23 @@ MAX_SOURCE_DOCS = 30
 #: 单段过短（页码、孤立符号等）不作为探测语料——它们会把 JSON 结构开销占比推高，失真。
 MIN_PARA_CHARS = 40
 
-#: ── 单档**墙钟上限**（2026-09-23 用户实测"卡在第 5 档、没有结果返回"后新增）────────────
-#: 为什么必须自建：LLM 客户端的 `timeout` 是"每次读"级别的超时（httpx），服务端只要**持续**
-#: 吐 token 就不触发 —— 思考型模型（glm-4.5 系列会把推理链计入输出）在 4.8 万字符档上可能
-#: 十几分钟不返回，界面只能一直"探测中"。探测是**交互式**操作，必须在有限时间内给结论。
-#: 预算按档位大小线性给：`max(FLOOR, min(CEIL, PER_1K × 千字符))`——
-#: 实测参考（glm-4.5-air）：3000 档 40s、6000 档 76s、12000 档 71s、24000 档 113s。
-TIER_TIMEOUT_FLOOR_SEC = 90.0
-TIER_TIMEOUT_CEIL_SEC = 300.0
-TIER_TIMEOUT_PER_1K_CHARS = 6.0
-#: 整个探测的总预算：超了就用**已测到的档位**给建议，余下档位如实标记"未测"（不无限等）
-TOTAL_BUDGET_SEC = 600.0
+#: ── 单档**墙钟上限** = 生产客户端的**读超时**（2026-09-23 用户实测"多次重试超时"后定稿）────
+#: 为什么必须与生产**同口径**：生产请求是非流式的，`requests` 的 read timeout 就等于"整个响应
+#: 体必须在 N 秒内到达"。旧版探测用 300s 额度（`PROBE_TIMEOUT_SEC`），只证明"输出能回全"，却把
+#: "生产 90s 内根本回不来的批次"判为**通过** ⇒ 推荐值直接踩在生产超时上：实测用户那篇 14500 字符
+#: 档，13852 字符的批连续 3 次 `Read timed out (read timeout=90)`（270s 白等 + 3 次输入白烧）才
+#: 回落主模型；同一个模型拿 3777 字符的小批立刻成功 ⇒ 是**时间不够**，不是模型不会译。
+#: 90 = `backend/app/services/llm_service.TRANSLATE_TIMEOUT_SEC`（专用翻译模型客户端），
+#: 两者由 `backend/tests/test_translate_timeout_contract.py` 守卫同步。
+TIER_TIMEOUT_SEC = 90.0
+
+#: 客户端自身超时之上再留的余量：正常应由**客户端读超时**先报错（我们把那类异常判为超时档，
+#: 理由更明确），墙钟只兜底"持续吐 token、永不结束"（那种情况 read timeout 不触发）。
+TIER_WALL_GRACE_SEC = 20.0
+
+#: 整个探测的总预算：超了就用**已测到的档位**给建议，余下档位如实标记"未测"（不无限等）。
+#: 5 档 × 90s + 余量：正常 2-3 档就结束，慢模型也不会把界面挂住。
+TOTAL_BUDGET_SEC = 500.0
 
 #: ── 效率评价（2026-09-23 用户："增加一个翻译效率评价，监测到模型翻译效率很低很慢后，则认为
 #: 这就是极限"）────────────────────────────────────────────────────────────────
@@ -202,10 +210,25 @@ def _floor100(n: float) -> int:
     return int(n // 100) * 100
 
 
-def _tier_budget(chars: int) -> float:
-    """该档的墙钟预算（秒）：按正文字符数线性给，带地板与天花板。"""
-    return min(TIER_TIMEOUT_CEIL_SEC,
-               max(TIER_TIMEOUT_FLOOR_SEC, chars / 1000.0 * TIER_TIMEOUT_PER_1K_CHARS))
+def _tier_budget(chars: int = 0) -> float:
+    """该档的墙钟上限（秒）——**与生产客户端读超时同值**，不随档位大小变。
+
+    为什么不按字符数放大（旧实现 `max(90, chars/1000×6)`）：生产是**固定 90s** 的超时，探测若给
+    大档更多额度，就会推荐出生产必然超时的批次。`chars` 参数仅为兼容旧调用点保留。
+    """
+    return TIER_TIMEOUT_SEC
+
+
+def _looks_like_timeout(err: BaseException) -> bool:
+    """异常是否为"读超时"类（requests.Timeout / httpx.ReadTimeout / 文本含 timeout）。
+
+    paperkb 不绑定具体 HTTP 库，故按类名与消息判定；判中即按"该档超时 = 极限"处理，而不是
+    笼统的"调用报错、稍后重试"——两者给用户的结论完全不同。
+    """
+    if "timeout" in type(err).__name__.lower():
+        return True
+    msg = str(err).lower()
+    return "timed out" in msg or "timeout" in msg or "超时" in msg
 
 
 def _call_with_deadline(fn: Callable[[], object], timeout: float):
@@ -250,12 +273,15 @@ def _efficiency_report(tested: list[dict], slow_sec_per_1k: float) -> dict:
         rep["paper_minutes"] = round(PAPER_REF_CHARS / 1000.0 * pace["sec_per_1k"] / 60.0, 1)
         rep["note"] = ("翻译效率：通过档里最大一档（%d 字符）用 %ss ⇒ 每千正文字符 %s 秒，"
                        "一篇约 %d 千字符的论文单跑约需 %s 分钟（按此节奏累计，不含重试）。"
-                       "每千字符超过 %.0f 秒即判为效率过低、视为极限。"
+                       "判据：单批必须在 %gs 内译完（= 生产客户端的读超时），译不完即判极限；"
+                       "另外每千字符慢于 %.0f 秒也判效率过低。"
                        % (pace["tier"], pace["sec"], pace["sec_per_1k"],
-                          PAPER_REF_CHARS // 1000, rep["paper_minutes"], slow_sec_per_1k))
+                          PAPER_REF_CHARS // 1000, rep["paper_minutes"],
+                          TIER_TIMEOUT_SEC, slow_sec_per_1k))
     else:
-        rep["note"] = ("翻译效率：本次没有通过的档位，给不出节奏；每千正文字符超过 %.0f 秒"
-                       "即判为效率过低。" % slow_sec_per_1k)
+        rep["note"] = ("翻译效率：本次没有通过的档位，给不出节奏。判据：单批必须在 %gs 内译完"
+                       "（= 生产客户端的读超时）；另外每千字符慢于 %.0f 秒也判效率过低。"
+                       % (TIER_TIMEOUT_SEC, slow_sec_per_1k))
     return rep
 
 
@@ -263,8 +289,8 @@ def _probe_tier(llm, group: list[str], tier: int, *, timeout: float | None = Non
                 slow_sec_per_1k: float | None = None) -> dict:
     """单档探测：把 group 作为**一个批次**发过去，双判据判定是否被截断。
 
-    `timeout`：本档墙钟上限（秒）；None → 按 `_tier_budget(实际字符数)` 推导。超时按该档
-    **失败**处理（理由设为"单档超时"），上层"首败即停"随即给出结论。
+    `timeout`：本档墙钟上限（秒）；None → `TIER_TIMEOUT_SEC`（= 生产客户端读超时）。超时按
+    该档**失败**处理（理由设为"单档超时"），上层"首败即停"随即给出结论。
     `slow_sec_per_1k`：效率阈值（每千正文字符秒数）；译完但慢于此值 ⇒ 该档标 `slow`，
     上层同样视为"到头了"（用户 2026-09-23：效率过低就是极限）。
     """
@@ -291,6 +317,19 @@ def _probe_tier(llm, group: list[str], tier: int, *, timeout: float | None = Non
         """墙钟秒 → 每千正文字符秒（效率判据的归一化口径）。"""
         return round(sec / (actual / 1000.0), 1) if actual else 0.0
 
+    def _timeout_row(why: str) -> dict:
+        """本档判超时（= 实用极限）——墙钟截断与客户端读超时**同一结论、同一文案**。"""
+        same_as_prod = abs(budget - TIER_TIMEOUT_SEC) < 0.001
+        row["error"] = True
+        row["timed_out"] = True
+        row["reason"] = ("单档超时：%s（本档 %d 字符；单档上限 %gs%s）——故视为该模型在这个批次"
+                         "规模上的实用极限"
+                         % (why, actual, budget,
+                            "，= 生产客户端的读超时，真实翻译会照样报 read timeout 并把重试"
+                            "次数耗光" if same_as_prod else ""))
+        logger.warning("翻译上限探测：档位 %d 超时（%s）", tier, why)
+        return row
+
     t0 = time.monotonic()
     try:
         raw, timed_out = _call_with_deadline(
@@ -298,20 +337,18 @@ def _probe_tier(llm, group: list[str], tier: int, *, timeout: float | None = Non
     except Exception as e:  # noqa: BLE001 - 调用失败按该档失败处理（保守：不给出更高推荐）
         row["sec"] = round(time.monotonic() - t0, 1)
         row["sec_per_1k"] = per_1k(row["sec"])
+        if _looks_like_timeout(e):
+            # **客户端自己的读超时先到**（生产也是这条路）：与"墙钟截断"合并同一结论，
+            # 否则会被笼统当成"调用报错、稍后重试"——那恰好是用户被误导的那条提示。
+            return _timeout_row("模型在 %gs 内没回完：%s"
+                               % (budget, str(e).replace("\n", " ")[:120]))
         row["reason"] = "调用失败：%s" % str(e).replace("\n", " ")[:200]
         row["error"] = True
         return row
     row["sec"] = round(time.monotonic() - t0, 1)
     row["sec_per_1k"] = per_1k(row["sec"])
     if timed_out:
-        row["reason"] = ("单档超时：%gs 内未译完（下界 %s s/千字符，且还在往外吐）——该模型在"
-                         "这个批次规模上太慢（多为思考型模型把推理链也计入输出），真实翻译同样"
-                         "等不起，故视为极限" % (budget, row["sec_per_1k"]))
-        row["error"] = True
-        row["timed_out"] = True
-        logger.warning("翻译上限探测：档位 %d 超时（%gs 未译完，效率过低已放弃该次调用）",
-                       tier, budget)
-        return row
+        return _timeout_row("%gs 内未译完且仍在吐字" % row["sec"])
     finish = getattr(llm, "last_finish_reason", None)
     row["finish_reason"] = finish
     row["out_chars"] = len(raw)
@@ -432,11 +469,10 @@ def probe_safe_batch_chars(llm, paras: list[str], *, ladder: tuple[int, ...] = L
             hint = ("库里可译的英文正文不足（现有 %d 字符），测不出安全值："
                     "请先解析/导入至少一篇含正文的文献再测。" % avail)
         elif stop_reason == "timed_out":
-            hint = ("最低档 %d 字符在 %gs 墙钟上限内都没译完（下界 %s s/千字符）⇒ 这个规模上该"
-                    "模型连一次批次都产不出来，不是「批次上限」的问题：优先换输出更快的翻译模型"
-                    "（思考型模型会把推理链算进输出，慢一个量级）；若必须用它，请先把「单批上限」"
-                    "调到能一次装完的最小档并盯日志有无批截断。"
-                    % (ladder[0], tested[0]["sec"], tested[0]["sec_per_1k"]))
+            hint = ("最低档 %d 字符在 %gs 内都没译完——这正是生产客户端的读超时，所以这个模型在这个"
+                    "规模上连一次批次都产不出来（真实翻译会 90s 超时 ×重试次数 再回落主模型）。"
+                    "不是「批次上限」的问题：优先换输出更快的翻译模型（思考型模型会把推理链算进"
+                    "输出，慢一个量级）。" % (ladder[0], TIER_TIMEOUT_SEC))
         elif stop_reason == "inefficient":
             hint = ("最低档 %d 字符虽然译完了，但效率过低（%s s/千字符 > 阈值 %.0f）⇒ 这个批次规模"
                     "上模型已不实用（等待时间不可接受），故判为极限、不给推荐值：请换输出更快的"
@@ -467,10 +503,13 @@ def probe_safe_batch_chars(llm, paras: list[str], *, ladder: tuple[int, ...] = L
                 "更高档位没测——想确认更高档请稍后再测一次（或直接手动填更大值，风险自担）。"
                 % (highest, safety_factor, budget_total))
     elif stop_reason in ("inefficient", "timed_out"):
-        hint = ("推荐值 = 最高通过档 %d × 安全系数 %g（不是测试极限）。更高档位判为极限的原因见"
-                "下方效率评价（%s）——想更激进可手动填更大值，但等待时间同比变长、且有超时风险。"
-                % (highest, safety_factor,
-                   "效率过低" if stop_reason == "inefficient" else "在墙钟上限内没译完"))
+        hint = ("推荐值 = 最高通过档 %d × 安全系数 %g（不是测试极限）——这也正是**能在这个模型的"
+                "读超时（%gs）内译完**的规模：更高档%s。想用更大批次就必须提高该模型的请求超时"
+                "（代码常量 TRANSLATE_TIMEOUT_SEC），否则每批都会 90s 超时、耗掉重试次数再回落"
+                "主模型。"
+                % (highest, safety_factor, TIER_TIMEOUT_SEC,
+                   "译完了但效率过低（见下方效率评价）" if stop_reason == "inefficient"
+                   else "在超时前回不来"))
     else:
         hint = ("推荐值 = 最高通过档 %d × 安全系数 %g（不是测试极限）。想更激进可手动填更大值，"
                 "但截断风险自担；改完看日志有无「批截断」。" % (highest, safety_factor))

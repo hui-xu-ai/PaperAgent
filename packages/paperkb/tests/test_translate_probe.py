@@ -38,7 +38,8 @@ class CapLLM:
 
     capacity=None ⇒ 不限容量（全译）。hide_truncation=True ⇒ 模拟"供应商不自报截断"
     （finish_reason=stop 但只回了一半）⇒ 专门验证第二判据独立生效。
-    boom_on_call=N ⇒ 第 N 次调用抛错（模拟超时）。
+    boom_on_call=N ⇒ 第 N 次调用抛**业务错误**（HTTP 400，非超时——超时走"该档=极限"那条路，
+    见 test_probe_efficiency.py）。
     """
 
     def __init__(self, capacity: int | None = None, *, hide_truncation: bool = False,
@@ -54,7 +55,7 @@ class CapLLM:
         self.calls += 1
         self.prompts.append(prompt)
         if self.boom_on_call and self.calls == self.boom_on_call:
-            raise RuntimeError("模拟调用失败（超时）")
+            raise RuntimeError("模拟调用失败（HTTP 400 Unauthorized）")
         # 只解析「待翻译段落：」之后的正文——提示词规则里也有一个示例标记 [P001]
         body = prompt.split("待翻译段落：", 1)[-1]
         ids = list(dict.fromkeys(re.findall(r"\[(P\d{3})\]", body)))

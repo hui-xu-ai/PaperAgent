@@ -22,11 +22,21 @@ import logging
 import threading
 import time
 
+from paperkb.translate.probe import TIER_WALL_GRACE_SEC
+
+from .llm_service import TRANSLATE_TIMEOUT_SEC
+
 logger = logging.getLogger(__name__)
 
-#: 单次探测请求超时：顶档（4.8 万字符源文 → 数万字符译文）生成很慢，90s 不够用。
-PROBE_TIMEOUT_SEC = 300
-PROBE_MAX_RETRIES = 1
+#: 探测客户端自身的超时 = **生产读超时**（`TRANSLATE_TIMEOUT_SEC`）+ 余量。
+#: 2026-09-23 修正：旧值 300s 让探测用比生产宽松得多的额度，把"生产 90s 内回不来的批次"判成
+#: 通过 ⇒ 推荐值直接踩在生产超时上（实测用户那篇 14500 字符档每批 90s 超时 ×3 次重试）。
+#: 余量的作用：让**探测自己的墙钟**（= 生产超时值）先给出结论（判据与文案更明确），
+#: 客户端超时只做传输层兜底。
+PROBE_TIMEOUT_SEC = int(TRANSLATE_TIMEOUT_SEC + TIER_WALL_GRACE_SEC)
+#: 探测**不发重试**：这是"测量"，重试只会让同一档白等更久、把档位耗时算成两倍；一次失败即可
+#: 判该档到头（保守方向）。
+PROBE_MAX_RETRIES = 0
 
 
 class TranslateProbeService:
@@ -107,14 +117,17 @@ class TranslateProbeService:
                           max_retries=PROBE_MAX_RETRIES)
             self._set(via=via, model=ai.model,
                       phase="正在探测（每档一次真实翻译调用）…")
-            logger.info("翻译上限探测开始：via=%s model=%s max_tokens=%s",
-                        via, ai.model, ai.max_tokens)
+            logger.info("翻译上限探测开始：via=%s model=%s max_tokens=%s 单档上限=%ss"
+                        "（= 生产读超时）",
+                        via, ai.model, ai.max_tokens, TRANSLATE_TIMEOUT_SEC)
 
             def cb(current: int, total: int, phase: str) -> None:
                 self._set(current=current, total=total, phase=phase,
                           elapsed=round(time.time() - t0, 1))
 
-            result = container.get_kbapi().probe_translate_batch(ai, progress_cb=cb)
+            # 每档墙钟 = 生产读超时（客户端自身留了余量，故正常应由这次墙钟先给出结论）
+            result = container.get_kbapi().probe_translate_batch(
+                ai, tier_timeout=TRANSLATE_TIMEOUT_SEC, progress_cb=cb)
             result["via"] = via
             result["provider_name"] = provider.get("name") or result.get("provider_name") or ""
             result["elapsed"] = round(time.time() - t0, 1)

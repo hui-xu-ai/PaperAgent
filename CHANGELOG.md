@@ -50,6 +50,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     ≈2× 实测可用档最慢节奏 13.3 s/千字符）⇒ 同样视为极限**：阶梯停在该档、不计入最高通过档
     （建议值仍取更快的那一档），`stop_reason="inefficient"`。结果新增 `efficiency` 块
     （节奏 + "一篇 4 万字符论文约需 X 分钟"）并显示在界面上。
+  - **探测与生产同口径：单档墙钟 = 生产读超时 90s**（2026-09-23 用户报"上一版测试 glm-4.5-air
+    出现多次重试错误"）：日志证据 `Read timed out. (read timeout=90)`，13852 字符的批连续 3 次
+    超时（270s 白等 + 3 次输入白烧）才回落主模型，而同一模型拿 3777 字符的小批立刻成功 ⇒ 是
+    **时间不够**，不是模型不会译。根因是 `TRANSLATE_TIMEOUT_SEC = 90` 仍停留在"compact ≤1200
+    字符（2-6s 返回）"时代的标定，而批次上限已涨到 14000/14500；而**探测此前用 300s 额度**，
+    只证明"输出能回全"，把"生产 90s 内回不来的批次"判成通过 ⇒ 推荐值直接踩在生产超时上。
+    现在：探测每档墙钟 = 90s（`probe.TIER_TIMEOUT_SEC`，守卫 `backend/tests/
+    test_translate_timeout_contract.py` 强制与 `llm_service.TRANSLATE_TIMEOUT_SEC` 一致），
+    客户端读超时那类异常也判为"该档超时 = 极限"（不再误报成"调用报错、稍后重试"）；
+    探测客户端不再重试（测量不做重试）。⇒ 按实测节奏，glm-4.5-air 的建议值从 14400 落到
+    **7200**（12000 档 71s 通过、24000 档 113s 超时）。
+  - **重试事件带上原因**（`llm/retry`）：此前只报"将重试"，用户看到多条重试却分不清**读超时**
+    （该降批次上限）/ 限流（等一会儿）/ 网络抖动（重试即可）。现在消息形如
+    `translate 将重试（读超时 90s（单批生成超时，多为此批过大/模型过慢））（预计额外输入约
+    13852 字符 token）`。
 
 ### Changed
 
@@ -143,6 +158,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`sanitize_document` 丢掉"删占位符"的写回**（2026-09-23 自查发现，回溯到上一条同源改动）：
+  重构时把 `<!-- image -->` 占位符的清洗结果只赋给了局部变量、**忘了 `setattr`**（段落与图题两处），
+  于是 `changed` 恒为 `True` 而文件其实没变 —— `test_g5_sanitize_idempotent`（二次调用应不再改动）
+  与另 3 例占位符/图片行测试当场报红。现在改为**先算完再比较**（`new != t` 才写回、才算 changed），
+  `changed` 语义恢复如实。取证：4 例转绿（此前仅 2 例 MinerU 环境相关失败）；13:19 之后产出的
+  `library`/`knowledge_base` 的 `document.json`/`en.md` 全量扫描 **0 处占位符残留**（无数据损伤）。
 - **原文上下标只在"展示层"修是不够的——改为在源头归一**（2026-09-23 用户拍板"我在测试阶段，
   你可以修改"）：上一条把裸 `^{[34]}` 在阅读器里渲染成角标，但**文件本身**仍是裸的（Obsidian
   里一样是字面）。现在在**源头**（`document.json` 的 `text_en` / `text_zh` / 图题）归一：

@@ -23,7 +23,8 @@ import json
 import re
 import time
 
-from paperkb.translate.probe import (_floor100, _tier_budget, probe_safe_batch_chars)
+from paperkb.translate.probe import (TIER_TIMEOUT_SEC, _floor100, _tier_budget,
+                                     probe_safe_batch_chars)
 
 _UNIT = "electrochemical behaviour of the composite electrode "
 
@@ -99,13 +100,11 @@ class HangLLM:
         return "{}"
 
 
-# ---------------------------------------------------------------- 墙钟上限的推导
-def test_tier_budget_has_floor_and_ceiling():
-    """小档走地板（固定开销/网络抖动也要给足），大档走天花板（不无限等）。"""
-    assert _tier_budget(3000) == 90.0          # 3×6=18 < 地板
-    assert _tier_budget(24000) == 144.0        # 24×6
-    assert _tier_budget(48000) == 288.0        # 48×6
-    assert _tier_budget(200000) == 300.0       # 封顶
+# ---------------------------------------------------------------- 墙钟 = 生产读超时
+def test_tier_budget_is_the_production_read_timeout():
+    """单档上限**固定等于生产读超时**，不随档位放大（否则会推荐生产必然超时的批次）。"""
+    assert _tier_budget(3000) == TIER_TIMEOUT_SEC == 90.0
+    assert _tier_budget(48000) == TIER_TIMEOUT_SEC, "大档也不许放宽——生产就是固定 90s"
 
 
 # ---------------------------------------------------------------- 效率记数
@@ -172,7 +171,29 @@ def test_fast_model_is_not_flagged_slow(monkeypatch):
     assert r["recommended"] == _floor100(12000 * 0.6)
 
 
-# ---------------------------------------------------------------- 墙钟上限 / 总预算
+# ---------------------------------------------------------------- 墙钟 / 客户端读超时
+def test_client_read_timeout_is_judged_as_the_limit_not_a_generic_error(monkeypatch):
+    """**用户报的那条路**：客户端 `Read timed out` 必须是"该档超时 = 极限"，
+    不能被笼统当成"调用报错、稍后重试"（那会误导用户去重试一个注定超时的批次）。
+    """
+    llm = PacedLLM([0.0])
+    _install(llm, monkeypatch)
+
+    def complete(prompt, context="translate"):
+        llm.calls += 1
+        raise TimeoutError("HTTPSConnectionPool(host='open.bigmodel.cn'): "
+                           "Read timed out. (read timeout=90)")
+
+    llm.complete = complete
+    r = probe_safe_batch_chars(llm, _paras(60, 1000), ladder=(3000, 6000))
+    row = r["tested"][0]
+    assert row["timed_out"] is True and row["error"] is True and row["ok"] is False
+    assert r["stop_reason"] == "timed_out" and r["recommended"] == 0
+    assert "单档超时" in row["reason"] and "read timeout" in row["reason"]
+    assert llm.calls == 1, "超时后不应继续试更高档"
+    assert "读超时" in r["hint"], "提示要说清这是生产客户端的读超时，而不是让用户重试"
+
+
 def test_hung_call_is_cut_by_wall_clock_and_still_reports():
     """挂死的模型必须在单档上限内被截断并**如实出结果**（就是用户"卡在第 5 批"那个毛病）。
 
@@ -190,8 +211,8 @@ def test_hung_call_is_cut_by_wall_clock_and_still_reports():
     assert r["recommended"] == 0 and r["ok"] is False
     assert llm.calls == 1, "超时后不应继续试更高档"
     assert took < 10, "挂死的调用必须被墙钟上限截断，不能把界面拖死"
-    assert "未译完" in row["reason"] and "超时" in row["reason"]
-    assert "下界" in r["hint"] and "翻译模型" in r["hint"], "要指向换模型，而不是让用户重试"
+    assert "未译完" in row["reason"] and "单档超时" in row["reason"]
+    assert "读超时" in r["hint"] and "翻译模型" in r["hint"], "要指向换模型，而不是让用户重试"
 
 
 def test_total_budget_marks_remaining_tiers_skipped(monkeypatch):

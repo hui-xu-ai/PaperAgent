@@ -715,7 +715,7 @@ def translate_paper(doc_json: str | Path, *, compact: bool = False,
 
 
 def probe_translate_batch(llm, *, ladder=None, safety_factor: float | None = None,
-                          progress_cb=None) -> dict:
+                          progress_cb=None, tier_timeout: float | None = None) -> dict:
     """探测某个翻译模型的**安全批次上限**（字符）——阶梯实测，只返回建议值。
 
     2026-09-22 用户要求："点一下自动测出安全上限，按经验给个安全系数，别按测试极限填"。
@@ -724,6 +724,9 @@ def probe_translate_batch(llm, *, ladder=None, safety_factor: float | None = Non
     2026-09-23 补：每档带**墙钟上限**（防"持续吐 token 永不返回"，用户报"卡在第 5 档"），
     并按 `sec_per_1k`（每千正文字符秒数）做**效率评价**——译完了但过慢同样视为极限
     （结果里的 `efficiency` 块给出节奏与"一篇论文约需多少分钟"）。
+    2026-09-23 再补：`tier_timeout` 由调用方传**生产客户端的读超时**（`TRANSLATE_TIMEOUT_SEC`）
+    —— 探测与生产必须同一约束，否则会推荐生产必然超时的批次（实测用户 14500 字符档每批 90s
+    超时 ×3 次重试）。
 
     llm 由调用方构造（**必须是探测专用实例**：探测会读写 `llm.last_finish_reason`，
     借用线上实例会与该模型的并发翻译互相踩状态）。
@@ -745,7 +748,8 @@ def probe_translate_batch(llm, *, ladder=None, safety_factor: float | None = Non
                                   max_tokens=getattr(llm, "max_tokens", None),
                                   model=getattr(llm, "model", ""),
                                   provider_name=getattr(llm, "provider_name", ""),
-                                  progress_cb=progress_cb)
+                                  progress_cb=progress_cb,
+                                  tier_timeout=tier_timeout)
 
 
 # ---------------------------------------------------------------- 检索/问答（M4）

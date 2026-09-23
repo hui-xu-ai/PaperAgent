@@ -43,9 +43,11 @@ def _wire(monkeypatch, settings, kbapi_result=None, kbapi_error=None):
     monkeypatch.setattr(container, "get_guard", lambda: None)
 
     class _Kb:
-        def probe_translate_batch(self, llm, progress_cb=None):
+        def probe_translate_batch(self, llm, progress_cb=None, tier_timeout=None):
             if kbapi_error:
                 raise kbapi_error
+            # 探测必须与生产读超时同口径（2026-09-23）：服务层把 TRANSLATE_TIMEOUT_SEC 传下来
+            assert tier_timeout == llm_service.TRANSLATE_TIMEOUT_SEC, tier_timeout
             if progress_cb:
                 progress_cb(1, 5, "正在测 3000 字符档（3 段）…")
             return dict(kbapi_result or {"model": llm.model, "recommended": 3600,

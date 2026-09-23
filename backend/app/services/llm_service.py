@@ -300,11 +300,16 @@ class TokenGuard:
                          "completion_tokens": completion_tokens})
 
     # ---------------------------------------------------------- 重试预告
-    def report_retry(self, context: str, est_input_chars: int) -> None:
-        """大上下文重试前预告（用户可见消耗）。"""
+    def report_retry(self, context: str, est_input_chars: int, reason: str = "") -> None:
+        """大上下文重试前预告（用户可见消耗 + **失败原因**）。
+
+        `reason`（2026-09-23 加）：此前事件只说"将重试"，用户看到多条重试却不知是**超时**还是
+        限流/网络抖动，只能翻后端日志。原因取自上一条错误，短的类别词（如"读超时 90s"）。
+        """
+        tail = f"（{reason}）" if reason else ""
         self._alert("warning", "retry",
-                    f"{context} 将重试（预计额外输入约 {est_input_chars} 字符 token）",
-                    {"context": context, "est_input_chars": est_input_chars})
+                    f"{context} 将重试{tail}（预计额外输入约 {est_input_chars} 字符 token）",
+                    {"context": context, "est_input_chars": est_input_chars, "reason": reason})
 
     # ---------------------------------------------------------- 内部
     def _alert(self, level: str, category: str, message: str, data: dict) -> None:
@@ -312,6 +317,28 @@ class TokenGuard:
             self.event_bus.publish(level, "llm", category, message, data)
         elif level == "error":
             logger.error("%s", message)
+
+
+def _retry_reason(err: BaseException | None, timeout_sec: int) -> str:
+    """把上一条错误翻成用户能看懂的短类别词（重试事件与日志共用）。
+
+    目的：事件面板此前只报"将重试"，用户看到多条重试却分不清**超时**（该降批次上限）还是
+    限流（该等一会儿）还是网络抖动（重试即可）——三者处置完全不同。
+    """
+    if err is None:
+        return ""
+    name = type(err).__name__.lower()
+    msg = str(err).lower()
+    if "timeout" in name or "timed out" in msg:
+        return f"读超时 {timeout_sec}s（单批生成超时，多为此批过大/模型过慢）"
+    if "connection" in name or "connection" in msg:
+        return "连接失败（网络/端点不可达）"
+    if "空信封" in msg:
+        return "服务端返回空信封（免费额度耗尽或限流）"
+    code = getattr(getattr(err, "response", None), "status_code", 0) or 0
+    if code:
+        return f"HTTP {code}" + ("（限流）" if code == 429 else "（服务端错误）")
+    return str(err).replace("\n", " ")[:80]
 
 
 class DeepSeekAI(AIProvider):
@@ -435,7 +462,9 @@ class DeepSeekAI(AIProvider):
         for attempt in range(self.max_retries + 1):
             try:
                 if attempt > 0 and self.guard:
-                    self.guard.report_retry(context, len(prompt))  # 重试消耗预告
+                    # 重试消耗预告（带原因：超时/限流/空信封…，见 report_retry）
+                    self.guard.report_retry(context, len(prompt),
+                                            _retry_reason(last_err, self.timeout_sec))
                 # reasoning_effort 决策（批3）：供应商级显式配置 > 编译族设置 > 既有 context 映射
                 effort, explicit = self._resolve_effort(effort_context or context)
                 payload = {"model": self.model,
@@ -780,9 +809,15 @@ _translate_ai: DeepSeekAI | None = None  # T1：翻译专用 AI（可选，None=
 # 2026-09-22 翻译池改**单选激活**：列表最多一个元素（保留列表形状以兼容注入点）。
 _translate_ais: list[DeepSeekAI] = []
 
-# 专用翻译模型：compact 小批次（≤1200 字符、正常 2-6s 返回）→ 短超时快速失败重试，
-# 绕过硅基流动免费端点偶发的静默挂起（详见 build_ai docstring，2026-09-19 实测）。
-_TRANSLATE_TIMEOUT_SEC = 90
+# 专用翻译模型：**读超时 90s**（2026-09-19 标定）——请求是**非流式**的，`requests` 的 read
+# timeout 等于"整个响应体必须在 90s 内到达"，故它同时是**单批的硬墙钟**：batch_chars 一旦大到
+# 单批生成需 >90s，每批都会 90s 超时 ×(1+max_retries) 才回落主模型（2026-09-23 实测 14500 字符
+# 档正是如此：13852 字符批 3 次超时 270s + 白烧 3 次输入）。
+#   ⇒ **批次上限必须按"能否在 90s 内译完"来定**，这也正是上限探测的口径
+#      （`paperkb.translate.probe.TIER_TIMEOUT_SEC`，守卫见
+#      `backend/tests/test_translate_timeout_contract.py`）；两个数改动必须同步。
+#   ⇒ 短超时的原始动机（绕过硅基流动免费端点偶发静默挂起）依然成立，故不调大它。
+TRANSLATE_TIMEOUT_SEC = 90
 _TRANSLATE_MAX_RETRIES = 2
 
 
@@ -869,7 +904,7 @@ def get_chat() -> ChatCompleter:
 # ---------------------------------------------------------------- T1：翻译专用 AI（池 + 轮询）
 def init_translation_ai(provider: dict, guard: TokenGuard | None = None) -> DeepSeekAI:
     """初始化翻译专用 AI（单条，兼容旧调用；会重建为单元素池）。"""
-    ai = build_ai(provider, guard, timeout_sec=_TRANSLATE_TIMEOUT_SEC,
+    ai = build_ai(provider, guard, timeout_sec=TRANSLATE_TIMEOUT_SEC,
                   max_retries=_TRANSLATE_MAX_RETRIES)
     global _translate_ai, _translate_ais
     _translate_ai = ai
@@ -888,7 +923,7 @@ def init_translation_ais(providers: list[dict],
         _translate_ais = []
         logger.info("翻译 AI 池已清空（回落主模型）")
         return []
-    _translate_ais = [build_ai(p, guard, timeout_sec=_TRANSLATE_TIMEOUT_SEC,
+    _translate_ais = [build_ai(p, guard, timeout_sec=TRANSLATE_TIMEOUT_SEC,
                                max_retries=_TRANSLATE_MAX_RETRIES) for p in providers]
     _translate_ai = _translate_ais[0]
     logger.info("翻译 AI 池已初始化: %d 个模型 (%s)",
