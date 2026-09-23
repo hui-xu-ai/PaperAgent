@@ -705,12 +705,27 @@ def test_parse_warnings_surface_audit_and_failed_assertions(tmp_path, settings, 
     assert wp.exists() and "文本层审计" in wp.read_text(encoding="utf-8")
 
 
+def _pin_mineru_ocr_auto(monkeypatch):
+    """把 MinerU 的 OCR 判定钉成 `auto`，**不依赖开发机的 `.env`**。
+
+    `_ensure_mineru_md` 调 `load_config()` 读真实 `.env`；本机 `.env` 里
+    `MINERU_IS_OCR=on`（GUI「扫描件 OCR」写进去的）⇒ `is_ocr` 恒为 True，
+    「按探测判定」这条分支就测不到了（实测两例红）。AppConfig 是普通 dataclass，直接改字段。
+    """
+    import paperparse.config as pp_config
+
+    cfg = pp_config.load_config()
+    cfg.mineru_is_ocr = "auto"
+    monkeypatch.setattr(pp_config, "load_config", lambda *a, **k: cfg)
+
+
 def test_ensure_mineru_md_cache_and_refetch(tmp_path, settings, monkeypatch):
     """P15 Step5：_ensure_mineru_md——md5 命中复用缓存；PDF 变化重新拉取。"""
     import hashlib
     import json
 
     from app.services.engine_service import EngineService
+    _pin_mineru_ocr_auto(monkeypatch)
     eng = EngineService(settings)
     pdf = tmp_path / "t.pdf"
     pdf.write_bytes(b"%PDF-1.7")
@@ -765,6 +780,7 @@ def test_mineru_cache_is_param_aware(tmp_path, settings, monkeypatch):
     import pymupdf
 
     from app.services.engine_service import EngineService
+    _pin_mineru_ocr_auto(monkeypatch)
 
     calls = {"n": 0}
 

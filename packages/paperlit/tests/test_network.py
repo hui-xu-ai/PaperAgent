@@ -62,12 +62,20 @@ class TestBuildNetwork:
         assert net["meta"]["matched_nodes"] == 0
 
     def test_nodes_and_edges(self, small_graph):
-        net = build_network(small_graph)
+        # exclude_isolated 默认 True（2026-09-20 加孤立节点过滤）；本例要断言"节点+边都建出来"，
+        # 含孤立的 D，故显式关掉过滤。
+        net = build_network(small_graph, exclude_isolated=False)
         ids = {n["id"] for n in net["nodes"]}
         assert ids == {"A", "B", "C", "D"}
         # B→A, C→A 两条边
         assert net["meta"]["returned_edges"] == 2
         assert {"source": "B", "target": "A"} in net["edges"]
+
+    def test_exclude_isolated_default(self, small_graph):
+        """默认过滤孤立节点（度数为 0）：D 无任何引用关系 ⇒ 默认不出现，关掉才出现。"""
+        assert {n["id"] for n in build_network(small_graph)["nodes"]} == {"A", "B", "C"}
+        assert {n["id"] for n in
+                build_network(small_graph, exclude_isolated=False)["nodes"]} == {"A", "B", "C", "D"}
 
     def test_node_attributes(self, small_graph):
         net = build_network(small_graph)
@@ -97,7 +105,8 @@ class TestBuildNetwork:
         assert {n["id"] for n in net["nodes"]} == {"A", "C"}
 
     def test_filter_library_citations(self, small_graph):
-        net = build_network(small_graph, min_library_citations=1)
+        # 只剩 A 时它自己就没有边了（B/C 被滤掉）⇒ 必须关掉孤立过滤，否则会被当孤立节点再滤一次、结果空集。
+        net = build_network(small_graph, min_library_citations=1, exclude_isolated=False)
         assert {n["id"] for n in net["nodes"]} == {"A"}
         # 节点被截断后，边也随之收敛（B/C 不在集合内）
         assert net["edges"] == []
@@ -115,7 +124,8 @@ class TestBuildNetwork:
         assert "A" in {n["id"] for n in net["nodes"]}
 
     def test_sort_by_times_cited(self, small_graph):
-        net = build_network(small_graph, limit=1, sort_by="times_cited")
+        # 只取 1 个节点时它没有边（引用方 B/C 未入选）⇒ 关掉孤立过滤才能验排序。
+        net = build_network(small_graph, limit=1, sort_by="times_cited", exclude_isolated=False)
         assert net["nodes"][0]["id"] == "A"  # times_cited=50 最高
 
     def test_edges_only_between_selected(self, small_graph):

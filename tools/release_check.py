@@ -44,6 +44,17 @@ def _pkg_version(pkg: str) -> str:
     return str(data["project"]["version"])
 
 
+def _pyproject() -> dict:
+    """根 pyproject（testpaths / pytest 配置的**单一来源**，闸门别自己再写一份名单）。"""
+    return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+
+def _safe(s: str) -> str:
+    """按当前 stdout 编码降级（pytest 输出里的替换字符在 GBK 控制台会抛 UnicodeEncodeError）。"""
+    enc = sys.stdout.encoding or "utf-8"
+    return s.encode(enc, "replace").decode(enc, "replace")
+
+
 # ------------------------------------------------------------------ [1] 版本一致性
 
 def check_versions() -> list[str]:
@@ -271,15 +282,35 @@ def check_dist() -> list[str]:
 # ------------------------------------------------------------------ [7] 全量测试
 
 def check_tests() -> list[str]:
-    print("[7] 全量测试（pytest -q）")
-    proc = subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=str(ROOT),
-                          capture_output=True, text=True, encoding="utf-8", errors="replace")
-    tail = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
-    for ln in tail[-3:]:
-        print(f"    {ln}")
-    if proc.returncode != 0:
-        return [f"pytest 未通过（exit={proc.returncode}）"]
-    return []
+    """[7] 全量测试——**按 testpaths 逐个目录**调用 pytest。
+
+    为什么不是一次跑全部（2026-09-23 修）：
+      · `packages/paperparse/tests` 与 `packages/paperlit/tests` **都叫 `tests` 包**（各带
+        `__init__.py`），一次性收集时 pytest 的 prepend 导入模式给两者算出**同一个模块名**
+        ⇒ 后者必然 `ModuleNotFoundError: No module named 'tests.xxx'`（实测 11 个收集错误）。
+        逐个目录跑与平时的跑法一致，也贴合「每个包自带测试」这条边界。
+      · 必须给 `--basetemp`：本机默认 TEMP 下的 `pytest-of-<user>` 无法删除
+        （`PermissionError: [WinError 5]`），`conftest.py` 只改了 `TEMP` 环境变量、
+        对 pytest 已算好的 basetemp 不生效。指到项目本地 `.tmp_test/`（已 gitignore）。
+    """
+    print("[7] 全量测试（pytest，按 testpaths 逐个跑）")
+    pytest_cfg = _pyproject().get("tool", {}).get("pytest", {}).get("ini_options", {})
+    paths = pytest_cfg.get("testpaths") or ["backend/tests"]
+    bad: list[str] = []
+    for rel in paths:
+        base = ".tmp_test/bt-" + rel.replace("/", "-").strip("-")
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", rel, "-q", f"--basetemp={base}"],
+            cwd=str(ROOT), capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
+        lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        print(f"    {'OK ' if proc.returncode == 0 else '!! '}{rel}: "
+              f"{_safe(lines[-1]) if lines else '(无输出)'}")
+        if proc.returncode != 0:
+            bad.append(f"pytest {rel} 未通过（exit={proc.returncode}）")
+            for ln in lines[-8:]:
+                print("        " + _safe(ln))
+    return bad
 
 
 def main() -> int:

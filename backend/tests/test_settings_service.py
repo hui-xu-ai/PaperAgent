@@ -467,11 +467,19 @@ def _parse_body(**kw) -> dict:
 
 
 def test_parse_params_defaults(tmp_path, store, monkeypatch):
-    """无 .env 记录 → auto/auto/表格开 + PaddleOCR 三开关全开（论文解析推荐值）。"""
+    """无 .env 记录 → auto/auto/表格开 + PaddleOCR 三开关全开（论文解析推荐值）。
+
+    `mineru_params` 自 2026-09-20 起还带「模型版本」与 4 个可调 API 路径（GUI 可改），
+    此处把默认值一并钉住（默认值变了就该红）。
+    """
     svc, _ = _parse_svc(tmp_path, store, monkeypatch)
     p = svc.get_parse()
-    assert p["mineru_params"] == {"language": "auto", "is_ocr": "auto",
-                                  "enable_table": True}
+    assert p["mineru_params"] == {
+        "language": "auto", "is_ocr": "auto", "enable_table": True,
+        "model_version": "vlm",
+        "api_paths": {"upload": "/file-urls/batch", "submit": "/extract/task",
+                      "poll": "/extract/task/{task_id}",
+                      "batch_results": "/extract-results/batch/{batch_id}"}}
     assert p["paddleocr"]["options"] == {"restructurePages": True, "mergeTables": True,
                                          "relevelTitles": True}
 
@@ -491,8 +499,12 @@ def test_parse_params_env_roundtrip(tmp_path, store, monkeypatch):
     assert "MINERU_ENABLE_TABLE=0" in text
     assert '"restructurePages": false' in text
     got = svc.get_parse()
-    assert got["mineru_params"] == {"language": "ch", "is_ocr": "on",
-                                    "enable_table": False}
+    assert got["mineru_params"] == {
+        "language": "ch", "is_ocr": "on", "enable_table": False,
+        "model_version": "vlm",
+        "api_paths": {"upload": "/file-urls/batch", "submit": "/extract/task",
+                      "poll": "/extract/task/{task_id}",
+                      "batch_results": "/extract-results/batch/{batch_id}"}}
     assert got["paddleocr"]["options"]["restructurePages"] is False
     assert got["paddleocr"]["options"]["relevelTitles"] is False
 
