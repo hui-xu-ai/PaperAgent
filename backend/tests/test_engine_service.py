@@ -182,6 +182,41 @@ def test_rerender_paper_uses_canonical_kb_doc(tmp_path, settings, monkeypatch):
     assert r["kb_dir"] == str(kb_dir)
 
 
+def test_sanitize_document_normalizes_superscripts(tmp_path, settings):
+    """★2026-09-23 **源头**归一：document.json 的 text_en/text_zh 里裸上下标补 `$`。
+
+    为什么在源头（而不是只改 en.md）：en.md 由本文档渲染，改这里 ⇒ en.md、变体、
+    `verify_kb_doc`（en.md ↔ document.json，其归一化只剥 `#`/空白、**不认 `$` 差异**）
+    与检索四处同时一致；只改 en.md 会让一致性闸门全线报不一致。
+    """
+    import json
+    from pathlib import Path
+
+    from app.services.engine_service import EngineService
+    from paperparse.core.document_builder import load_document
+    from paperparse.core.markdown_render import render_clean
+
+    doc_path = tmp_path / "10.1002_adma.202407106" / "document.json"
+    doc_path.parent.mkdir(parents=True)
+    data = json.loads(ENGINE_DOC.read_text(encoding="utf-8"))
+    data["paragraphs"][0]["text_en"] = "membrane. ^{[34]} 而 cm^{-1} 与 $x^{-}$ 保持。"
+    data["paragraphs"][1]["text_zh"] = "膜。^[[35]] 以及 cm^{-1}。"
+    doc_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    r = EngineService(settings).sanitize_document(doc_path)
+    # ≥4：夹具正文里本来也可能有裸上下标（同源归一，不锁死总数）
+    assert r["changed"] and r["scripts_normalized"] >= 4, r
+
+    saved = json.loads(doc_path.read_text(encoding="utf-8"))
+    assert saved["paragraphs"][0]["text_en"] == \
+        "membrane. $^{[34]}$ 而 cm$^{-1}$ 与 $x^{-}$ 保持。"
+    assert saved["paragraphs"][1]["text_zh"] == "膜。$^{[35]}$ 以及 cm$^{-1}$。"
+
+    # en.md（由同一份文档渲染）必须一并变干净 —— 用户看到的就是它
+    md = render_clean(load_document(str(doc_path)))
+    assert "$^{[34]}$" in md and "$^{-1}$" in md and "^{[34]}" not in md.replace("$^{[34]}$", "")
+
+
 def test_variants_normalize_citation_superscripts(tmp_path):
     """★2026-09-23 用户报障"上下标有的加了 $、有的丢失"：变体渲染必须归一。
 

@@ -23,7 +23,7 @@ from pathlib import Path
 from ..context import CTX_HEADER, context_paragraphs, paper_context_with_math, with_task
 from ..doc import read_document
 from ..textnorm import (html_script_to_tex, normalize_citation_superscripts,
-                        suspicious_superscripts)
+                        suspicious_superscripts, wrap_bare_scripts)
 from .fixes import KNOWN_FIXES
 from .latextap import reassemble
 
@@ -330,7 +330,9 @@ def _apply_translations(data_out: dict, paras: list[dict],
         result = html_script_to_tex(result)
         result = _strip_html_tags(result)  # 2026-09-19：清理 <sup> 等 HTML 标签
         result, fixed = normalize_citation_superscripts(result)
-        n_sup += fixed
+        # 与英文原文（`sanitize_document` 的源头归一）保持同形：公式外的裸上下标一律包 `$`
+        result, wrapped = wrap_bare_scripts(result)
+        n_sup += fixed + wrapped
         leftovers.extend(suspicious_superscripts(result))
         if not result.strip() or _is_refusal(result):
             rejected += 1

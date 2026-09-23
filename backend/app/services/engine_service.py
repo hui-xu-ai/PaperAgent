@@ -606,7 +606,8 @@ class EngineService:
         """
         import re
 
-        from paperkb.textnorm import html_script_to_tex, normalize_citation_superscripts
+        from paperkb.textnorm import (html_script_to_tex, normalize_citation_superscripts,
+                                      wrap_bare_scripts)
         from paperparse.core.markdown_render import render_variant
 
         # 2026-09-19: clean HTML tags from variants
@@ -636,21 +637,13 @@ class EngineService:
             # 2026-09-19 fix: 展平嵌套上标
             md = re.sub(r'\^\{\^\{([^}]+)\}\}', r'^{\1}', md)
             md = re.sub(r'_\{_\{([^}]+)\}\}', r'_{\1}', md)
-            # 2026-09-21 fix: 裸露 ^{...}/_{...} 包裹 $...$ —— 但**只动数学环境之外**的片段。
-            # 旧实现用单字符 lookbehind/lookahead 判断“是否已在 $ 内”，识别不了
-            # $\mathrm{Co(O_{x})}$ 里的 _{x}（它前一个字符是 O 而非 $）其实已在外层 $...$ 中
-            # ⇒ 把干净公式撑成非法嵌套 $\mathrm{Co(O$_{x}$)}$（en.md 干净、en_zh.md/zh.md 全坏）。
-            # 改为：先把 $...$ / $$...$$ 数学片段抽出占位保护，仅对环境外文本做裸 ^{}/_{} 包裹，再回填。
-            _math: list[str] = []
-
-            def _stash(m):
-                _math.append(m.group(0))
-                return "\x00M%d\x00" % (len(_math) - 1)
-
-            md = re.sub(r'\$\$[^$]*\$\$|\$[^$]*\$', _stash, md)
-            md = re.sub(r'(?<![$\{])\^\{([^}]+)\}(?![$\}])', r'$^{\1}$', md)
-            md = re.sub(r'(?<![$\{])_\{([^}]+)\}(?![$\}])', r'$_{\1}$', md)
-            md = re.sub(r'\x00M(\d+)\x00', lambda m: _math[int(m.group(1))], md)
+            # 2026-09-21 fix（2026-09-23 抽到 `paperkb.textnorm.wrap_bare_scripts`，与
+            # `sanitize_document` 的源头归一**共用同一套规则**）：裸露 ^{...}/_{...} 包裹 $...$，
+            # 但**只动数学环境之外**的片段——先把 $...$ / $$...$$ 抽出占位保护，再回填；
+            # 否则会把 $\mathrm{Co(O_{x})}$ 里的 _{x} 撑成非法嵌套 $\mathrm{Co(O$_{x}$)}$。
+            md, _w = wrap_bare_scripts(md)
+            if _w:
+                logger.info("变体渲染：裸上下标包 $ 共 %d 处", _w)
             return md
 
         files = {
@@ -838,24 +831,55 @@ class EngineService:
         import re
         from paperparse.core.document_builder import load_document, save_document
 
+        from paperkb.textnorm import (normalize_citation_superscripts,
+                                      wrap_bare_scripts)
+
         p = Path(document_json).resolve()
         doc = load_document(str(p))
         # P2-C：兼容 `<!-- image -->` / `<!-- image-1 -->` / `<!-- image1 -->` / `<!-- img 2 -->` 等
         pat = re.compile(r"<!--\s*(?:image|img)[\s\-_]*\d*\s*-->", re.IGNORECASE)
         changed = False
+        n_script = 0
         for para in doc.paragraphs:
             for attr in ("text_en", "text_zh"):
                 t = getattr(para, attr, None)
-                if t and pat.search(t):
-                    setattr(para, attr, pat.sub("", t).strip())
+                if not t:
+                    continue
+                if pat.search(t):
+                    t = pat.sub("", t).strip()
                     changed = True
+                # ★2026-09-23（用户报障"原文上标显示成字面 ^{[34]}"）：**公式外的裸上下标补 `$`**。
+                # 为什么改在源头（document.json 的 text_en/text_zh）而不是只改 en.md：
+                #   en.md 由本文档渲染，改这里 ⇒ ① en.md ② 变体 ③ `verify_kb_doc`
+                #   （en.md ↔ document.json 一致性闸门，其归一化只剥 `#`/空白、**不认 `$` 差异**）
+                #   ④ 检索/问答 四处同时一致；只改 en.md 会让 ③ 全线报不一致。
+                # 也不碰解析引擎产物：`tools/parse_regression.py` 的 en.md 指纹对应引擎原始输出
+                # （本函数是既有的后端清洗步，与"清 `<!-- image -->` 占位符"同类）⇒ 无需重设基线。
+                t, n1 = normalize_citation_superscripts(t)   # `^[[38]]` / `^[38]` → `$^{[38]}$`
+                t, n2 = wrap_bare_scripts(t)                 # 裸 `^{34}` / `^{-1}` → `$...$`
+                if n1 or n2:
+                    setattr(para, attr, t)
+                    changed = True
+                    n_script += n1 + n2
         for fig in doc.figures:
-            if fig.caption and pat.search(fig.caption):
-                fig.caption = pat.sub("", fig.caption).strip()
+            if not fig.caption:
+                continue
+            cap = fig.caption
+            if pat.search(cap):
+                cap = pat.sub("", cap).strip()
                 changed = True
+            cap, n1 = normalize_citation_superscripts(cap)
+            cap, n2 = wrap_bare_scripts(cap)
+            if n1 or n2:
+                fig.caption = cap
+                changed = True
+                n_script += n1 + n2
+        if n_script:
+            logger.info("解析产物上下标归一：%d 处（裸 ^{...}/_{...} → $...$；含引用 ^[[n]]）",
+                        n_script)
         if changed:
             save_document(doc, p)
-        return {"changed": changed, "path": str(p)}
+        return {"changed": changed, "path": str(p), "scripts_normalized": n_script}
 
     @staticmethod
     def _ensure_figures(md: str, doc) -> str:

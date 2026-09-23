@@ -63,3 +63,36 @@ def normalize_citation_superscripts(text: str) -> tuple[str, int]:
 def suspicious_superscripts(text: str) -> list[str]:
     """归一后仍以 `^[` 开头的片段（**监测**信号：真脚注，或模型的新形态）。"""
     return [m.group(0) for m in _SUSPECT_RE.finditer(text or "")]
+
+
+# 数学片段（块级 `$$...$$` / 行内 `$...$`）——包 `$` 前先抽出保护，避免把
+# `$\mathrm{Co(O_{x})}$` 里的 `_{x}` 撑成非法嵌套 `$\mathrm{Co(O$_{x}$)}$`。
+_MATH_SPAN_RE = re.compile(r"\$\$[^$]*\$\$|\$[^$]*\$")
+_BARE_SCRIPT_RE = re.compile(r"(?<![$\{])([\^_])\{([^}]+)\}(?![$\}])")
+
+
+def wrap_bare_scripts(text: str) -> tuple[str, int]:
+    """公式外的裸 `^{...}` / `_{...}` → `$^{...}$` / `$_{...}$`；返回 (新文本, 修了几处)。
+
+    与变体渲染（`engine_service._clean_html`）**同一套规则**：先抽 `$...$` / `$$...$$`
+    占位保护，只对数学环境外的裸上下标包 `$`，再回填。幂等（已包的不再动）。
+    """
+    if not text or ("^{" not in text and "_{" not in text):
+        return text or "", 0
+    stash: list[str] = []
+
+    def _stash(m: re.Match) -> str:
+        stash.append(m.group(0))
+        return "\x00M%d\x00" % (len(stash) - 1)
+
+    md = _MATH_SPAN_RE.sub(_stash, text)
+    fixed = 0
+
+    def _wrap(m: re.Match) -> str:
+        nonlocal fixed
+        fixed += 1
+        return "$" + m.group(1) + "{" + m.group(2) + "}$"
+
+    md = _BARE_SCRIPT_RE.sub(_wrap, md)
+    md = re.sub(r"\x00M(\d+)\x00", lambda m: stash[int(m.group(1))], md)
+    return md, fixed

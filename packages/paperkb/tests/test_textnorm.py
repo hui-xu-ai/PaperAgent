@@ -53,6 +53,31 @@ def test_html_script_to_tex_keeps_semantics():
     assert _strip_html_tags(html_script_to_tex("<sup>[3]</sup>")) == "^{[3]}"
 
 
+@pytest.mark.parametrize("raw, want", [
+    ("membrane. ^{[34]} Therefore", "membrane. $^{[34]}$ Therefore"),
+    (r"$\mathrm{BF4^{-}}$ 与 ^{2}", r"$\mathrm{BF4^{-}}$ 与 $^{2}$"),
+    # ★关键：数学环境内的 _{x} 不得被撑成非法嵌套
+    (r"$\mathrm{Co(O_{x})}$ 保持", r"$\mathrm{Co(O_{x})}$ 保持"),
+    ("$$E = m c^2$$ 与 x_{i}", "$$E = m c^2$$ 与 x$_{i}$"),
+    ("已是 $^{[29]}$ 规范", "已是 $^{[29]}$ 规范"),        # 不重复包
+])
+def test_wrap_bare_scripts(raw, want):
+    from paperkb.textnorm import wrap_bare_scripts
+
+    got, _n = wrap_bare_scripts(raw)
+    assert got == want
+    again, n2 = wrap_bare_scripts(got)
+    assert again == got and n2 == 0, "幂等"
+
+
+def test_wrap_bare_scripts_noop_when_clean():
+    from paperkb.textnorm import wrap_bare_scripts
+
+    for t in ("纯文本没有上下标", "$^{[1]}$ 已是规范", ""):
+        got, n = wrap_bare_scripts(t)
+        assert got == t and n == 0
+
+
 def test_suspicious_reports_leftovers():
     """监测：归一后仍以 `^[` 开头的片段会被报出来（真脚注/模型新形态）。"""
     left, n = normalize_citation_superscripts("下降^[[38]] 见^[附录A]")
