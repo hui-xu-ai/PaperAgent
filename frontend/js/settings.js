@@ -511,6 +511,43 @@ async function activateProvider(i) {
 // ---------------------------------------------------------------- T1：翻译模型池（可存多个，单选激活）
 let tpEditingIndex = -1;   // 当前编辑的池下标（-1 = 新增）
 
+/* 操作记录（2026-09-23 用户要求："弹窗要宽，能放交互信息和日志"）。
+   探测要几分钟、又允许关窗后台跑，用户看不见过程就会以为"值丢了/没生效"——
+   所以把 探测/测试/保存 的每一步都记在这块日志里（跨弹窗保留，只有「清空」清它）。 */
+let tpProbeCache = null;   // { sig, result }：探测完但弹窗已关 → 下次打开同一条自动回填
+function tpSig(entry) {
+  return `${entry?.id || ''}|${entry?.base_url || ''}|${entry?.model || ''}`;
+}
+function tpLog(msg, kind = '') {
+  const box = $('tpf-log');
+  if (!box) return;
+  const t = new Date().toTimeString().slice(0, 8);
+  const line = document.createElement('div');
+  line.innerHTML = `<span class="l-time">${t}</span>`
+    + `<span class="${kind ? 'l-' + kind : ''}">${escapeHtml(msg)}</span>`;
+  box.appendChild(line);
+  while (box.childElementCount > 300) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
+}
+function tpLogClear() {
+  const box = $('tpf-log');
+  if (box) box.innerHTML = '';
+}
+
+/* 表格里的「单批上限」单元格：让用户**不打开弹窗**也能确认保存后的值。
+   若刚探测出建议值但还没保存（弹窗被关过）→ 一并显示，避免"值不见了"。 */
+function tpBatchCell(p) {
+  const own = Number(p?.batch_chars || 0);
+  if (own > 0) return `${own} 字符`;
+  const rec = (tpProbeCache && tpProbeCache.sig === tpSig(p))
+    ? tpProbeCache.result?.recommended : 0;
+  if (rec) {
+    return `<span class="tp-batch-hint" title="这是「🔬 自动测一个值」的建议值，还没保存 —— 点「编辑」后按保存">
+      默认（建议 ${rec}）</span>`;
+  }
+  return '<span class="muted" title="未单独设：用「设置 → 📚 知识库 → 单批上限默认值」">默认</span>';
+}
+
 function renderTranslateProvider() {
   const pool = settingsState.translation_providers || [];
   const noneEl = $('translate-provider-none');
@@ -531,6 +568,7 @@ function renderTranslateProvider() {
     <td>${escapeHtml(p.name)}${p.enabled ? ' <em class="muted">(当前)</em>' : ''}</td>
     <td title="${escapeHtml(p.base_url)}">${escapeHtml(shortTitle(p.base_url, 24))}</td>
     <td>${escapeHtml(p.model)}</td>
+    <td class="tp-batch-cell">${tpBatchCell(p)}</td>
     <td><button class="btn small" data-tp-edit="${i}">编辑</button>
         <button class="btn small danger" data-tp-del="${i}" title="从池中删除">删除</button></td>
   </tr>`).join('');
@@ -558,9 +596,33 @@ function editTranslateProvider(index = -1) {
   if ($('tpf-batch')) $('tpf-batch').value = tp?.batch_chars ? String(tp.batch_chars) : '';
   // 输出上限 max_tokens 不再由用户填写（2026-09-23）：它是「单批上限」的从属量（实测 ≈0.2 token/源字符），
   // 交给用户填只会造成困惑；保存时沿用该条目已存值。
-  if ($('tpf-probe-status')) $('tpf-probe-status').textContent = '';
+  const head = $('tpf-head-sub');
+  if (head) {
+    head.textContent = tp
+      ? `　编辑：${tp.model || '（未填模型）'}${tp.enabled ? '（当前激活）' : ''}`
+      : '　新增';
+  }
+  if ($('tpf-probe-status')) {
+    $('tpf-probe-status').textContent = '不知道填多少？点「🔬 自动测一个值」——它会真实翻译几段'
+      + '（约 2~3 次调用，花少量 token），把结果填进左边的框，点「保存」生效。';
+  }
   if ($('tpf-probe-result')) { $('tpf-probe-result').hidden = true; $('tpf-probe-result').innerHTML = ''; }
-  $('tpf-test-result').textContent = '';
+  if ($('tpf-test-result')) $('tpf-test-result').textContent = '';
+  if ($('tpf-save')) $('tpf-save').disabled = false;      // 可能上一次探测中途被关窗
+  if ($('tpf-probe')) $('tpf-probe').disabled = false;
+  tpLog(tp ? `打开编辑：${tp.model || '（未填模型）'}` : '打开新增：填写模型信息后点「保存」');
+  // 后台探测已经出过结果（当时弹窗关着）→ 现在打开同一条就自动回填，别让值看着"丢了"
+  if (tpProbeCache && tpProbeCache.sig === tpSig(tp)) {
+    const rec = tpProbeCache.result?.recommended;
+    if (rec && $('tpf-batch')) {
+      $('tpf-batch').value = String(rec);
+      renderProbeResult(tpProbeCache.result);
+      if ($('tpf-probe-status')) {
+        $('tpf-probe-status').textContent = `上次探测结果：建议 ${rec} 字符，已回填 —— 点「保存」生效`;
+      }
+      tpLog(`回填上次探测结果：建议 ${rec} 字符（弹窗关闭期间测出的）`, 'warn');
+    }
+  }
   $('translate-provider-form').style.display = 'flex';
 }
 
@@ -663,16 +725,28 @@ async function saveTranslateProvider() {
   const pool = (settingsState.translation_providers || []).map(p => ({ ...p }));
   if (tpEditingIndex >= 0 && tpEditingIndex < pool.length) pool[tpEditingIndex] = body;
   else pool.push(body);
+  tpLog(`保存中：${body.model}｜单批上限 ${batchChars || '默认'}`
+    + `｜max_tokens 沿用 ${maxTokens}`, 'warn');
   try {
     const saved = await api('/api/settings/translation-providers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(pool),
     });
     settingsState.translation_providers = saved.translation_providers || pool;
+    if (tpProbeCache && tpProbeCache.sig === tpSig(body)) tpProbeCache = null;  // 已落库，别再提示"未保存"
+    // 以**后端回读**为准报告，别拿表单里的值自说自话（.env 权威合并可能修正字段）
+    const list = settingsState.translation_providers;
+    const savedEntry = (body.id && list.find(x => x.id === body.id)) || list[tpEditingIndex] || {};
+    tpLog(`已保存：${body.model}｜单批上限 = ${savedEntry.batch_chars || '默认（未单独设）'}`
+      + `${saved.llm_ready ? '' : '｜⚠ 配置无效（Key 可能不对）'}`,
+      saved.llm_ready ? 'ok' : 'err');
     renderTranslateProvider();
     $('translate-provider-form').style.display = 'none';
     alert(saved.llm_ready ? '✅ 翻译模型池已保存生效' : '⚠ 翻译模型配置无效（Key 错误？）');
-  } catch (e) { alert('保存失败：' + e.message); }
+  } catch (e) {
+    tpLog(`保存失败：${e.message}`, 'err');
+    alert('保存失败：' + e.message);
+  }
 }
 
 async function testTranslateProvider() {
@@ -692,10 +766,12 @@ async function testTranslateProvider() {
   if (!body.api_key) {
     $('tpf-test-result').textContent = '⚠ 请先填写 API Key';
     $('tpf-test-result').style.color = '#e67e22';
+    tpLog('测试连接：未填 API Key，已中止', 'warn');
     return;
   }
   $('tpf-test-result').textContent = '测试中…';
   $('tpf-test-result').style.color = '';
+  tpLog(`测试连接：${body.model || '（未填模型）'} @ ${body.base_url || '（未填 URL）'}`);
   try {
     const r = await api('/api/settings/test', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -703,9 +779,11 @@ async function testTranslateProvider() {
     });
     $('tpf-test-result').textContent = `✅ ${r.reply || 'OK'}`;
     $('tpf-test-result').style.color = '#27ae60';
+    tpLog(`连接成功：${r.reply || 'OK'}`, 'ok');
   } catch (e) {
     $('tpf-test-result').textContent = `❌ ${e.message}`;
     $('tpf-test-result').style.color = '#c0392b';
+    tpLog(`连接失败：${e.message}`, 'err');
   }
 }
 
@@ -717,7 +795,10 @@ function bindTranslateProviderEvents() {
   const saveBtn = $('tpf-save');
   if (saveBtn) saveBtn.addEventListener('click', (e) => guardBtn(e.currentTarget, () => saveTranslateProvider(), '保存中…'));
   const cancelBtn = $('tpf-cancel');
-  if (cancelBtn) cancelBtn.addEventListener('click', () => { $('translate-provider-form').style.display = 'none'; });
+  if (cancelBtn) cancelBtn.addEventListener('click', () => {
+    $('translate-provider-form').style.display = 'none';
+    if (probePollTimer) tpLog('弹窗已关闭（探测在后台继续，出结果会在下次打开这一条时回填）', 'warn');
+  });
   const clearBtn = $('tpf-clear');
   if (clearBtn) clearBtn.addEventListener('click', () => guardBtn(clearBtn, () => clearTranslateProvider(), '清除中…'));
   const testBtn = $('tpf-test');
@@ -728,6 +809,8 @@ function bindTranslateProviderEvents() {
     inp.type = inp.type === 'password' ? 'text' : 'password';
     keyToggle.textContent = inp.type === 'password' ? '显示' : '隐藏';
   });
+  const logClear = $('tpf-log-clear');
+  if (logClear) logClear.addEventListener('click', () => tpLogClear());
 }
 
 /* ══════════ 单批上限「安全上限」探测（2026-09-22；2026-09-23 搬进翻译模型表单）══════════
@@ -737,6 +820,7 @@ function bindTranslateProviderEvents() {
    （仍要点保存才随条目生效 —— 不静默改运行时）。
    流程：读表单 → POST 启动（后台线程真译几档）→ 每 1.5s 轮询 → 回填 + 展示每档明细。 */
 let probePollTimer = null;
+let tpProbeLastTick = '';    // 进度去重：阶段/档位没变就不重复记日志
 
 function probeTimeText(iso) {
   if (!iso) return '未知时间';
@@ -780,6 +864,7 @@ function renderProbeResult(res) {
 
 async function pollTranslateProbe() {
   const btn = $('tpf-probe');
+  const saveBtn = $('tpf-save');
   const statusEl = $('tpf-probe-status');
   let st;
   try {
@@ -787,35 +872,75 @@ async function pollTranslateProbe() {
   } catch (e) {
     if (probePollTimer) { clearTimeout(probePollTimer); probePollTimer = null; }
     if (btn) btn.disabled = false;
+    if (saveBtn) saveBtn.disabled = false;
     if (statusEl) statusEl.textContent = '❌ 查询探测进度失败：' + e.message;
+    tpLog(`查询探测进度失败：${e.message}`, 'err');
     return;
   }
   if (st.status === 'running') {
     if (btn) btn.disabled = true;
+    // 探测期间禁用「保存」：否则用户可能在结果回填**之前**点保存（存进去的是空值/旧值），
+    // 随后结果才回填 ⇒ 弹窗一关就说"保存过的值怎么变空了"（2026-09-23 用户报）。
+    if (saveBtn) saveBtn.disabled = true;
+    const tick = `${st.phase || ''}|${st.current || 0}/${st.total || 0}`;
     if (statusEl) {
       statusEl.textContent = `探测中… ${st.phase || ''}`
         + `${st.current && st.total ? `（第 ${st.current}/${st.total} 档）` : ''}`
-        + `${st.elapsed ? ` · 已用 ${st.elapsed}s` : ''}`;
+        + `${st.elapsed ? ` · 已用 ${st.elapsed}s` : ''}`
+        + '　（出结果会自动填进上面的框；期间「保存」暂时禁用）';
+    }
+    if (tick !== tpProbeLastTick) {                 // 只在阶段/档位变化时记一行，别刷屏
+      tpProbeLastTick = tick;
+      tpLog(`探测中：${st.phase || ''}`
+        + `${st.current && st.total ? ` 第 ${st.current}/${st.total} 档` : ''}`
+        + `${st.elapsed ? ` · 已用 ${st.elapsed}s` : ''}`);
     }
     probePollTimer = setTimeout(pollTranslateProbe, 1500);
     return;
   }
   probePollTimer = null;
   if (btn) btn.disabled = false;
+  if (saveBtn) saveBtn.disabled = false;
   if (st.status === 'error') {
     if (statusEl) statusEl.textContent = '❌ 探测失败：' + (st.error || '未知错误');
+    tpLog(`探测失败：${st.error || '未知错误'}`, 'err');
     return;
   }
   if (st.status === 'done' && st.result) {
     const r = st.result;
     renderProbeResult(r);
+    // 结果与该条目/模型绑定：弹窗关过也能在下一次打开同一条时回填（见 editTranslateProvider）
+    tpProbeCache = { sig: tpSig(formEntry()), result: r };
+    (r.tested || []).forEach(t => {
+      const mark = t.ok ? '通过' : (t.skipped ? '未测（语料不足）' : `失败：${t.reason || ''}`);
+      tpLog(`档位 ${t.tier} → 实发 ${t.chars} 字符 / ${t.paras} 段：${mark}`, t.ok ? 'ok' : 'err');
+    });
     if (r.recommended && $('tpf-batch')) {
-      $('tpf-batch').value = String(r.recommended);      // 自动回填（保存后随条目生效）
+      $('tpf-batch').value = String(r.recommended);      // 自动回填（点保存才随条目生效）
       if (statusEl) {
         statusEl.textContent = `✅ 测出建议 ${r.recommended} 字符，已填入「单批上限」——点「保存」生效`;
       }
+      tpLog(`探测完成：建议单批上限 ${r.recommended} 字符`
+        + `（最高通过档 ${r.highest_pass} × 安全系数 ${r.safety_factor}），已回填输入框`, 'ok');
+      if ($('translate-provider-form').style.display === 'none') {
+        tpLog('注意：弹窗已关闭 —— 该值**还没保存**。点「编辑」打开这一条会自动回填，再点「保存」才生效', 'warn');
+      }
+    } else if (statusEl) {
+      tpLog(`探测未得出可用值：${r.hint || ''}`, 'err');
+      statusEl.textContent = '未测出可用值（见下方说明）';
     }
+    renderTranslateProvider();      // 表格「单批上限」列同步显示建议
   }
+}
+
+/* 表单当前对应哪一条（用于把探测结果绑到具体模型上；新增时 id 为空 → 用 URL/模型签名） */
+function formEntry() {
+  const editing = tpEditingIndex >= 0 ? settingsState.translation_providers[tpEditingIndex] : null;
+  return {
+    id: editing?.id || '',
+    base_url: $('tpf-base')?.value || '',
+    model: $('tpf-model')?.value || '',
+  };
 }
 
 async function startTranslateProbe() {
@@ -835,10 +960,12 @@ async function startTranslateProbe() {
   };
   if (!body.base_url || !body.model) {
     if (statusEl) statusEl.textContent = '请先填 Base URL 与模型';
+    tpLog('探测未启动：缺 Base URL 或模型', 'warn');
     return;
   }
   if (masked && !editing?.api_key) {
     if (statusEl) statusEl.textContent = '请先填写 API Key';
+    tpLog('探测未启动：缺 API Key', 'warn');
     return;
   }
   const ok = await askConfirm(`会用「${body.model}」真实翻译几段文本（先试小的、通过就加码，`
@@ -854,9 +981,13 @@ async function startTranslateProbe() {
     if (st.already_running && statusEl) statusEl.textContent = '已有探测在跑，继续等待…';
   } catch (e) {
     if (statusEl) statusEl.textContent = '❌ 启动失败：' + e.message;
+    tpLog(`探测启动失败：${e.message}`, 'err');
     return;
   }
+  tpProbeLastTick = '';
+  tpLog(`开始探测：${body.model}（用知识库里已解析论文的英文正文，最多 5 次真实调用）`, 'warn');
   if (btn) btn.disabled = true;
+  if ($('tpf-save')) $('tpf-save').disabled = true;   // 结果出来前不让保存，避免存成空值
   pollTranslateProbe();
 }
 

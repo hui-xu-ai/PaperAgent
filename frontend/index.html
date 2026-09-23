@@ -332,7 +332,7 @@
               <p class="muted" id="translate-provider-none">未配置翻译专用模型（使用主模型翻译）</p>
               <div id="translate-provider-info" style="display:none">
                 <table class="provider-table">
-                  <thead><tr><th title="点击圆圈激活（同时只有一个生效）">激活</th><th>名称</th><th>Base URL</th><th>模型</th><th>操作</th></tr></thead>
+                  <thead><tr><th title="点击圆圈激活（同时只有一个生效）">激活</th><th>名称</th><th>Base URL</th><th>模型</th><th title="每个模型自己的单批上限（每批英文原文字符数）">单批上限</th><th>操作</th></tr></thead>
                   <tbody id="translate-provider-tbody"></tbody>
                 </table>
               </div>
@@ -342,35 +342,46 @@
               <button class="btn small" id="translate-provider-none-btn" title="池保留，但不使用任何专用模型（回落主模型翻译）">不用专用模型（回落主模型）</button>
             </div>
             <div class="provider-form modal-mask" id="translate-provider-form" style="display:none">
-              <div class="pform-modal modal">
-                <div class="pform-head">翻译专用模型</div>
-                <label class="pform-row">名称 <input id="tpf-name" placeholder="如 硅基流动（翻译）"></label>
-                <label class="pform-row">Base URL <input id="tpf-base" placeholder="https://api.siliconflow.cn/v1"></label>
-                <label class="pform-row">模型 <input id="tpf-model" placeholder="tencent/Hunyuan-MT-7B"></label>
-                <label class="pform-row">API Key
-                  <span style="display:flex;gap:6px;align-items:center">
-                    <input id="tpf-key" type="password" placeholder="sk-..." style="flex:1">
-                    <button type="button" class="btn small" id="tpf-key-toggle" title="显示/隐藏密钥">显示</button>
-                  </span>
-                </label>
-                <label class="pform-row">单批上限（每批英文原文字符数）
-                  <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-                    <input id="tpf-batch" type="number" min="1000" max="200000" step="1000"
-                           placeholder="留空＝默认 14000" style="flex:1">
-                    <button type="button" class="btn small" id="tpf-probe"
-                            title="真实翻译 2~3 档文本，测出这个模型一次能完整译出多少字，并自动填进左边的框。（用的是你知识库里已解析论文的英文正文，所以需先导入并解析至少一篇）">🔬 自动测一个值</button>
-                  </span>
-                </label>
-                <div class="pform-row" style="display:block">
-                  <span class="muted" id="tpf-probe-status">不知道填多少？点「🔬 自动测一个值」——它会真实翻译几段（约 2~3 次调用，花少量 token），把结果填进上面的框，点「保存」生效。</span>
+              <div class="pform-modal pform-wide modal">
+                <div class="pform-head">翻译专用模型<span class="muted" id="tpf-head-sub"></span></div>
+                <div class="pform-body">
+                  <div class="pform-grid2">
+                    <label class="pform-row">名称 <input id="tpf-name" placeholder="如 硅基流动（翻译）"></label>
+                    <label class="pform-row">模型 <input id="tpf-model" placeholder="tencent/Hunyuan-MT-7B"></label>
+                  </div>
+                  <label class="pform-row">Base URL <input id="tpf-base" placeholder="https://api.siliconflow.cn/v1"></label>
+                  <label class="pform-row">API Key
+                    <span class="pform-inline">
+                      <input id="tpf-key" type="password" placeholder="sk-..." style="flex:1">
+                      <button type="button" class="btn small" id="tpf-key-toggle" title="显示/隐藏密钥">显示</button>
+                    </span>
+                  </label>
+                  <div class="pform-batch">
+                    <label class="pform-row" style="flex:1">单批上限（每批英文原文字符数）
+                      <input id="tpf-batch" type="number" min="1000" max="200000" step="1000"
+                             placeholder="留空＝默认 14000">
+                    </label>
+                    <div class="pform-batch-act">
+                      <button type="button" class="btn small" id="tpf-probe"
+                              title="真实翻译 2~3 档文本，测出这个模型一次能完整译出多少字，并自动填进左边的框。（用的是你知识库里已解析论文的英文正文，所以需先导入并解析至少一篇）">🔬 自动测一个值</button>
+                      <span class="muted" id="tpf-probe-status">不知道填多少？点「🔬 自动测一个值」——它会真实翻译几段（约 2~3 次调用，花少量 token），把结果填进左边的框，点「保存」生效。</span>
+                    </div>
+                  </div>
+                  <details class="pform-note">
+                    <summary>这个数怎么读？（单位 / 默认值 / 输出上限）</summary>
+                    <div>单位＝<b>英文原文</b>字符数（含空格，按 <code>len(原文)</code> 数）：<b>一次请求最多装多少英文原文</b>，<b>不是中文字数、也不是 token</b>。</div>
+                    <div>例：填 14500 ⇒ 一次请求发出约 14500 个英文字符（≈3500 输入 token），一篇 10 万字符的论文会拆成约 7 批；译出来的中文<b>远少于</b>这个数（中文更紧凑）。</div>
+                    <div>留空＝用默认（翻译模型 14000；回落主模型 12000）。该值<b>只存在这个模型条目里</b>，换模型就用它自己的值。</div>
+                    <div>输出上限不用填：程序按上面的单批上限自动换算（留足 2 倍余量）。</div>
+                  </details>
                   <div id="tpf-probe-result" hidden></div>
-                </div>
-                <div class="pform-row" style="color:#888;font-size:12px">
-                  单位＝<b>英文原文</b>字符数（含空格）：<b>一次请求最多装多少英文原文</b>，不是中文字数、也不是 token。
-                  例：填 14500 ⇒ 一次请求发出约 14500 个英文字符（≈3500 输入 token），一篇 10 万字符的论文会拆成约 7 批。
-                </div>
-                <div class="pform-row" style="color:#888;font-size:12px">
-                  输出上限不用填：程序按上面的单批上限自动换算（留足 2 倍余量）。
+                  <div class="pform-logwrap">
+                    <div class="pform-loghead">
+                      <span>操作记录（探测 / 测试 / 保存的每一步都记在这里）</span>
+                      <button type="button" class="btn small" id="tpf-log-clear">清空</button>
+                    </div>
+                    <div class="pform-log" id="tpf-log"></div>
+                  </div>
                 </div>
                 <div class="pform-actions">
                   <button class="btn small" id="tpf-test">测试连接</button>

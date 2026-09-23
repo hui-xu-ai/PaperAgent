@@ -833,6 +833,12 @@ class SettingsService:
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         # 运行中进程即时生效：**必须与文件一致**——池的读取侧（`_env_translation_presets`）走
         # os.environ，若这里不同步，界面/路由就还按旧值走，表现为"点了切换又自动跳回去"。
+        # ⚠ 先清掉**所有**旧序号：池缩短时（删条目）文件里已删，但 os.environ 残留的
+        # `TRANSLATE_<i>_*` 会被读取侧当成幽灵条目复活（实测：删到只剩 1 条，回读仍有 2 条，
+        # 且第 2 条的值来自已删槽位）。
+        for key in list(os.environ):
+            if _re.match(r'TRANSLATE_\d+_', key):
+                del os.environ[key]
         # ⚠ max_tokens / batch_chars 是 int，必须先 str()（历史 bug：直接 .strip() 抛
         # AttributeError，被调用方的 except Exception 吞掉 ⇒ 文件改了、进程没改）。
         for idx, p in enumerate(providers):

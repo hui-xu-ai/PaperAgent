@@ -1215,6 +1215,34 @@ body[data-theme="paper"] {  /* 纸质 · 豆绿护眼 */
 
 .pform-price-label { margin-top: 2px; }
 
+/* ── 翻译模型弹窗加宽版（2026-09-23 用户要求：界面更宽，能放交互信息与日志）──
+   结构：head（固定）/ body（内部滚动）/ actions（固定底栏，按钮永不被挤出屏幕）。
+   只加在 #translate-provider-form 上，主供应商弹窗（.pform-modal 248px）不受影响。 */
+.pform-modal.pform-wide { width: 720px; max-width: 94vw; max-height: 88vh; overflow: hidden; padding: 14px 16px; gap: 8px; }
+.pform-wide .pform-head { display: flex; align-items: baseline; gap: 8px; }
+.pform-wide .pform-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
+.pform-wide .pform-actions { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 0; flex-shrink: 0; }
+.pform-wide .pform-actions #tpf-save { margin-left: auto; }
+.pform-wide .pform-actions #tpf-test-result { flex: 1 1 100%; order: 99; line-height: 1.5; word-break: break-word; }
+.pform-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pform-inline { display: flex; gap: 6px; align-items: center; }
+.pform-batch { display: flex; gap: 12px; align-items: flex-start; }
+.pform-batch-act { flex: 0 0 288px; display: flex; flex-direction: column; gap: 4px; padding-top: 15px; }
+.pform-batch-act .muted { font-size: 11px; line-height: 1.5; }
+.pform-note { font-size: 11px; color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; line-height: 1.6; }
+.pform-note summary { cursor: pointer; }
+.pform-note div { margin-top: 5px; }
+.pform-note code { background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; }
+.pform-logwrap { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.pform-loghead { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px; background: var(--bg); border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+.pform-log { height: 132px; overflow-y: auto; padding: 6px 10px; font-size: 11px; line-height: 1.75; font-family: ui-monospace, Consolas, "Courier New", monospace; word-break: break-word; }
+.pform-log .l-time { color: var(--muted); margin-right: 6px; }
+.pform-log .l-ok { color: #27ae60; }
+.pform-log .l-err { color: #c0392b; }
+.pform-log .l-warn { color: #e67e22; }
+.tp-batch-cell { white-space: nowrap; }
+.tp-batch-hint { color: #e67e22; }
+
 /* P0-A（2026-09-11）：文献库"失效记录"提示条——记录还在、磁盘产物已被删/移走 */
 .papers-lost {
   display: flex; gap: 6px; align-items: center; flex-wrap: wrap;

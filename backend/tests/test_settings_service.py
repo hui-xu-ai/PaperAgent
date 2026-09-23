@@ -776,6 +776,36 @@ def test_pool_save_syncs_os_environ_for_runtime_switch(store, monkeypatch, tmp_p
         == ["Qwen/Qwen2.5-7B-Instruct"]                     # 切换后路由确实换了模型
 
 
+def test_pool_shrink_clears_stale_env_slots(store, tmp_path):
+    """池缩短（删条目）后，os.environ 里旧序号的 `TRANSLATE_<i>_*` 必须一起清掉。
+
+    读取侧（`_env_translation_presets`）走 os.environ，残留的旧槽会被当成**幽灵条目**复活：
+    实测删到只剩 1 条时回读仍有 2 条，且第 2 条带着已删槽位的旧值 —— 用户会看到"保存过的
+    条目还在/值对不上"。
+    """
+    import os
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    svc = SettingsService(store, app_settings=_make_env_settings(), env_sync=True,
+                          env_path=str(env_path))
+    qwen = {"id": "translate_0", "name": "千问",
+            "base_url": "https://api.siliconflow.cn/v1",
+            "model": "Qwen/Qwen2.5-7B-Instruct", "api_key": "sk-a",
+            "enabled": True, "batch_chars": 14000}
+    glm = {"id": "translate_1", "name": "GLM",
+           "base_url": "https://open.bigmodel.cn/api/paas/v4",
+           "model": "glm-4.5-air", "api_key": "sk-b",
+           "enabled": False, "batch_chars": 12000}
+    svc.save_translation_providers([qwen, glm])
+    assert os.environ["TRANSLATE_1_BATCH_CHARS"] == "12000"
+    # 删掉第 1 条 → 池只剩 1 条
+    svc.save_translation_providers([qwen])
+    assert "TRANSLATE_1_BATCH_CHARS" not in os.environ, "旧槽位值残留 → 会复活成幽灵条目"
+    assert "TRANSLATE_1_MODEL" not in os.environ
+    pool = svc.get_translation_providers(masked=False)
+    assert len(pool) == 1 and pool[0]["model"] == "Qwen/Qwen2.5-7B-Instruct", pool
+
+
 def test_effective_batch_chars_entry_wins_over_global(store, monkeypatch):
     """运行时上限 = 激活条目自带值 → 全局默认（安全冗余是模型属性，条目优先）。"""
     svc = SettingsService(store, app_settings=_make_env_settings())
