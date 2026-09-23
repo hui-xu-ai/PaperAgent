@@ -834,9 +834,14 @@ function renderProbeResult(res) {
   if (!res) { box.hidden = true; return; }
   box.hidden = false;
   const rows = (res.tested || []).map(t => {
-    const mark = t.ok ? '✅ 通过'
-      : (t.skipped ? '⏭ 未测（语料不足）' : `❌ ${escapeHtml(t.reason || '失败')}`);
-    return `<div>档位 ${t.tier} 字符 → 实发 <b>${t.chars}</b> 字符 / ${t.paras} 段：${mark}</div>`;
+    // 效率（2026-09-23）：每档展示"等多久 / 每千字符多少秒"。超时档是**下界**（标 ≥）。
+    const eff = t.sec && t.chars
+      ? ` · <span class="muted">${t.timed_out ? '≥' : ''}${t.sec}s（${t.timed_out ? '≥' : ''}${t.sec_per_1k} s/千字符）</span>`
+      : '';
+    const mark = t.slow ? `⚠️ 效率过低：${escapeHtml(t.reason || '')}`
+      : t.ok ? '✅ 通过'
+      : (t.skipped ? `⏭ 未测：${escapeHtml(t.reason || '')}` : `❌ ${escapeHtml(t.reason || '失败')}`);
+    return `<div>档位 ${t.tier} 字符 → 实发 <b>${t.chars}</b> 字符 / ${t.paras} 段${eff}：${mark}</div>`;
   }).join('');
   const meta = `模型 ${escapeHtml(res.model || '?')}（${escapeHtml(res.provider_name || res.via || '')}）`
     + `${res.elapsed ? ' · 用时 ' + res.elapsed + 's' : ''}`;
@@ -848,11 +853,15 @@ function renderProbeResult(res) {
       + `（留 ${Math.round((1 - res.safety_factor) * 100)}% 余量，<b>不是测试极限</b>）`
       + ` → 已填入「单批上限」，点保存生效</div>`
     : `<div><b>未测出可用值</b>：${escapeHtml(res.hint || '')}</div>`;
+  // 效率评价（2026-09-23 用户要求）：节奏 + 整篇估算，用于判断"这个模型值不值得用"。
+  const effLine = res.efficiency?.note
+    ? `<div class="muted" style="margin-top:4px">${escapeHtml(res.efficiency.note)}</div>` : '';
   box.innerHTML = `
     <div style="margin-top:6px;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:0.92em;line-height:1.7;text-align:left">
       ${rows}
       <hr style="border:none;border-top:1px solid #eee;margin:6px 0">
       ${recLine}
+      ${effLine}
       <div class="muted" style="margin-top:4px">${meta}</div>
       ${(res.hint && res.recommended) || res.corpus_note ? `<details><summary>说明（为什么是这个值）</summary>
         ${res.recommended ? `<div class="muted">${escapeHtml(res.hint || '')}</div>` : ''}
@@ -912,9 +921,18 @@ async function pollTranslateProbe() {
     // 结果与该条目/模型绑定：弹窗关过也能在下一次打开同一条时回填（见 editTranslateProvider）
     tpProbeCache = { sig: tpSig(formEntry()), result: r };
     (r.tested || []).forEach(t => {
-      const mark = t.ok ? '通过' : (t.skipped ? '未测（语料不足）' : `失败：${t.reason || ''}`);
-      tpLog(`档位 ${t.tier} → 实发 ${t.chars} 字符 / ${t.paras} 段：${mark}`, t.ok ? 'ok' : 'err');
+      const eff = t.sec && t.chars ? ` · ${t.timed_out ? '≥' : ''}${t.sec}s/${t.chars} 字符`
+        + `（${t.timed_out ? '≥' : ''}${t.sec_per_1k} s/千字符）` : '';
+      const mark = t.slow ? `效率过低：${t.reason || ''}`
+        : t.ok ? '通过'
+        : (t.skipped ? `未测：${t.reason || ''}` : `失败：${t.reason || ''}`);
+      tpLog(`档位 ${t.tier} → 实发 ${t.chars} 字符 / ${t.paras} 段${eff}：${mark}`,
+            t.ok && !t.slow ? 'ok' : 'err');
     });
+    if (r.efficiency?.note) {
+      tpLog(r.efficiency.note,
+            (r.stop_reason === 'inefficient' || r.stop_reason === 'timed_out') ? 'warn' : '');
+    }
     if (r.recommended && $('tpf-batch')) {
       $('tpf-batch').value = String(r.recommended);      // 自动回填（点保存才随条目生效）
       if (statusEl) {

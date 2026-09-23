@@ -120,9 +120,12 @@ class TranslateProbeService:
             result["elapsed"] = round(time.time() - t0, 1)
             self._set(status="done", result=result, phase="完成",
                       elapsed=round(time.time() - t0, 1))
-            logger.info("翻译上限探测完成：模型=%s 最高通过=%s 推荐值=%s 用时=%.1fs",
+            logger.info("翻译上限探测完成：模型=%s 最高通过=%s 推荐值=%s 节奏=%s s/千字符 "
+                        "用时=%.1fs（停止原因=%s）",
                         result.get("model"), result.get("highest_pass"),
-                        result.get("recommended"), result["elapsed"])
+                        result.get("recommended"),
+                        (result.get("efficiency") or {}).get("sec_per_1k"),
+                        result["elapsed"], result.get("stop_reason"))
         except Exception as e:  # noqa: BLE001 - 失败要如实回显给用户
             logger.exception("翻译上限探测失败")
             self._set(status="error", error=str(e), phase="失败",

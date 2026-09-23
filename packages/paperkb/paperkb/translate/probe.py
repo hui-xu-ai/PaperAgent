@@ -21,7 +21,15 @@ N 字符量级的译文；超过它的输出天花板（服务端硬顶 / 请求
 4. **安全系数 0.6**：推荐值 = 最高通过档 × 0.6，**绝不直接填测试极限**——极限值一次成功不代表
    次次成功（温度、文本密度、并发都会浮动），留 40% 余量才耐用；
 5. **真实语料**：用知识库/解析库里**真实的英文正文段**（整段取用，绝不切句），不用造题；
-6. **只给建议**：本模块只返回数字与理由，**不写任何设置**——是否采纳由用户在界面上决定。
+6. **只给建议**：本模块只返回数字与理由，**不写任何设置**——是否采纳由用户在界面上决定；
+7. **墙钟上限**（2026-09-23 用户报"卡在第 5 档、没有结果返回"后加）：每档自带墙钟预算（按字符数
+   线性给，见 `_tier_budget`），超了即判该档失败并**照样给结论**；整个探测另有总预算
+   （`TOTAL_BUDGET_SEC`），用尽则余下档位标"未测"。理由：LLM 客户端的 timeout 是"每次读"级别，
+   服务端持续吐 token 就永不触发；
+8. **效率评价**（2026-09-23 用户："增加一个翻译效率评价，监测到模型翻译效率很低很慢后，则认为
+   这就是极限"）：每档记 `sec` / `sec_per_1k`（按输入字符归一）。**译完了但每千字符慢于
+   `SLOW_SEC_PER_1K` ⇒ 同样视为极限**（阶梯停在该档、不计入最高通过档），因为真实翻译的等待
+   时间不可接受；并把节奏换算成"一篇论文约需多少分钟"随结果一起给用户。
 
 ## 与真实翻译路径的关系
 
@@ -32,6 +40,8 @@ N 字符量级的译文；超过它的输出天花板（服务端硬顶 / 请求
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -56,6 +66,30 @@ MAX_SOURCE_DOCS = 30
 
 #: 单段过短（页码、孤立符号等）不作为探测语料——它们会把 JSON 结构开销占比推高，失真。
 MIN_PARA_CHARS = 40
+
+#: ── 单档**墙钟上限**（2026-09-23 用户实测"卡在第 5 档、没有结果返回"后新增）────────────
+#: 为什么必须自建：LLM 客户端的 `timeout` 是"每次读"级别的超时（httpx），服务端只要**持续**
+#: 吐 token 就不触发 —— 思考型模型（glm-4.5 系列会把推理链计入输出）在 4.8 万字符档上可能
+#: 十几分钟不返回，界面只能一直"探测中"。探测是**交互式**操作，必须在有限时间内给结论。
+#: 预算按档位大小线性给：`max(FLOOR, min(CEIL, PER_1K × 千字符))`——
+#: 实测参考（glm-4.5-air）：3000 档 40s、6000 档 76s、12000 档 71s、24000 档 113s。
+TIER_TIMEOUT_FLOOR_SEC = 90.0
+TIER_TIMEOUT_CEIL_SEC = 300.0
+TIER_TIMEOUT_PER_1K_CHARS = 6.0
+#: 整个探测的总预算：超了就用**已测到的档位**给建议，余下档位如实标记"未测"（不无限等）
+TOTAL_BUDGET_SEC = 600.0
+
+#: ── 效率评价（2026-09-23 用户："增加一个翻译效率评价，监测到模型翻译效率很低很慢后，则认为
+#: 这就是极限"）────────────────────────────────────────────────────────────────
+#: 判据：**每千正文字符的墙钟耗时**（`sec_per_1k`）。按输入归一的理由——批次上限这个旋钮就是
+#: "一批装多少源文字符"，用户真正要知道的是"这个规模的批要等多久"，与译文长度无关地可比。
+#: 阈值校准（实测 glm-4.5-air 各档 s/千字符）：3000→13.3、6000→12.7、12000→5.9、24000→4.7
+#: —— 小档偏慢是固定开销（思考链前言）摊薄得少，**可用档的节奏在 5-13 s/千字符**。取 25 ≈ 2×
+#: 实测最慢的可用节奏：只抓"塌方式变慢"（推理链随批次变大而失控、逐字往外爬），不误伤小档。
+SLOW_SEC_PER_1K = 25.0
+
+#: 效率评价里估算"整篇要等多久"用的参考正文长度（字符）——4 万 ≈ 一篇普通研究论文的正文量。
+PAPER_REF_CHARS = 40000
 
 #: 优选语料段长：优先用 ≥ 此长度的"实段"，让一批 N 字符的**段数**接近真实分批的形状
 #: （真实 compact 批次同时受"12 段/批"限制；用碎段凑 4.8 万字符要 100+ 段，比真实形状苛刻
@@ -168,14 +202,80 @@ def _floor100(n: float) -> int:
     return int(n // 100) * 100
 
 
-def _probe_tier(llm, group: list[str], tier: int) -> dict:
-    """单档探测：把 group 作为**一个批次**发过去，双判据判定是否被截断。"""
+def _tier_budget(chars: int) -> float:
+    """该档的墙钟预算（秒）：按正文字符数线性给，带地板与天花板。"""
+    return min(TIER_TIMEOUT_CEIL_SEC,
+               max(TIER_TIMEOUT_FLOOR_SEC, chars / 1000.0 * TIER_TIMEOUT_PER_1K_CHARS))
+
+
+def _call_with_deadline(fn: Callable[[], object], timeout: float):
+    """在**守护线程**里执行 `fn`；超时返回 `(None, True)`，否则 `(返回值, False)`。
+
+    为什么不用 `ThreadPoolExecutor`：它的工作线程**非守护**，被放弃的挂起调用会在进程退出时
+    被 join 住（`concurrent.futures` 注册了 atexit 钩子）⇒ 关停/测试时卡死。守护线程不会。
+    被放弃的那次调用仍在后台跑完（SDK 无法取消），但**探测不再等它**——这是"交互式操作必须
+    有结论"与"后台浪费一次调用"之间的取舍，已在返回文本里向用户说明。
+    """
+    box: dict = {}
+
+    def _run() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as e:  # noqa: BLE001 - 异常带回主线程判定，别吞
+            box["error"] = e
+
+    t = threading.Thread(target=_run, name="probe-tier", daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return None, True
+    if "error" in box:
+        raise box["error"]
+    return box.get("value"), False
+
+
+def _efficiency_report(tested: list[dict], slow_sec_per_1k: float) -> dict:
+    """把各档的节奏汇总成一句人话（用户 2026-09-23："增加一个翻译效率评价"）。
+
+    取**通过档里最大的一档**的节奏做代表：小档有固定开销（思考链前言、连接握手），按每千字符
+    摊下来偏慢，用它估整篇会高估；最大通过档最接近真实批次的形状。
+    """
+    ok_rows = [r for r in tested if r.get("ok")]
+    rep: dict = {"sec_per_1k": None, "tier": None, "sec": None, "out_cps": None,
+                 "paper_minutes": None, "slow_sec_per_1k": slow_sec_per_1k, "note": ""}
+    if ok_rows:
+        pace = ok_rows[-1]
+        rep.update({"sec_per_1k": pace["sec_per_1k"], "tier": pace["tier"],
+                    "sec": pace["sec"], "out_cps": pace["out_cps"]})
+        rep["paper_minutes"] = round(PAPER_REF_CHARS / 1000.0 * pace["sec_per_1k"] / 60.0, 1)
+        rep["note"] = ("翻译效率：通过档里最大一档（%d 字符）用 %ss ⇒ 每千正文字符 %s 秒，"
+                       "一篇约 %d 千字符的论文单跑约需 %s 分钟（按此节奏累计，不含重试）。"
+                       "每千字符超过 %.0f 秒即判为效率过低、视为极限。"
+                       % (pace["tier"], pace["sec"], pace["sec_per_1k"],
+                          PAPER_REF_CHARS // 1000, rep["paper_minutes"], slow_sec_per_1k))
+    else:
+        rep["note"] = ("翻译效率：本次没有通过的档位，给不出节奏；每千正文字符超过 %.0f 秒"
+                       "即判为效率过低。" % slow_sec_per_1k)
+    return rep
+
+
+def _probe_tier(llm, group: list[str], tier: int, *, timeout: float | None = None,
+                slow_sec_per_1k: float | None = None) -> dict:
+    """单档探测：把 group 作为**一个批次**发过去，双判据判定是否被截断。
+
+    `timeout`：本档墙钟上限（秒）；None → 按 `_tier_budget(实际字符数)` 推导。超时按该档
+    **失败**处理（理由设为"单档超时"），上层"首败即停"随即给出结论。
+    `slow_sec_per_1k`：效率阈值（每千正文字符秒数）；译完但慢于此值 ⇒ 该档标 `slow`，
+    上层同样视为"到头了"（用户 2026-09-23：效率过低就是极限）。
+    """
     batch = [{"para_id": "P%03d" % (i + 1), "text_en": t} for i, t in enumerate(group)]
     ids = [p["para_id"] for p in batch]
     actual = sum(len(t) for t in group)
     row: dict = {"tier": tier, "chars": actual, "paras": len(batch), "ok": False,
                  "finish_reason": None, "got": 0, "missed": len(batch),
-                 "out_chars": 0, "reason": ""}
+                 "out_chars": 0, "reason": "",
+                 # 效率（2026-09-23 新增）：秒 / 每千正文字符 / 输出吞吐
+                 "sec": 0.0, "sec_per_1k": 0.0, "out_cps": 0.0}
     prompt = _translate_task_compact(batch, list(range(len(batch))))
     # 取本次调用的 finish_reason：DeepSeekAI 会把它挂到实例上（getattr 兜底 = 该实现不提供，
     # 则退化为只看"应译段是否回全"——判据变弱但不会误判为失败）。
@@ -184,15 +284,38 @@ def _probe_tier(llm, group: list[str], tier: int) -> dict:
             llm.last_finish_reason = None
         except Exception:  # noqa: BLE001 - 只读属性/只读实现：忽略
             pass
+    budget = float(timeout) if timeout else _tier_budget(actual)
+    slow = SLOW_SEC_PER_1K if slow_sec_per_1k is None else float(slow_sec_per_1k)
+
+    def per_1k(sec: float) -> float:
+        """墙钟秒 → 每千正文字符秒（效率判据的归一化口径）。"""
+        return round(sec / (actual / 1000.0), 1) if actual else 0.0
+
+    t0 = time.monotonic()
     try:
-        raw = llm.complete(prompt, context="translate") or ""
+        raw, timed_out = _call_with_deadline(
+            lambda: llm.complete(prompt, context="translate") or "", budget)
     except Exception as e:  # noqa: BLE001 - 调用失败按该档失败处理（保守：不给出更高推荐）
+        row["sec"] = round(time.monotonic() - t0, 1)
+        row["sec_per_1k"] = per_1k(row["sec"])
         row["reason"] = "调用失败：%s" % str(e).replace("\n", " ")[:200]
         row["error"] = True
+        return row
+    row["sec"] = round(time.monotonic() - t0, 1)
+    row["sec_per_1k"] = per_1k(row["sec"])
+    if timed_out:
+        row["reason"] = ("单档超时：%.0fs 内未译完（下界 %s s/千字符，且还在往外吐）——该模型在"
+                         "这个批次规模上太慢（多为思考型模型把推理链也计入输出），真实翻译同样"
+                         "等不起，故视为极限" % (budget, row["sec_per_1k"]))
+        row["error"] = True
+        row["timed_out"] = True
+        logger.warning("翻译上限探测：档位 %d 超时（%.0fs 未译完，效率过低已放弃该次调用）",
+                       tier, budget)
         return row
     finish = getattr(llm, "last_finish_reason", None)
     row["finish_reason"] = finish
     row["out_chars"] = len(raw)
+    row["out_cps"] = round(len(raw) / row["sec"], 1) if row["sec"] > 0 else 0.0
     data = _parse_translation_output(raw, ids)
     got = {str(it.get("para_id")) for it in (data.get("translations") or [])
            if it.get("zh") and not is_refusal_translation(it.get("zh"))}
@@ -209,6 +332,12 @@ def _probe_tier(llm, group: list[str], tier: int) -> dict:
     elif missed:
         row["reason"] = ("应译 %d 段只回了 %d 段（输出被截断，供应商未自报）"
                          % (len(batch), len(got)))
+    if row["ok"] and row["sec_per_1k"] > slow:
+        # 译完了但节奏塌了：不判"截断"，判"不实用"——一批要等 %.0fs，整篇等待时间不可接受
+        row["slow"] = True
+        row["reason"] = ("效率过低：译完了，但节奏 %s s/千字符（阈值 %.0f）——本档 %d 字符就要等"
+                         " %.0fs，真实翻译的等待时间不可接受，故视为该模型的实用极限"
+                         % (row["sec_per_1k"], slow, actual, row["sec"]))
     return row
 
 
@@ -217,8 +346,16 @@ def probe_safe_batch_chars(llm, paras: list[str], *, ladder: tuple[int, ...] = L
                            max_tokens: int | None = None,
                            model: str = "", provider_name: str = "",
                            sources: list[dict] | None = None,
-                           progress_cb: ProgressCb | None = None) -> dict:
+                           progress_cb: ProgressCb | None = None,
+                           tier_timeout: float | None = None,
+                           total_budget: float | None = None,
+                           slow_sec_per_1k: float | None = None) -> dict:
     """阶梯探测出该模型的安全批次上限（返回结果，**不写任何设置**）。
+
+    tier_timeout / total_budget：单档墙钟上限与总预算（秒）；None → 用模块默认
+    （`_tier_budget(档位字符数)` / `TOTAL_BUDGET_SEC`）。**测试可传小值**，不必等真超时。
+    slow_sec_per_1k：效率阈值（每千正文字符秒数）；None → `SLOW_SEC_PER_1K`。译完但慢于此值
+    的档位判为"效率过低 = 实用极限"（不再往更高档试），推荐值仍取**更快的那一档**。
 
     llm: 满足 `paperkb.llm.LLMClient` 的客户端（`complete(prompt, context)`）；**必须是探测专用
     实例**——探测会读写 `llm.last_finish_reason`，与线上翻译共用实例会产生竞态。
@@ -226,47 +363,87 @@ def probe_safe_batch_chars(llm, paras: list[str], *, ladder: tuple[int, ...] = L
     progress_cb: `(current, total, phase)`，供前端显示进度。
 
     返回 {"tested": [档位行], "highest_pass", "recommended", "safety_factor", "ok",
-          "stop_reason", "hint", "corpus_note", "max_tokens", "model", "provider_name",
-          "probed_at", "text_source": {...}}。
+          "stop_reason", "hint", "efficiency", "corpus_note", "max_tokens", "model",
+          "provider_name", "probed_at", "text_source": {...}}。
     """
     total = len(ladder)
     tested: list[dict] = []
     stop_reason = "passed_all"
     highest = 0
+    slow = SLOW_SEC_PER_1K if slow_sec_per_1k is None else float(slow_sec_per_1k)
+    budget_total = TOTAL_BUDGET_SEC if total_budget is None else float(total_budget)
     paras = _pick_corpus_paras(paras, max(ladder))
     avail = sum(len(t) for t in paras)
+    t_start = time.monotonic()
     for i, tier in enumerate(ladder, 1):
+        if time.monotonic() - t_start > budget_total:
+            # 总预算用尽：余下档位**逐档**标"未测"（界面要看到整条阶梯的处置），
+            # 用已测到的结果给建议（不让界面无限等）
+            for rest in ladder[i - 1:]:
+                tested.append({"tier": rest, "chars": 0, "paras": 0, "ok": False,
+                               "finish_reason": None, "got": 0, "missed": 0, "out_chars": 0,
+                               "sec": 0.0, "sec_per_1k": 0.0, "out_cps": 0.0,
+                               "reason": "总时长预算用尽（%.0fs），该档未测"
+                                         % (time.monotonic() - t_start),
+                               "skipped": True})
+            stop_reason = "time_budget"
+            logger.warning("翻译上限探测：总预算用尽（%.0fs），停止于第 %d 档",
+                           time.monotonic() - t_start, i)
+            break
         if avail < tier:
             # 库内正文拼不满这一档 ⇒ 无法测，阶梯到此为止（如实报告已测到哪）
             tested.append({"tier": tier, "chars": 0, "paras": 0, "ok": False,
                            "finish_reason": None, "got": 0, "missed": 0, "out_chars": 0,
+                           "sec": 0.0, "sec_per_1k": 0.0, "out_cps": 0.0,
                            "reason": "库内可译英文正文不足（现有 %d 字符）" % avail,
                            "skipped": True})
             stop_reason = "insufficient_text"
             break
         group = _take(paras, tier)
+        actual = sum(len(t) for t in group)
+        budget = float(tier_timeout) if tier_timeout else _tier_budget(actual)
         if progress_cb:
             try:
-                progress_cb(i, total, "正在测 %d 字符档（%d 段）…" % (tier, len(group)))
+                progress_cb(i, total, "正在测 %d 字符档（%d 段，单档上限 %.0fs）…"
+                            % (tier, len(group), budget))
             except Exception:  # noqa: BLE001 - 进度回调异常绝不影响探测
                 logger.debug("探测进度回调异常（忽略）", exc_info=True)
-        logger.info("翻译上限探测：档位 %d 字符（实际 %d 字符 / %d 段）",
-                    tier, sum(len(t) for t in group), len(group))
-        row = _probe_tier(llm, group, tier)
+        logger.info("翻译上限探测：档位 %d 字符（实际 %d 字符 / %d 段，单档上限 %.0fs）",
+                    tier, actual, len(group), budget)
+        row = _probe_tier(llm, group, tier, timeout=budget, slow_sec_per_1k=slow)
         tested.append(row)
-        if row["ok"]:
+        if row["ok"] and not row.get("slow"):
             highest = max(highest, row["chars"])
             continue
-        stop_reason = "error" if row.get("error") else "failed"
-        logger.warning("翻译上限探测：档位 %d 失败 —— %s", tier, row["reason"])
+        if row.get("timed_out"):
+            stop_reason = "timed_out"
+        elif row.get("slow"):
+            stop_reason = "inefficient"
+        else:
+            stop_reason = "error" if row.get("error") else "failed"
+        logger.warning("翻译上限探测：档位 %d 失败（%s）—— %s", tier, stop_reason, row["reason"])
         break
 
     recommended = _floor100(highest * safety_factor) if highest else 0
+    efficiency = _efficiency_report(tested, slow)
     hint = ""
     if not recommended:
         if stop_reason == "insufficient_text":
             hint = ("库里可译的英文正文不足（现有 %d 字符），测不出安全值："
                     "请先解析/导入至少一篇含正文的文献再测。" % avail)
+        elif stop_reason == "timed_out":
+            hint = ("最低档 %d 字符在 %.0fs 墙钟上限内都没译完（下界 %s s/千字符）⇒ 这个规模上该"
+                    "模型连一次批次都产不出来，不是「批次上限」的问题：优先换输出更快的翻译模型"
+                    "（思考型模型会把推理链算进输出，慢一个量级）；若必须用它，请先把「单批上限」"
+                    "调到能一次装完的最小档并盯日志有无批截断。"
+                    % (ladder[0], tested[0]["sec"], tested[0]["sec_per_1k"]))
+        elif stop_reason == "inefficient":
+            hint = ("最低档 %d 字符虽然译完了，但效率过低（%s s/千字符 > 阈值 %.0f）⇒ 这个批次规模"
+                    "上模型已不实用（等待时间不可接受），故判为极限、不给推荐值：请换输出更快的"
+                    "翻译模型。" % (ladder[0], tested[0]["sec_per_1k"], slow))
+        elif stop_reason == "time_budget":
+            hint = ("探测总时长预算（%.0fs）在首档就用尽，一档都没测出：本机与模型的组合极慢，"
+                    "请稍后重试；若持续如此，换输出更快的翻译模型。" % budget_total)
         elif stop_reason == "error":
             hint = ("探测调用报错（多为超时/限流），未测出安全值；稍后重试。若反复失败，"
                     "换一个翻译专用模型，或把「翻译批次上限」调大一档"
@@ -285,6 +462,15 @@ def probe_safe_batch_chars(llm, paras: list[str], *, ladder: tuple[int, ...] = L
         hint = ("推荐值 = 最高通过档 %d × 安全系数 %g（**不是测试极限**）。受库内正文量限制，"
                 "%d 字符以上的档位没能测；想测更高档请多导入几篇正文较长的文献。"
                 % (highest, safety_factor, tested[-1]["tier"]))
+    elif stop_reason == "time_budget":
+        hint = ("推荐值 = 最高通过档 %d × 安全系数 %g。本次探测总时长到了预算上限（%.0fs），"
+                "更高档位没测——想确认更高档请稍后再测一次（或直接手动填更大值，风险自担）。"
+                % (highest, safety_factor, budget_total))
+    elif stop_reason in ("inefficient", "timed_out"):
+        hint = ("推荐值 = 最高通过档 %d × 安全系数 %g（不是测试极限）。更高档位判为极限的原因见"
+                "下方效率评价（%s）——想更激进可手动填更大值，但等待时间同比变长、且有超时风险。"
+                % (highest, safety_factor,
+                   "效率过低" if stop_reason == "inefficient" else "在墙钟上限内没译完"))
     else:
         hint = ("推荐值 = 最高通过档 %d × 安全系数 %g（不是测试极限）。想更激进可手动填更大值，"
                 "但截断风险自担；改完看日志有无「批截断」。" % (highest, safety_factor))
@@ -311,6 +497,7 @@ def probe_safe_batch_chars(llm, paras: list[str], *, ladder: tuple[int, ...] = L
         "ok": bool(recommended),
         "stop_reason": stop_reason,
         "hint": hint,
+        "efficiency": efficiency,
         "corpus_note": corpus_note,
         "max_tokens": max_tokens,
         "model": model,
