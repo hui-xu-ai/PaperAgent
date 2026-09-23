@@ -1032,6 +1032,20 @@ function renderMarkdown(md, baseDir, source) {
     return ph('math', 'inline', tex);
   });
 
+  // ★2026-09-23（用户报障"原文上标显示成字面 ^{[34]}"）：英文原文里的引用上标是**裸的** `^{[34]}`
+  //   （en.md 全篇如此；中文变体由后端包成 `$^{[34]}$`），而渲染只把 `$...$` 交 KaTeX
+  //   ⇒ 裸上标只能当普通文字显示（字面出现 ^{[34]}）。
+  //   位置很关键：**放在公式保护之后**——此时 `$...$`/```代码``` 都已换成占位符，
+  //   剩下的 `^{...}` 必定在公式外，直接按行内公式送 KaTeX（与中文变体渲染同形）。
+  //   只认"引用 [n] / 纯数字符号"，不碰正文的 `^{文字}` 与 Obsidian 内联脚注 `^[注]`。
+  md = md.replace(/(?<!\$)([\^_])\{([^{}\n]{1,40})\}(?!\$)/g, (m, sign, body) => {
+    const t = body.trim();
+    const likeCite = /^\[[\d,;\s\u2013\u2014-]+\]$/.test(t);
+    const likeNum = /^[\d+-]{1,6}$/.test(t);
+    if (!likeCite && !likeNum) return m;
+    return ph('math', 'inline', sign + '{' + t + '}');
+  });
+
   let html = marked.parse(md, { breaks: true, gfm: true });
 
   // 还原保护块：公式 → KaTeX（容错）；代码 → <pre><code> + hljs 高亮
