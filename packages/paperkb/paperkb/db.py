@@ -206,26 +206,12 @@ class KBStore:
                 logger.warning("FTS 分词器升级 trigram：索引已清空，正在从 kb 重建…")
                 rebuilt = self.reindex_from_kb(fulltext=True)
                 logger.warning("FTS trigram 重建完成: %s", rebuilt)
-            # 迁移：papers_meta 补 AI 评分列（2026-09-19）
-            meta_cols = {r[1] for r in conn.execute(
-                "PRAGMA table_info(papers_meta)").fetchall()}
-            for col in ("ai_value_score", "topic_score"):
-                if meta_cols and col not in meta_cols:
-                    conn.execute(f"ALTER TABLE papers_meta ADD COLUMN {col} REAL")
-                    logger.info("papers_meta 补列: %s", col)
-            # 迁移：papers_meta 补 paperlit 元数据列（2026-09-19）
-            _LIT_META_COLS = {
-                "paper_rank": "REAL",
-                "cocitation_cluster": "INTEGER",
-                "impact_factor": "REAL",
-                "quartile": "TEXT DEFAULT ''",
-                "library_citations": "INTEGER DEFAULT 0",
-                "source_main": "TEXT DEFAULT ''",
-            }
-            for col, ddl in _LIT_META_COLS.items():
-                if meta_cols and col not in meta_cols:
-                    conn.execute(f"ALTER TABLE papers_meta ADD COLUMN {col} {ddl}")
-                    logger.info("papers_meta 补列(paperlit): %s", col)
+            # 迁移：papers_meta 补 AI 评分列 / paperlit 元数据列（2026-09-19）
+            # ★2026-09-23 收编进迁移层 → `migrations/0005_meta_score_lit_cols.py`
+            # （登记的移除条件就是本版 v1.4.0，见 `docs/COMPAT-REGISTER.md` A1）。
+            # 原来这里是内联的 ADD COLUMN 自愈，违反硬规则「表结构变更只在迁移层」
+            # （守卫 `test_version_contract.py::test_alter_table_only_in_migration_layer`）。
+            # 新装由上面的 `PAPERS_META_DDL`（当前格式）直接建全列，旧库由 runner 先迁移再打开。
 
     # ---------------------------------------------------------- 标识 ↔ rid
     def resolve_rid(self, key: str) -> str:

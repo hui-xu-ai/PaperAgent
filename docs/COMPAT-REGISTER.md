@@ -8,14 +8,9 @@
 
 | # | 位置 | 是什么 | 为什么存在 | 移除条件 | 验证方式 |
 |---|---|---|---|---|---|
-| A1 | `packages/paperkb/paperkb/db.py`（`init_schema` 末尾两段 `ALTER TABLE papers_meta ADD COLUMN`） | 内联「试探式补列」：① `ai_value_score`/`topic_score`（2026-09-19 加）② paperlit 元数据 6 列 `paper_rank`/`cocitation_cluster`/`impact_factor`/`quartile`/`library_citations`/`source_main`（2026-09-19 加） | **纯兼容旧库**：这两组列**已在** `PAPERS_META_DDL`（DDL 单一来源）里，新建库由 DDL 直接建出，ALTER 只对 2026-09-19 之前建的旧库生效 | **v1.4.0**（最迟 2027-06-30） | 收编进 `migrations/0005_meta_score_lit_cols.py`（幂等 + `verify()` + 台账登记），删除 db.py 这两段后 `test_alter_table_only_in_migration_layer` 转绿 |
+| — | （空） | — | — | — | — |
 
-> **A1 为什么现在不动**（2026-09-21 说明）：把它搬进迁移层意味着**新增一条迁移 ⇒ 按
-> `docs/VERSIONING.md` §1 `DATA_FORMAT` 3→4**，连带要冻结新的黄金夹具、重跑升级演练，
-> 并改变用户的升级路径（首启多一次备份 + 迁移）。这是一个**独立于本版发布**的决定，
-> 故先按 §D 规则登记成本行（未登记的兼容分支 = 违规），留待下一版处理。
-> 现状影响：`test_alter_table_only_in_migration_layer` 自 2026-09-19 起一直是红的
-> —— 它是唯一一条"守卫指向真实债务"的失败，**其余失败是测试与代码漂移**。
+> **A1 已于 2026-09-23（v1.4.0）按期清理**，见 §C14。本表当前为空 = 无待清理的兼容分支。
 
 ## B. 长期保留（属"接口/契约"，不设移除期限，但不得扩散）
 
@@ -43,9 +38,11 @@
 | C11 | 装饰性设置键 `kb_include` / `retrieval_include`（含 `get/save_*`、`get_all` 字段、`KB_COPYABLE`/`KB_ALWAYS`/`DEFAULT_*` 常量、前端两组勾选框） | 2026-09-12（批1） | **无替代**：全仓无消费点（kb 产物由 `docs/DATA-LAYOUT.md` 布局契约固定；AI 检索只按 `retrieval_mode`）。旧库历史值成为无害残留（无读者） |
 | C12 | `GET /api/settings/system-prompt`、`GET /api/settings/appearance` | 2026-09-12（批1） | 读回值已在 `GET /api/settings`（`system_prompt_extra` / `custom_css`）；前端只 POST 保存，无 GET 调用方 |
 | C13 | 生产解析**降级链**的非精准通道：`mineru`（v1 免费、限流）与 `pymupdf`（本地、无 LaTeX/表格）；`_parse_chain` 多元素返回；`MINERU_PARSER=pymupdf` 配置项与设置中心「单通道解析通道」下拉 | 2026-09-12（批2，用户拍板"质量不可靠宁可不解析"） | 生产链只留 `mineru-v4`；无 Key → 前置硬门禁直接拒绝（`EngineService.parse_pdf` 抛 `PAPER-MINERU-REQUIRED`、上传预检 400 `mineru_required`）。⚠️ **`paperparse` 包内 CLI/离线工具**（`api.process_pdf(parser=…)`、`tools/parse_offline.py`）保留各自多通道能力，不受此门禁约束 |
+| C14 | `packages/paperkb/paperkb/db.py::init_schema` 末尾两段内联 `ALTER TABLE papers_meta ADD COLUMN`（原 A1：`ai_value_score`/`topic_score` + paperlit 6 列） | 2026-09-23（v1.4.0） | `paperkb/migrations/0005_meta_score_lit_cols.py`（幂等 + `verify()` + 台账登记；`DATA_FORMAT` 3→4）。按 A1 登记的移除条件"**v1.4.0**"执行；对已有库是纯增量（列已由自愈补过），新装由 `PAPERS_META_DDL` 直接建全。验证：`test_alter_table_only_in_migration_layer` 转绿 + 迁移在真实库副本上 dry-run 通过（planned/applied/backup/manifest→4 齐全） |
 
-> **迁移层现状（2026-09-12）**：`0001_baseline`（旧库补列 + sessions 重建）、`0002_settings_prices`、
-> `0003_meta_pk_rid` 三条，全部幂等 + `verify()` + 事务 + 迁移前 `VACUUM INTO` 备份。
+> **迁移层现状（2026-09-23）**：`0001_baseline`（旧库补列 + sessions 重建）、`0002_settings_prices`、
+> `0003_meta_pk_rid`、`0004_messages_reasoning`、`0005_meta_score_lit_cols`，全部幂等 + `verify()`
+> + 事务 + 迁移前 `VACUUM INTO` 备份。
 > **代码库中已无任何读时兼容分支**；`ALTER TABLE` 只允许出现在 `paperkb/migrations/`（CI 守卫强制，
 > 白名单已清空——`db.py` 死豁免已删）。迁移台账 `system.migrations_applied` + `verify()` 自证，
 > 保证"同格式内漏跑的迁移"会被发现并补跑（见 `docs/VERSIONING.md` §3）。
