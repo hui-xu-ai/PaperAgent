@@ -51,6 +51,9 @@ tags: [paper{concepts}]
 ### 局限
 {limitation}
 
+## 核心概念
+{core_concepts}
+
 ## 概念标签
 {tags}
 
@@ -61,6 +64,17 @@ tags: [paper{concepts}]
 
 # L1/L2 压缩版字数（下级注入省 token）
 _CTX_LIMIT = 1000
+
+# L3 每篇上下文的字数预算（2026-09-23 放宽）。旧值 note 1500 / wiki 750 ⇒ L3 只能看到
+# 每篇 wiki 的 ~35%，而 wiki 恰是"方法论批判/可复现性"这类**跨文献分析最需要**的部分。
+_L3_NOTE_CHARS = 1200
+_L3_WIKI_CHARS = 1500
+
+# L3 候选相关度下限（cosine）。同一批关键词命中的"同领域但不同主题"噪声会挤占上下文预算；
+# 低于阈值的一律丢弃，但**过滤后不足 `_L3_MIN_KEEP` 篇则退回原列表**——阈值宁可无效，
+# 不能让 L3 因"筛空"直接报错（阈值未用真实向量数据标定，见日志里的分数区间）。
+_L3_MIN_SCORE = 0.30
+_L3_MIN_KEEP = 5
 
 
 class CompileError(Exception):
@@ -359,6 +373,12 @@ class Compiler:
         if not related_ctxs:
             raise CompileError("L3 候选文献无编译结果")
 
+        # L3 的输入规模直接决定这个"用编译结果代替全文"的方案是否还成立 → 落日志可核。
+        total_chars = len(self_ctx) + sum(len(r["context"]) for r in related_ctxs)
+        logger.info(
+            "L3 输入规模: doi=%s 本文=%d 字 相关=%d 篇（每篇 note≤%d / wiki≤%d）合计=%d 字",
+            doi, len(self_ctx), len(related_ctxs), _L3_NOTE_CHARS, _L3_WIKI_CHARS, total_chars)
+
         prompt = _prompt_l3(meta.model_dump(mode="json"), self_ctx, related_ctxs)
         raw = llm.complete(prompt, context="compile")
         data = _parse_json(raw)
@@ -416,7 +436,13 @@ class Compiler:
 
         # 按分数排序
         sorted_hits = sorted(doi_best.values(), key=lambda x: x["score"], reverse=True)
-        return sorted_hits[:top_k]
+        kept, dropped = _filter_by_score(sorted_hits, _L3_MIN_SCORE, _L3_MIN_KEEP)
+        if dropped:
+            logger.info(
+                "L3 候选按相关度过滤: 共=%d 保留=%d 丢弃=%d 阈值=%.2f 命中分区间=[%.3f, %.3f]",
+                len(sorted_hits), len(kept), dropped, _L3_MIN_SCORE,
+                sorted_hits[-1]["score"], sorted_hits[0]["score"])
+        return kept[:top_k]
 
     @staticmethod
     def _parse_l3_keywords(raw: str) -> list[str]:
@@ -557,27 +583,33 @@ class Compiler:
             candidates.values(), key=lambda x: x["score"], reverse=True)
         return sorted_candidates[:top_k]
 
-    def _compiled_context(self, doi: str, limit_chars: int = 1500) -> str:
-        """读取某篇文献的 L1+L2 编译结果，压缩为上下文。"""
+    def _compiled_context(self, doi: str, limit_chars: int | None = None) -> str:
+        """读取某篇文献的 L1+L2 编译结果，压缩为上下文。
+
+        默认按 `_L3_NOTE_CHARS`/`_L3_WIKI_CHARS` 两档预算（note 与 wiki 分别取多少字
+        是两件事，旧实现用 `limit_chars//2` 让 wiki 只拿到 note 的一半，属于历史包袱）。
+        """
         folder = self._kb_folder(doi)
+        note_limit = _L3_NOTE_CHARS if limit_chars is None else limit_chars
+        wiki_limit = _L3_WIKI_CHARS if limit_chars is None else limit_chars
         parts = []
 
         note_path = folder / "_note.md"
         if note_path.exists():
             note_text = note_path.read_text(encoding="utf-8", errors="replace")
-            # 提取关键段落：one_liner + 六维 + 概念标签
-            parts.append(self._extract_note_summary(note_text, limit_chars))
+            # 提取关键段落：one_liner + 六维 + 核心概念 + 概念标签
+            parts.append(self._extract_note_summary(note_text, note_limit))
 
         wiki_path = folder / "_wiki.md"
         if wiki_path.exists():
             wiki_text = wiki_path.read_text(encoding="utf-8", errors="replace")
-            parts.append(self._extract_wiki_summary(wiki_text, limit_chars // 2))
+            parts.append(self._extract_wiki_summary(wiki_text, wiki_limit))
 
         return "\n\n".join(parts) if parts else ""
 
     @staticmethod
     def _extract_note_summary(note_text: str, limit: int) -> str:
-        """从 _note.md 提取一句话贡献 + 六维摘要 + 概念标签。"""
+        """从 _note.md 提取一句话贡献 + 六维摘要 + 核心概念 + 概念标签。"""
         lines = note_text.split("\n")
         summary_lines = []
         in_section = ""
@@ -588,6 +620,9 @@ class Compiler:
                 continue
             elif stripped.startswith("## 六维总结"):
                 in_section = "six_dim"
+                continue
+            elif stripped.startswith("## 核心概念"):
+                in_section = "core_concepts"
                 continue
             elif stripped.startswith("## 概念标签"):
                 in_section = "concepts"
@@ -1076,8 +1111,59 @@ _NO_LATEX_RULE = (
     "不要出现美元符号包裹的公式，不要出现任何反斜杠命令（例如 mathrm、approx、frac 这类带反斜杠的写法），"
     "也不要用下划线或脱字符做上下标。化合物与离子请用普通文字书写（例如 Co(Ox/Px)、K+、BF4-、Co2P），"
     "数值与单位用普通字符（例如 约 20000 S/cm、9.80 Am2/kg）。"
+    "需要上下标请用 Unicode 字符（例如 cm\u207b\u00b9、K\u207a、BF\u2084\u207b、\u00c5、\u00b10.5 V）。"
     "本知识笔记仅供 AI 与人理解，无需精确公式排版；如需指代某个公式，请用文字描述其物理含义即可。\n"
 )
+
+# 角色与权威性校准（L1/L2/合并编译共用；2026-09-23 提示词升级）。
+# A/B 实测（同模型、同共享前缀、只换任务段）：候选臂在 wiki 批判覆盖 5/10→10/10、
+# 段落引用 9→30、定量结果 4→39 上明确更好，代价 +31% 输出长度 / +44% 耗时。
+_PERSONA_AND_CALIBRATION = (
+    "【读者与用途】读者是同行研究者与 AI 检索：只写可核查、可复用的内容，不写空话。\n"
+    "【权威性校准】文末给出期刊与被引信息：据此提高**审视强度**（发表在权威期刊 = 按更高证据标准审视），"
+    "但**禁止**因刊物知名度抬高结论；所有结论只依据文中证据。\n"
+)
+
+# 证据硬规则（反幻觉；L1/L2/合并编译共用）
+_EVIDENCE_RULES = (
+    "【证据硬规则（违反即视为失败）】\n"
+    "1. 只写原文存在的内容：不得引入原文之外的事实、数字、机理或文献；原文没写就写「原文未报告」。\n"
+    "2. 区分「作者主张」与「证据支持度」：证据薄弱时要明说（样本少/单一体系/仅仿真/未做对照/仅定性）。\n"
+    "3. 判断必须可追溯：每条实质结论后附段落 ID，如 [P012]。\n"
+    "4. 禁止无信息量的套话（「具有重要意义」「首次」「新颖」「显著提升」等），要用具体事实替代。\n"
+)
+
+# L2 三节检查清单（逐项回答式，替代旧版"写一段批判"）
+_WIKI_CHECKLIST = (
+    "### ## 方法论批判\n"
+    "- 对照与混杂：设置是否恰当？变量是否唯一？缺乏对照请指出。\n"
+    "- 样本量与统计：n 与所用检验是否匹配？是否给出不确定度/误差？多重比较是否校正？\n"
+    "- 表征证据链：核心结论依赖几种独立表征？是否存在被回避的矛盾证据或单点证据？\n"
+    "- 结论外推：结论覆盖的体系/尺度/条件边界是什么？哪些表述超出数据支持范围？\n"
+    "### ## 可复现性分析\n"
+    "- 关键参数（温度/时间/浓度/设备型号/软件与版本）是否给全？\n"
+    "- 数据与代码的可得性声明（原文在哪一节说明）。\n"
+    "- 他人复现最可能卡在哪一步？为什么？\n"
+    "### ## 潜在应用与转化路径\n"
+    "- 已有应用证据 vs 仍需补验证的环节（分开写）。\n"
+    "- 与现有技术相比的限制：成本/工艺兼容性/寿命/规模化。\n"
+    "- 若要推进，最小可行的下一步验证是什么？\n"
+)
+
+# 六维"必须回答什么"（不是"写一段总结"）
+_SIX_DIM_CRITERIA = (
+    "  · background: 领域现状 **+ 尚未解决的问题**（不要只讲重要性）\n"
+    "  · method: 制备/表征/测试的关键参数与对照设置（不要只写方法名）\n"
+    "  · result: 关键**定量**结果（数值 + 单位）；无定量则明确说明\n"
+    "  · conclusion: 作者由结果得出的结论（与 result 区分：一个是观测、一个是主张）\n"
+    "  · innovation: 与已有工作的**具体差异**（在什么体系里、替换/新增了什么、带来什么变化）\n"
+    "  · limitation: 作者自承的局限 **+ 你从证据判断的边界**（体系/尺度/外推范围）\n"
+)
+
+# 长度约束一律写成**下限 + 硬措辞**：实测 glm 类模型对"不超过 N 字"这类上限基本不遵守，
+# 写上只会占位；下限才真正决定输出深度。
+_WIKI_LEN_RULE = "wiki 每节 **不少于 200 字**（材料丰富就写更长，不设上限）。\n"
+_SIX_DIM_LEN_RULE = "  每维格式：{\"text\": \"内容\", \"paras\": [\"P001\"]}，**每维不少于 80 字**（重要维度可更长），必须引用段落 ID。\n"
 
 
 def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str,
@@ -1091,16 +1177,25 @@ def _prompt_l1(meta: dict, doc: PaperDoc, journal_meta: str,
     shared = shared_ctx(doc)
     qa_block = ("\n\n" + qa_ctx) if qa_ctx else ""
     task = (
-        "你是科研知识编译助手。请依据上方论文全文，把它编译成结构化中文知识笔记。\n"
+        "你是科研知识编译助手（本领域资深审稿人视角）。请依据上方论文全文，"
+        "把它编译成结构化中文知识笔记。\n\n"
+        + _PERSONA_AND_CALIBRATION + "\n"
+        + _EVIDENCE_RULES + "\n"
         + _NO_LATEX_RULE +
-        "要求：六维每维必须引用论文段落 ID（如 [P001]）；输出严格 JSON：\n"
+        "## 六维总结（逐项回答，不要写成一段泛泛的介绍）\n"
+        + _SIX_DIM_LEN_RULE
+        + _SIX_DIM_CRITERIA +
+        "## 其余字段\n"
+        "- one_liner: 一句话写清「做了什么 + 达到什么」，不超过 50 字，不写意义。\n"
+        "- concepts: 3-7 个核心概念，格式 [{\"name\": \"概念名(英文)\", "
+        "\"definition\": \"20-60 字的可独立检索定义\"}]\n"
+        "- tags: 3-6 个标签\n"
+        "- ai_value: 0-5 研究价值（5=开创性/4=高质量/3=扎实/2=常规/1=低质量/0=无价值）\n\n"
+        "## 输出（严格 JSON，不要输出 JSON 以外的任何内容）\n"
         '{"one_liner": "一句话贡献", "background": {"text": "...", "paras": ["P001"]}, '
         '"method": {...}, "result": {...}, "conclusion": {...}, "innovation": {...}, '
         '"limitation": {...}, "concepts": [{"name": "概念名(英文)", "definition": "定义"}], '
-        '"tags": ["标签"]}\n'
-        "不要输出 JSON 以外的任何内容。\n\n"
-        "基于你对论文全文阅读，评估其研究价值（0-5 分），输出 ai_value（0-5 的浮点数）：\n"
-        "5=开创性 / 4=高质量 / 3=扎实 / 2=常规 / 1=低质量 / 0=无价值\n"
+        '"tags": ["标签"], "ai_value": 4}\n\n'
         + meta_block(meta, doc)
         + (f"\n期刊(权威)：{journal_meta}" if journal_meta else "")
         + qa_block
@@ -1115,18 +1210,18 @@ def _prompt_l2(meta: dict, doc: PaperDoc, l1_ctx: str) -> str:
     """
     shared = shared_ctx(doc)
     task = (
-        "你是科研深度编译专家。基于论文产出深度知识卡（JSON）。\n"
-        + _NO_LATEX_RULE +
+        "你是科研深度编译专家。基于论文产出深度知识卡（JSON）。\n\n"
+        + _PERSONA_AND_CALIBRATION + "\n"
+        + _EVIDENCE_RULES + "\n"
+        + _NO_LATEX_RULE + "\n"
         "⚠️ L1 已覆盖六维摘要（背景/方法/结果/结论/创新/局限）。\n"
-        "你的 wiki **禁止重复**上述内容，只写 L1 未涉及的深度分析。\n"
-        "输出严格 JSON：\n"
-        '{"wiki": "深度编译 Markdown：## 方法论批判'
-        '（设计缺陷/统计效力/内外部效度）'
-        '/ ## 可复现性分析（数据/代码/实验条件）'
-        '/ ## 潜在应用与转化路径'
-        '（正文每条引用段落 ID [P001]）", '
-        '"concepts": [{"name": "概念名(英文)", "definition": "定义"}]}\n'
-        "不要输出 JSON 以外的内容。\n\n"
+        "你的 wiki **禁止重复**上述内容，只写 L1 未涉及的深度分析，"
+        + _WIKI_LEN_RULE +
+        "逐项回答下列检查项，原文未支持某项就写「原文未报告」：\n"
+        + _WIKI_CHECKLIST +
+        "\n## 输出（严格 JSON，不要输出 JSON 以外的内容）\n"
+        '{"wiki": "## 方法论批判\\n...\\n## 可复现性分析\\n...\\n## 潜在应用与转化路径\\n...", '
+        '"concepts": [{"name": "概念名(英文)", "definition": "定义"}]}\n\n'
         + f"## L1 摘要（已覆盖，勿重复）\n{l1_ctx or '(无)'}"
     )
     return with_task(shared, task)
@@ -1138,35 +1233,43 @@ def _prompt_l1_l2_merged(meta: dict, doc: PaperDoc, journal_meta: str,
 
     输出 JSON 包含 L1（one_liner/六维/concepts/scores）+ L2（wiki），
     相比分离调用节省 50% 全文输入 token。
+
+    2026-09-23 提示词升级（A/B 实测后落地）：角色换成"资深审稿人 + 知识卡编译"双身份、
+    六维/三节改成**逐项检查清单**、加证据硬规则（反幻觉 + 区分主张与证据）、
+    长度约束改**下限式**；**wiki 段写在 L1 段之前**（深度优先，实测更愿意写透）。
+    JSON schema 与旧版**完全一致** ⇒ 解析/渲染/评分链路无需改动。
     """
     from .frontmatter import meta_block
 
     shared = shared_ctx(doc)
     qa_block = ("\n\n" + qa_ctx) if qa_ctx else ""
     task = (
-        "你是科研知识编译专家。请依据上方论文全文，产出两级结构化中文知识卡（JSON）。\n\n"
+        "你是科研知识编译助手（本领域资深审稿人视角）。"
+        "请依据上方论文全文，产出两级结构化中文知识卡（JSON）。\n\n"
+        + _PERSONA_AND_CALIBRATION + "\n"
+        + _EVIDENCE_RULES + "\n"
         + _NO_LATEX_RULE + "\n"
-        "## L1 知识卡（基础摘要）\n"
-        "- one_liner: 一句话核心贡献（≤50字）\n"
-        "- background/method/result/conclusion/innovation/limitation: 六维总结\n"
-        "  每维格式：{\"text\": \"内容\", \"paras\": [\"P001\"]}（必须引用段落 ID）\n"
-        "- concepts: 3-7 个核心概念，格式 [{\"name\": \"概念名(英文)\", \"definition\": \"定义\"}]\n"
-        "- tags: 标签列表\n\n"
-        "## L2 深度分析（禁止重复六维摘要）\n"
-        "- wiki: 深度编译 Markdown，包含三个章节：\n"
-        "  ## 方法论批判（设计缺陷/统计效力/内外部效度）\n"
-        "  ## 可复现性分析（数据/代码/实验条件）\n"
-        "  ## 潜在应用与转化路径（引用段落 ID [P001]）\n\n"
+        "## L2 深度分析（wiki，**这是本次编译价值最高的部分，请优先写深写透**）\n"
+        + _WIKI_LEN_RULE
+        + "逐项回答下列检查项，原文未支持某项就写「原文未报告」：\n"
+        + _WIKI_CHECKLIST +
+        "\n## L1 知识卡（基础摘要，**不要与 wiki 重复**）\n"
+        "- one_liner: 一句话写清「做了什么 + 达到什么」，不超过 50 字，不写意义。\n"
+        "- background/method/result/conclusion/innovation/limitation: 六维总结（逐项回答）\n"
+        + _SIX_DIM_LEN_RULE
+        + _SIX_DIM_CRITERIA +
+        "- concepts: 3-7 个核心概念，格式 [{\"name\": \"概念名(英文)\", "
+        "\"definition\": \"20-60 字的可独立检索定义\"}]\n"
+        "- tags: 3-6 个标签\n\n"
         "## AI 评分\n"
         "- ai_value: 0-5 研究价值（5=开创性/4=高质量/3=扎实/2=常规/1=低质量/0=无价值）\n"
         "- topic_score: 0-1 主题相关度\n\n"
-        "输出严格 JSON：\n"
+        "## 输出（严格 JSON，不要输出 JSON 以外的任何内容）\n"
         '{"one_liner": "...", "background": {"text": "...", "paras": ["P001"]}, '
         '"method": {...}, "result": {...}, "conclusion": {...}, "innovation": {...}, '
-        '"limitation": {...}, "wiki": "## 方法论批判\\n...\\n## 可复现性分析\\n...\\n## 潜在应用\\n...", '
+        '"limitation": {...}, "wiki": "## 方法论批判\\n...\\n## 可复现性分析\\n...\\n## 潜在应用与转化路径\\n...", '
         '"concepts": [{"name": "...", "definition": "..."}], "tags": ["..."], '
-        '"ai_value": 4, "topic_score": 0.8}\n'
-        "不要输出 JSON 以外的任何内容。\n\n"
+        '"ai_value": 4, "topic_score": 0.8}\n\n'
         + meta_block(meta, doc)
         + (f"\n期刊(权威)：{journal_meta}" if journal_meta else "")
         + qa_block
@@ -1201,7 +1304,11 @@ def _split_l1_l2_merged(data: dict) -> tuple[dict, dict | None]:
 
 def _render_note(meta, data: dict, journal_meta: str = "") -> str:
     """渲染 `_note.md`（L1 产物）。元数据（作者/期刊/被引等）由翻译 frontmatter 承载，
-    _note.md 只保留知识内容（one_liner + 六维 + 概念标签）。"""
+    _note.md 只保留知识内容（one_liner + 六维 + 核心概念 + 概念标签）。
+
+    `## 核心概念`（2026-09-23 新增）：概念名 + 定义。此前只渲染标签（裸词），
+    L3 跨文献分析拿不到定义锚点、只能看到一串词 ⇒ 补上定义。
+    """
     concepts = "".join(f", {c}" for c in data.get("tags", [])[:8])
     if not concepts:
         concepts = ", paper"
@@ -1214,6 +1321,19 @@ def _render_note(meta, data: dict, journal_meta: str = "") -> str:
         paras = item.get("paras") or []
         return text + (" " + " ".join(f"[{p}]" for p in paras) if paras else "")
 
+    def core_concepts() -> str:
+        out = []
+        for c in data.get("concepts") or []:
+            if isinstance(c, dict):
+                name = str(c.get("name") or "").strip()
+                definition = str(c.get("definition") or "").strip()
+            else:
+                name, definition = str(c).strip(), ""
+            if not name:
+                continue
+            out.append(f"- **{name}**：{definition}" if definition else f"- **{name}**")
+        return "\n".join(out) or "(无)"
+
     tags = " ".join(f"#{t.replace(' ', '-')}" for t in data.get("tags", [])[:6]) or "(无)"
     return NOTE_TEMPLATE.format(
         doi=meta.doi, concepts=concepts, title=meta.title or "(无标题)",
@@ -1221,6 +1341,7 @@ def _render_note(meta, data: dict, journal_meta: str = "") -> str:
         background=six("background"), method=six("method"),
         result=six("result"), conclusion=six("conclusion"),
         innovation=six("innovation"), limitation=six("limitation"),
+        core_concepts=core_concepts(),
         tags=tags)
 
 
@@ -1438,6 +1559,19 @@ def _merge_cross_ref(text: str, line: str) -> str:
         out.pop()
     out += ["", "## 相关文献", *items]
     return "\n".join(out).rstrip("\n") + "\n"
+
+
+def _filter_by_score(hits: list[dict], min_score: float, min_keep: int
+                     ) -> tuple[list[dict], int]:
+    """按相关度下限过滤候选（保序）。返回 (保留列表, 丢弃数)。
+
+    `min_keep` 是防呆闸门：阈值未按真实向量数据标定，一旦筛得比它还少就退回原列表，
+    宁可让阈值等于无效，也不能把 L3 掐成"无相关文献"。
+    """
+    kept = [h for h in hits if float(h.get("score") or 0) >= min_score]
+    if len(kept) < min_keep:
+        return hits, 0
+    return kept, len(hits) - len(kept)
 
 
 def _ctx_from_l1(data: dict) -> str:
