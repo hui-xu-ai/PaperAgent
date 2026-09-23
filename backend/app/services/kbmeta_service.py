@@ -169,13 +169,37 @@ class KbMetaService:
         self._ensure()
         return kbapi.probe_translate_batch(llm, progress_cb=progress_cb)
 
+    def _reset_compile_guard(self) -> None:
+        """编译前置：按篇清零 `compile` 防护计数（与 translate 同一套做法）。
+
+        为什么：编译的调用计数是**进程级累计**的（`TokenGuard`），批量编译多篇会让计数一直
+        涨；按篇清零后每篇都有完整额度，跨篇不再互相挤兑。真正的死循环仍由"累计输入 2M 字符"
+        兜底拦截。
+        """
+        try:
+            from . import container
+
+            container.get_guard().reset_context("compile")
+        except Exception as e:  # noqa: BLE001 - 清零失败不阻塞编译
+            logger.warning("重置 compile 防护计数失败: %s", e)
+
     def compile_now(self, doi: str, level: str = "L1", force: bool = False) -> dict:
         """立即编译（同步；LLM 调用可能较慢）。
 
         2026-09-19：为并行翻译+编译端点而暴露。
         """
         self._ensure()
+        self._reset_compile_guard()
         return kbapi.compile_now(doi, level, force)
+
+    def compile_process(self, limit: int = 1) -> list[dict]:
+        """编译 worker 的执行入口（处理队列项；显式方法以挂"按篇清零"）。
+
+        改名会破坏 worker 契约：方法名与 `paperkb.api.compile_process` 保持一致。
+        """
+        self._ensure()
+        self._reset_compile_guard()
+        return kbapi.compile_process(limit)
 
     # ---------------------------------------------------------- 文献阅读日记
     # 数据聚合 + 用户笔记。与 paperkb.api 解耦：直接构造 KBStore(ROOTS)，
@@ -211,15 +235,17 @@ class KbMetaService:
 class _KBLLMAdapter:
     """paperkb LLM 客户端适配：context 映射到 backend 防护组。
 
-    - translate：独立组（80 次/300 万字符；translate_now 前置按任务粒度清零）
-    - 编译等：归入 engine 组（12 次/800k；task 翻译前也会 reset）
+    - translate：独立组（300 次/300 万字符；translate_now 前置按任务粒度清零）
+    - compile：独立组（60 次/200 万字符；每篇编译前 `compile_now`/`compile_process` 前置清零）
+    - 其余（含解析引擎）：归入 engine 组（12 次/800k；翻译前 task 也会 reset）
     - **动态解析**（LLM 架构优化）：每次 complete() 实时获取当前 AI 实例，
       热切换供应商/翻译模型立即生效（旧实现构造时捕获引用 ⇒ 热切换不传播）。
     - **翻译路由**：translate context 优先用翻译专用 AI（若已配置），否则回落主模型。
     """
 
     def complete(self, prompt: str, context: str = "compile") -> str:
-        mapped = {"translate": "translate", "ask": "ask"}.get(context, "engine")
+        mapped = {"translate": "translate", "ask": "ask",
+                  "compile": "compile"}.get(context, "engine")
         # 翻译路由：取当前**激活**的专用 AI（单选，2026-09-22 删掉按批轮询），空池回落主模型
         if context == "translate":
             try:

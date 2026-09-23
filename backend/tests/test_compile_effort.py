@@ -196,21 +196,29 @@ def test_compile_request_omits_effort_when_auto(monkeypatch):
 
 
 def test_kbmeta_passes_real_context_for_effort(monkeypatch):
-    """`_KBLLMAdapter` 必须把**真实 context**（compile）传给 effort 决策，否则档位永远取不到。"""
-    from app.services.kbmeta_service import _KBLLMAdapter
+    """`_KBLLMAdapter` 必须把**真实 context**传给 effort 决策，否则档位永远取不到。
 
-    class _Base:
-        def __init__(self):
-            self.kw = None
+    2026-09-23 更新为当前契约（本条此前一直失败：还在用旧的"包装 base client"构造）：
+      - 适配器**无参构造**，每次 complete 动态取当前 AI（热切换才生效）；
+      - 防护分组：compile → `compile` 桶（**不再折进 engine**）、translate → `translate`；
+      - `effort_context` = paperkb 传进来的真实 context（档位决策用它）。
+    """
+    from app.services import kbmeta_service as ks
+    from app.services import llm_service
+
+    seen: dict = {}
+
+    class _Fake:
         def complete(self, prompt, context="engine", effort_context=None):
-            self.kw = {"context": context, "effort_context": effort_context}
+            seen.update(context=context, effort_context=effort_context)
             return "ok"
 
-    base = _Base()
-    _KBLLMAdapter(base).complete("p", "compile")
-    assert base.kw == {"context": "engine", "effort_context": "compile"}   # TokenGuard 用 engine
-    _KBLLMAdapter(base).complete("p", "translate")
-    assert base.kw == {"context": "translate", "effort_context": "translate"}
+    monkeypatch.setattr(llm_service, "get_ai", lambda: _Fake())
+    adapter = ks._KBLLMAdapter()
+    adapter.complete("p", "compile")
+    assert seen == {"context": "compile", "effort_context": "compile"}
+    adapter.complete("p", "translate")          # 无翻译专用 AI → 回落主模型
+    assert seen == {"context": "translate", "effort_context": "translate"}
 
 
 @pytest.fixture

@@ -574,6 +574,47 @@ def test_translation_pool_env_is_authoritative_over_db(store, monkeypatch):
     assert [p["model"] for p in pool] == ["Qwen/Qwen2.5-7B-Instruct"]
 
 
+def test_env_key_wins_over_shadowing_db_entry(store, monkeypatch):
+    """同 (base_url, model) 时**主模型 Key 以 `.env` 为准**（2026-09-23 用户拍板）。
+
+    用户实例：DB 里激活的「智谱」条目 Key 已失效（对 open.bigmodel.cn 返回 HTTP 401），
+    而 `.env` 的 `ZHIPU_API_KEY` 可用；按 (base_url, model) 去重的合并逻辑让 DB 条目
+    **整条遮蔽**了 .env 预设 ⇒ "在 .env 里换 Key"完全没生效，编译一直 401。
+    与翻译池同规则：`.env` 权威。只覆盖 api_key，条目的 id/其它字段不动。
+    """
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_providers([{
+        "id": "p_zhipu", "name": "智谱",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-5.3-flash", "api_key": "sk-stale-db-key", "enabled": True}])
+    assert svc.get_providers(masked=False)[0]["api_key"] == "sk-stale-db-key"
+
+    monkeypatch.setenv("ZHIPU_API_KEY", "sk-fresh-env-key")
+    monkeypatch.setenv("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
+    monkeypatch.setenv("ZHIPU_MODEL", "glm-5.3-flash")
+    got = [p for p in svc.get_providers(masked=False) if p["model"] == "glm-5.3-flash"]
+    assert len(got) == 1, got                        # 预设被吸收，不重复出现
+    assert got[0]["api_key"] == "sk-fresh-env-key"   # Key 来自 .env（权威）
+    assert got[0]["id"] == "p_zhipu"                 # 条目身份不动
+    assert got[0]["name"] == "智谱"
+    # 激活项仍是原来那条；翻译池不受影响
+    assert svc.get_active_id() == "p_zhipu"
+
+
+def test_env_key_adoption_keeps_db_key_when_same(store, monkeypatch):
+    """两边 Key 相同时不做任何改写（不误报、不写日志噪音）。"""
+    svc = SettingsService(store, app_settings=_make_env_settings())
+    svc.save_providers([{
+        "id": "p_zhipu", "name": "智谱",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-5.3-flash", "api_key": "sk-same", "enabled": True}])
+    monkeypatch.setenv("ZHIPU_API_KEY", "sk-same")
+    monkeypatch.setenv("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
+    monkeypatch.setenv("ZHIPU_MODEL", "glm-5.3-flash")
+    got = [p for p in svc.get_providers(masked=False) if p["model"] == "glm-5.3-flash"]
+    assert len(got) == 1 and got[0]["api_key"] == "sk-same"
+
+
 def test_translation_pool_env_slots_merge_by_index(store, monkeypatch):
     """.env 第 i 槽覆盖池里第 i 条；.env 多出的槽追加；池里多出的条目保留。"""
     svc = SettingsService(store, app_settings=_make_env_settings())

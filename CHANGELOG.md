@@ -103,9 +103,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - **防"值看着丢了"**：探测期间**禁用「保存」**（避免结果回填前存进空值）；弹窗被关时结果
     会在日志里明确标注"该值**还没保存**"，并在**表格新增的 `单批上限` 列**显示
     `默认（建议 N）`，重新打开该条目自动回填。
+- **主模型 Key 的 `.env` 权威**（2026-09-23 用户拍板，与翻译池同规则）：同一模型同时存在
+  「`.env` 里的 Key」和「界面供应商条目里的 Key」且**不一致**时，**以 `.env` 为准**（只覆盖
+  `api_key`，条目的 id/名称/端点不动），并在启动时打一行 warning 说明覆盖前后（打码）。
+  - **为什么**：合并逻辑按 `(base_url, model)` 去重 ⇒ DB 条目会**整条遮蔽** `.env` 预设，
+    于是"在 `.env` 里换了 Key"看起来完全没生效。实测用户实例：DB 里激活的「智谱」条目 Key
+    已失效（`open.bigmodel.cn` 返回 **HTTP 401**），`.env` 的 `ZHIPU_API_KEY` 是好的
+    （HTTP 200）——编译因此每 5 秒 401 一次，直到撞上防护红线。
+  - 反向也成立：界面保存供应商会把 Key 写回 `.env`，两边不再分叉。
 
 ### Fixed
 
+- **编译失败会无限重试**（2026-09-23 用户实例暴露）：`Compiler.process_next` 只捕
+  `CompileError`，LLM 层抛的 `DeepSeekError`/`TokenBudgetExceeded`（401、防护红线等）
+  一路穿到 worker 主循环 ⇒ 任务**一直留在 queued**，每 5 秒重试一次、永不放弃：实测刷出
+  36 条「engine 第 N 次（上限 12，红线）」（每次重试都消耗防护计数）。现在**一律置 failed**
+  并记下错误原文（瞬时故障由 LLM 客户端内部重试吸收；真失败用户在知识库页点「重试」）。
+  同时该失败路径**保留入队时的价值分**（REPLACE 语义历史坑）。
+- **编译借用 `engine` 的 12 次/进程红线**（同一实例暴露）：paperkb 的
+  `context="compile"` 原被折进 `engine` 桶 ⇒ 解析已吃掉 12 次后，编译第 1 次调用就被拦，
+  被误判成死循环。现在编译有**独立桶 `compile`（60 次 / 200 万字符）**，并在
+  `compile_now` / `compile_process` **每篇前置清零**；`engine` 的解析红线保持 12 次不动，
+  失控仍由"累计输入 2M 字符"兜底。顺带修好一直失败的老测试
+  `test_kbmeta_passes_real_context_for_effort`（还在用旧的"包装 base client"构造）。
 - **翻译前置的防护计数清零此前从未执行**（2026-09-23 排查发现）：`translate_now` 里
   `from .llm_service import get_guard` 是**错的模块路径**（`get_guard` 只存在于 `container`），
   ImportError 又被 `except Exception: pass` 静默吞掉 ⇒ `reset_context("translate")` 一次都没跑。

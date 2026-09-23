@@ -160,7 +160,15 @@ class Compiler:
         return {"status": "queued", "doi": doi, "level": level}
 
     def process_next(self) -> dict | None:
-        """处理队列中最高优先级的一项（worker 循环调用）。"""
+        """处理队列中最高优先级的一项（worker 循环调用）。
+
+        2026-09-23：**非 CompileError 的失败也要置 failed**。此前只捕 `CompileError`，
+        LLM 层抛的 `DeepSeekError`/`TokenBudgetExceeded`（401、防护红线等）会一路穿到
+        worker 主循环 ⇒ 任务**一直留在 queued**，每 5 秒重试一次、永不放弃：
+        实测用户实例刷了 36 条"engine 第 N 次"红线报错（每次重试都消耗防护计数）。
+        瞬时故障由 LLM 客户端内部重试（max_retries）吸收；真失败就如实置 failed，
+        用户在知识库页面点「重试」即可。
+        """
         job = self._next_job()
         if job is None:
             return None
@@ -168,11 +176,12 @@ class Compiler:
         try:
             r = self.compile(doi, level)
             return {"doi": doi, "level": level, "result": r}
-        except CompileError as e:
+        except Exception as e:  # noqa: BLE001 - 含 CompileError 与 LLM/防护错误：一律置 failed
             # 同 _mark_done：REPLACE 语义下不显式带分值就会把入队分冲成 0（job 就在手上，免费带上）
             self.store.upsert_job(doi, level, status="failed", error=str(e),
                                   value_score=float(job.get("value_score") or 0.0),
                                   priority=int(job.get("priority") or 0))
+            logger.warning("编译失败（已置 failed，不再重试）: %s %s → %s", doi, level, e)
             return {"doi": doi, "level": level, "error": str(e)}
 
     def queue_all_by_value(self, scores: list[dict]) -> dict:

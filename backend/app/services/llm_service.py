@@ -166,6 +166,13 @@ class TokenGuard:
         # 40-45 次（含 JSON 重试），长文可破 80 → 上限提到 300（按篇重置后单篇粒度）；
         # 真正的死循环仍由"累计输入 3M 字符上限"兜底拦截。
         "translate": {"max_calls": 300, "max_total_input_chars": 3_000_000},
+        # 编译（L1/L2/L3）：2026-09-23 **从 engine 桶独立出来**。此前 paperkb 的编译调用
+        # （`context="compile"`）被折进 `engine`（12 次/进程）⇒ 解析已吃掉 12 次后，编译的第 1 次
+        # 调用就被红线拦（实测用户实例：编译 401 失败被 worker 每 5s 重试，重试也计数，
+        # 第 13 次起报"engine 第 N 次"刷屏）。编译是**分步小上下文任务**（每篇 1~4 次调用，
+        # 批量编译可达数十次），给足额度；每篇编译前由 `KbMetaService` 前置 reset，
+        # 真正的死循环仍由"累计输入 2M 字符上限"兜底。
+        "compile": {"max_calls": 60, "max_total_input_chars": 2_000_000},
         # M4：paperkb 问答（用户高频交互；独立组防与后台任务互挤）
         "ask": {"max_calls": 200, "max_total_input_chars": 5_000_000},
         # 交互会话（chat/lit/manage/paper，context=session:<id>）：与 ask 同级——

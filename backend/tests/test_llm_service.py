@@ -90,6 +90,41 @@ def test_guard_engine_limits_relaxed():
         g.begin_call("engine", 20_000)
 
 
+def test_guard_compile_has_own_bucket():
+    """编译**不再借用 engine 的 12 次红线**（2026-09-23 修）。
+
+    实测用户实例：解析已吃掉 12 次后，编译第 1 次调用就被拦（每 5s 刷一条"engine 第 N 次"）。
+    编译是分步任务（每篇 1~4 次、批量数十次），给独立额度；`engine` 红线保持不动。
+    """
+    from app.services.llm_service import TokenGuard
+    g = TokenGuard()
+    assert g._limits_for("compile")["max_calls"] == 60
+    assert g._limits_for("compile")["max_total_input_chars"] == 2_000_000
+    assert g._limits_for("engine")["max_calls"] == 12          # 解析红线不受影响
+    # 编译走自己的桶：连打 20 次不触发 engine 红线
+    for _ in range(20):
+        g.begin_call("compile", 3_000)
+    assert g.get_usage("engine")["count"] == 0
+
+
+def test_kbllm_adapter_maps_compile_to_compile_bucket(monkeypatch):
+    """`_KBLLMAdapter` 把 paperkb 的 `context="compile"` 透成 **compile 桶**（原折成 engine）。"""
+    from app.services import kbmeta_service as ks
+    from app.services import llm_service
+
+    seen: dict = {}
+
+    class _Fake:
+        def complete(self, prompt, context="engine", effort_context=None):
+            seen["context"] = context
+            seen["effort_context"] = effort_context
+            return "ok"
+
+    monkeypatch.setattr(llm_service, "get_ai", lambda: _Fake())
+    ks._KBLLMAdapter().complete("p", context="compile")
+    assert seen["context"] == "compile"
+
+
 def test_guard_usage_records_and_events():
     """usage 记录 + 事件发布。"""
     from app.services.event_bus import EventBus

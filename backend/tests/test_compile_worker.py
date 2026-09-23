@@ -199,3 +199,34 @@ def test_loop_survives_executor_exception():
     time.sleep(0.8)                                # 第一轮抛异常 → 线程不退出
     w.stop()
     assert calls["n"] >= 2                         # 异常后仍继续循环
+
+
+def test_kbmeta_resets_compile_guard_per_item(monkeypatch):
+    """每篇编译前清零 `compile` 防护计数（跨篇不互相挤兑）。
+
+    2026-09-23：编译的计数从 engine 桶独立出来（原 12 次/进程会被解析先吃掉），
+    并按篇重置 —— 否则批量编译（每篇 1~4 次调用）跑到第 61 次就会被误判成死循环。
+    """
+    from app.services import container
+    from app.services import kbmeta_service as ks
+    from app.services.llm_service import TokenGuard
+
+    guard = TokenGuard()
+    monkeypatch.setattr(container, "get_guard", lambda: guard)
+    monkeypatch.setattr(ks.kbapi, "compile_process",
+                        lambda limit: [{"doi": "10.x/1", "level": "L1", "result": {}}])
+    monkeypatch.setattr(ks.kbapi, "compile_now", lambda doi, level, force: {"status": "done"})
+
+    svc = ks.KbMetaService()
+    svc._ready = True            # 跳过真实 init_kb（本测试只验证计数清零）
+
+    guard._calls["compile"] = {"count": 55, "prompt_chars": 900_000,
+                               "prompt_tokens": 0, "completion_tokens": 0}
+    out = svc.compile_process(1)
+    assert out and out[0]["doi"] == "10.x/1"
+    assert guard.get_usage("compile")["count"] == 0, "compile_process 应先清零"
+
+    guard._calls["compile"] = {"count": 40, "prompt_chars": 500_000,
+                               "prompt_tokens": 0, "completion_tokens": 0}
+    svc.compile_now("10.x/1", "L1")
+    assert guard.get_usage("compile")["count"] == 0, "compile_now 也应先清零"

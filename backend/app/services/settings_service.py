@@ -255,6 +255,9 @@ class SettingsService:
 
         P5 点1：对自定义 env 预设另按 (base_url, model) 去重——.env 还原的自定义
         供应商 id 若与 DB 条目大小写/格式不一致，仍不重复（DB 优先）。
+
+        2026-09-23（用户拍板）：**同 (base_url, model) 时，Key 以 .env 为准**（见
+        `_adopt_env_key`）——DB 条目会遮蔽 .env 预设，导致"在 .env 里换 Key 没生效"。
         """
         if not providers:  # 首次启动：env 兜底（保持旧行为：仅 env 供应商）
             return self._env_presets()
@@ -264,12 +267,45 @@ class SettingsService:
         for preset in self._env_presets():
             bm = ((preset.get("base_url") or "").strip().lower(),
                   (preset.get("model") or "").strip())
-            if preset["id"] in ids or bm in seen_bm:
+            if preset["id"] in ids:
+                continue
+            if bm in seen_bm:
+                self._adopt_env_key(providers, bm, preset)
                 continue
             providers.append(preset)
             ids.add(preset["id"])
             seen_bm.add(bm)
         return providers
+
+    # 同一 id 的"Key 被 .env 覆盖"只告警一次（避免每次读设置都刷日志）
+    _KEY_SHADOW_WARNED: set[str] = set()
+
+    def _adopt_env_key(self, providers: list[dict], bm: tuple, preset: dict) -> None:
+        """同 (base_url, model) 的 DB 条目：`api_key` 以 `.env` 为准（与翻译池同规则）。
+
+        为什么必须这样：`_merge_env_presets` 按 (base_url, model) 去重 ⇒ DB 条目会**整条遮蔽**
+        `.env` 预设，于是"在 `.env` 里换了主模型 Key"看起来完全没生效。实测（2026-09-23 用户
+        实例）：激活的「智谱」DB 条目里是**失效 Key**（对 open.bigmodel.cn 返回 HTTP 401），
+        而 `.env` 的 `ZHIPU_API_KEY` 是**能用的**（HTTP 200）——编译因此每 5 秒 401 一次，
+        刷到撞上防护红线。只覆盖 `api_key`：base_url/model 已相同，其余字段仍以 DB 条目为准。
+        """
+        for p in providers:
+            pbm = ((p.get("base_url") or "").strip().lower(), (p.get("model") or "").strip())
+            if pbm != bm:
+                continue
+            old = str(p.get("api_key") or "")
+            new = str(preset.get("api_key") or "")
+            if not new or new == old:
+                return
+            p["api_key"] = new
+            pid = str(p.get("id") or "")
+            if pid not in self._KEY_SHADOW_WARNED:
+                self._KEY_SHADOW_WARNED.add(pid)
+                logger.warning(
+                    "供应商「%s」的 Key 与 .env 不一致 → 已按 .env 覆盖（.env 权威，"
+                    "与翻译池同规则）：%s → %s。若这不是你要的，请改 .env 或删掉该条目。",
+                    p.get("name") or pid, _mask(old), _mask(new))
+            return
 
     def get_providers(self, masked: bool = True) -> list[dict]:
         raw = self.store.get_setting(KEY_PROVIDERS)
