@@ -353,7 +353,7 @@
                     <button type="button" class="btn small" id="tpf-key-toggle" title="显示/隐藏密钥">显示</button>
                   </span>
                 </label>
-                <label class="pform-row">单批上限（一次发多少字）
+                <label class="pform-row">单批上限（每批英文原文字符数）
                   <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
                     <input id="tpf-batch" type="number" min="1000" max="200000" step="1000"
                            placeholder="留空＝默认 14000" style="flex:1">
@@ -364,6 +364,10 @@
                 <div class="pform-row" style="display:block">
                   <span class="muted" id="tpf-probe-status">不知道填多少？点「🔬 自动测一个值」——它会真实翻译几段（约 2~3 次调用，花少量 token），把结果填进上面的框，点「保存」生效。</span>
                   <div id="tpf-probe-result" hidden></div>
+                </div>
+                <div class="pform-row" style="color:#888;font-size:12px">
+                  单位＝<b>英文原文</b>字符数（含空格）：<b>一次请求最多装多少英文原文</b>，不是中文字数、也不是 token。
+                  例：填 14500 ⇒ 一次请求发出约 14500 个英文字符（≈3500 输入 token），一篇 10 万字符的论文会拆成约 7 批。
                 </div>
                 <div class="pform-row" style="color:#888;font-size:12px">
                   输出上限不用填：程序按上面的单批上限自动换算（留足 2 倍余量）。
@@ -620,10 +624,10 @@
                 </select>
                 <span class="hint" id="translate-effort-desc">「自动」= <b>不发送档位参数，由服务端默认策略决定</b>（= 你一直以来的行为，质量不变）。翻译里思考承担：<b>术语/缩略语前后一致、公式 [[MATHn]] 标签不被展开改写、长句结构判断</b>。想省输出 token 建议先试 <b>低（low）</b>，改完抽查一篇的术语一致性与公式标签完整性。</span>
               </label>
-              <label class="fitem" for="translate-batch-chars">单批上限默认值（字符）
+              <label class="fitem" for="translate-batch-chars">单批上限默认值（每批英文原文字符数）
                 <input type="number" id="translate-batch-chars" min="1000" max="200000" step="1000"
                        placeholder="留空＝默认 14000">
-                <span class="hint" id="translate-batch-chars-desc">每个翻译模型可在自己的条目里单独设（<code>模型 → 翻译模型 → 编辑</code>，点那里的 <code>🔬 自动测一个值</code>）；这里填的是<b>没单独设的模型</b>和<b>回落主模型</b>时用的值。分批只在段落边界切、绝不切断句子。</span>
+                <span class="hint" id="translate-batch-chars-desc">含义＝<b>一次请求最多装多少英文原文</b>（含空格；不是中文字数、不是 token）。每个翻译模型可在自己的条目里单独设（<code>模型 → 翻译模型 → 编辑</code>，点那里的 <code>🔬 自动测一个值</code>）；这里填的是<b>没单独设的模型</b>和<b>回落主模型</b>时用的值。分批只在段落边界切、绝不切断句子。</span>
               </label>
             </fieldset>
             <p class="muted">两档只作用于 <b>编译（L1/L2/L3）</b> 与 <b>翻译</b>；文献问答不受影响。</p>

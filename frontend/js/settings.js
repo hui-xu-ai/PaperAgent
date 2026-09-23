@@ -758,9 +758,11 @@ function renderProbeResult(res) {
     + `${res.elapsed ? ' · 用时 ' + res.elapsed + 's' : ''}`;
   const recLine = res.recommended
     ? `<div>建议值：<b>${res.recommended} 字符</b> `
-      + `<span class="muted">（= 最高通过档 ${res.highest_pass} × 安全系数 ${res.safety_factor}，`
-      + `留 ${Math.round((1 - res.safety_factor) * 100)}% 余量；<b>不是测试极限</b>）`
-      + ` → 已填入「单批上限」，点保存生效</span></div>`
+      + `<span class="muted">＝ 一次请求最多装 <b>${res.recommended} 个英文原文字符</b>`
+      + `（≈${Math.round(res.recommended * 0.24)} 输入 token）</span></div>`
+      + `<div class="muted">算法：最高通过档 ${res.highest_pass} × 安全系数 ${res.safety_factor}`
+      + `（留 ${Math.round((1 - res.safety_factor) * 100)}% 余量，<b>不是测试极限</b>）`
+      + ` → 已填入「单批上限」，点保存生效</div>`
     : `<div><b>未测出可用值</b>：${escapeHtml(res.hint || '')}</div>`;
   box.innerHTML = `
     <div style="margin-top:6px;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:0.92em;line-height:1.7;text-align:left">
