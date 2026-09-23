@@ -14,7 +14,7 @@
 **Turn one English PDF into a Chinese knowledge base you can "read, search and ask questions against"**: a single-user, local-first AI reading / translation / knowledge-base app for papers.
 Import → precise parsing (MinerU v4 + dual-channel character arbitration) → three-level knowledge compilation (L1/L2/L3 notes) → optional full-text translation → reading / retrieval / Q&A.
 
-> ⚡ **Don't want to set up an environment?** Just download `PaperAgent-v1.0.0-win64.zip` from [Releases](https://github.com/hui-xu-ai/PaperAgent/releases) (about 86 MB, **no Python install needed**):
+> ⚡ **Don't want to set up an environment?** Just download `PaperAgent-v1.4.0-win64.zip` from [Releases](https://github.com/hui-xu-ai/PaperAgent/releases) (about 90 MB, **no Python install needed**):
 > unzip → double-click `PaperAgent.exe` → in Settings fill in `DEEPSEEK_API_KEY` (translation/compilation/Q&A) and `MINERU_API_KEY` (parsing) → start importing.
 > To run from source, see "Installation" below.
 

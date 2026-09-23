@@ -27,7 +27,7 @@
 **把一篇英文 PDF 变成"能读、能查、能问"的中文知识库**：本机单用户的文献 AI 阅读 / 翻译 / 知识库应用。
 导入 → 精准解析（MinerU v4 + 双通道字符仲裁）→ 三级知识编译（L1/L2/L3 笔记）→ 可选全文翻译 → 阅读 / 检索 / 问答。
 
-> ⚡ **不想折腾环境？** 直接下载 [Releases](../../releases) 里的 `PaperAgent-v1.3.0-win64.zip`（约 90MB，**免装 Python**）：
+> ⚡ **不想折腾环境？** 直接下载 [Releases](../../releases) 里的 `PaperAgent-v1.4.0-win64.zip`（约 90MB，**免装 Python**）：
 > 解压到空目录 → 双击 `PaperAgent.exe` → 在「设置」里填 `MINERU_API_KEY`（解析，必填）与 `DEEPSEEK_API_KEY`（翻译/编译/问答）→ 开始导入。
 > **新用户请先看 [新用户操作手册](docs/USER-MANUAL.md)**（按功能分章：导入 / 阅读 / 问答 / 知识库 / AI 检索 / 图谱 / 升级排障）。
 > 源码运行见下方「安装」。
