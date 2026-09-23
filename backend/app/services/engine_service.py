@@ -845,9 +845,10 @@ class EngineService:
                 t = getattr(para, attr, None)
                 if not t:
                     continue
-                if pat.search(t):
-                    t = pat.sub("", t).strip()
-                    changed = True
+                # 2026-09-23 fix：**先算完再比较**（`changed` 必须如实）。
+                # 教训：上一个版本把"删占位符"的结果只赋给局部变量、忘了 setattr ⇒
+                # `changed` 永远 True 但文件其实没变（清幂等性测试当场抓住：二次调用仍 changed）。
+                new = pat.sub("", t).strip() if pat.search(t) else t
                 # ★2026-09-23（用户报障"原文上标显示成字面 ^{[34]}"）：**公式外的裸上下标补 `$`**。
                 # 为什么改在源头（document.json 的 text_en/text_zh）而不是只改 en.md：
                 #   en.md 由本文档渲染，改这里 ⇒ ① en.md ② 变体 ③ `verify_kb_doc`
@@ -855,25 +856,23 @@ class EngineService:
                 #   ④ 检索/问答 四处同时一致；只改 en.md 会让 ③ 全线报不一致。
                 # 也不碰解析引擎产物：`tools/parse_regression.py` 的 en.md 指纹对应引擎原始输出
                 # （本函数是既有的后端清洗步，与"清 `<!-- image -->` 占位符"同类）⇒ 无需重设基线。
-                t, n1 = normalize_citation_superscripts(t)   # `^[[38]]` / `^[38]` → `$^{[38]}$`
-                t, n2 = wrap_bare_scripts(t)                 # 裸 `^{34}` / `^{-1}` → `$...$`
-                if n1 or n2:
-                    setattr(para, attr, t)
-                    changed = True
-                    n_script += n1 + n2
-        for fig in doc.figures:
-            if not fig.caption:
-                continue
-            cap = fig.caption
-            if pat.search(cap):
-                cap = pat.sub("", cap).strip()
-                changed = True
-            cap, n1 = normalize_citation_superscripts(cap)
-            cap, n2 = wrap_bare_scripts(cap)
-            if n1 or n2:
-                fig.caption = cap
-                changed = True
+                new, n1 = normalize_citation_superscripts(new)   # `^[[38]]` / `^[38]` → `$^{[38]}$`
+                new, n2 = wrap_bare_scripts(new)                 # 裸 `^{34}` / `^{-1}` → `$...$`
                 n_script += n1 + n2
+                if new != t:
+                    setattr(para, attr, new)
+                    changed = True
+        for fig in doc.figures:
+            cap = fig.caption
+            if not cap:
+                continue
+            new = pat.sub("", cap).strip() if pat.search(cap) else cap
+            new, n1 = normalize_citation_superscripts(new)
+            new, n2 = wrap_bare_scripts(new)
+            n_script += n1 + n2
+            if new != cap:
+                fig.caption = new
+                changed = True
         if n_script:
             logger.info("解析产物上下标归一：%d 处（裸 ^{...}/_{...} → $...$；含引用 ^[[n]]）",
                         n_script)
