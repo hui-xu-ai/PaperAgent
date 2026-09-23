@@ -133,13 +133,15 @@ class TranslationProviderModel(BaseModel):
 
     `batch_chars`：该模型自己的**单批正文字符上限**（0/空 = 用默认）。存进条目而不放全局，
     因为安全冗余是模型属性：换模型即用该模型自己实测（🔬 计算单批上限）出的值。
+    `max_tokens`：输出预算。**0 = 自动**（由单批上限推导，见 `translate_output_budget`）——
+    0 是安全默认：小模型（8K 输出）收到 64000 会被服务端 400 拒。
     """
     id: str = ""
     name: str = ""
     base_url: str = ""
     model: str = ""
     api_key: str = ""
-    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    max_tokens: int = 0
     batch_chars: int = 0
     reasoning_effort: str | None = None
     enabled: bool = True
@@ -444,6 +446,26 @@ def _resolve_translate_key(p: TranslateProbeModel) -> str:
     return key
 
 
+def _resolve_probe_max_tokens(body: TranslateProbeModel) -> int:
+    """探测的输出预算：**与线上翻译同一口径**（该模型已存 max_tokens → 按单批上限推导）。
+
+    探测请求必须带对 max_tokens，否则 `build_ai` 落到兜底 64000 —— 小模型（如 Qwen2.5-7B
+    只有 8K 输出）会直接被服务端 **400 Bad Request**。实测用户点「计算单批上限」就是这个错。
+    """
+    from ..services.llm_service import translate_output_budget
+    svc = container.get_settings_service()
+    stored = 0
+    if body.id:
+        for p in svc.get_translation_providers(masked=False):
+            if p.get("id") == body.id:
+                try:
+                    stored = int(p.get("max_tokens") or 0)
+                except (TypeError, ValueError):
+                    stored = 0
+                break
+    return translate_output_budget(svc.get_effective_translate_batch_chars(), stored)
+
+
 @router.post("/translate-probe")
 def start_translate_probe(body: TranslateProbeModel | None = None) -> dict:
     """启动探测（后台线程；返回 task_id，前端轮询 GET 同名端点看进度）。
@@ -459,6 +481,7 @@ def start_translate_probe(body: TranslateProbeModel | None = None) -> dict:
         provider["api_key"] = _resolve_translate_key(body)
         if not (provider.get("base_url") and provider.get("model") and provider["api_key"]):
             raise HTTPException(400, "请先填好 Base URL、模型和 API Key 再测")
+        provider["max_tokens"] = int(body.max_tokens or 0) or _resolve_probe_max_tokens(body)
         provider["id"] = provider.get("id") or "probe-draft"
         provider["name"] = provider.get("name") or "当前编辑的模型"
     return container.get_translate_probe().start(

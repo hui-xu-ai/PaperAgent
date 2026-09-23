@@ -37,15 +37,25 @@ TRANSLATE_OUTPUT_TOKENS_PER_CHAR = 0.4
 
 
 def translate_output_budget(batch_chars: int | None, configured: int | None = None) -> int:
-    """翻译请求的输出预算 = max(供应商自配值, 批次上限 × 0.4)。
+    """翻译请求的输出预算 = max(供应商自配值, 单批上限 × 0.4)。
 
-    批次上限是用户可调项（`设置 → 知识库 → 翻译批次上限`，或探测按钮写入），输出预算必须跟着走，
-    否则「上限调大了、预算还卡在 8192」会表现为难懂的截断。**只增不减**：供应商自配的更大值优先
-    （更弱/更小的模型由 `🔬 测试安全上限` 如实测出，用户再按需调）。只用于翻译专用池，
-    不碰主模型（主模型的 max_tokens 与编译/对话共用，不能因翻译而变）。
+    单批上限是用户/探测定的（`模型 → 翻译模型 → 单批上限`），输出预算必须跟着走，否则
+    「上限调大了、预算还卡在 8192」会表现为难懂的截断。**只增不减**：供应商自配的更大值优先。
+
+    `batch_chars` 为空（未设）时按 paperkb 紧凑默认（14000 字符 ⇒ 5600 token）算，**绝不回落
+    `DEFAULT_MAX_OUTPUT_TOKENS`(64000)**——那对小模型是致命的：实测 Qwen2.5-7B（8K 输出）
+    收到 `max_tokens=64000` 直接被服务端 **400 Bad Request**（用户点「计算单批上限」报的错）。
+    只用于翻译专用池，不碰主模型（主模型的 max_tokens 与编译/对话共用，不能因翻译而变）。
     """
-    need = int(max(0, int(batch_chars or 0)) * TRANSLATE_OUTPUT_TOKENS_PER_CHAR)
-    return max(int(configured or 0), need) or DEFAULT_MAX_OUTPUT_TOKENS
+    batch = int(batch_chars or 0)
+    if batch <= 0:
+        try:
+            from paperkb.translate.pipeline import COMPACT_MAX_BODY_CHARS as _DEFAULT_BATCH
+        except Exception:  # noqa: BLE001 - 取不到常量也不影响（退回 8192 的安全下限）
+            _DEFAULT_BATCH = 8192
+        batch = int(_DEFAULT_BATCH)
+    need = int(batch * TRANSLATE_OUTPUT_TOKENS_PER_CHAR)
+    return max(int(configured or 0), need)
 
 # ---------------------------------------------------------------- reasoning_effort（思考强度）
 # 用户决策：GLM 始终思考不能关，但请求不传 reasoning_effort 会自由深度思考，推理 token 全计入

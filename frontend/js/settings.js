@@ -554,7 +554,7 @@ function editTranslateProvider(index = -1) {
   $('tpf-base').value = tp?.base_url || '';
   $('tpf-model').value = tp?.model || '';
   $('tpf-key').value = (tp?.api_key && tp.api_key !== '未设置') ? KEY_MASK : '';
-  // 单批上限：该模型自己的安全值（🔬 计算单批上限 自动填；留空 = 用全局默认）
+  // 单批上限：该模型自己的安全值（🔬 自动测一个值 回填；留空 = 用全局默认）
   if ($('tpf-batch')) $('tpf-batch').value = tp?.batch_chars ? String(tp.batch_chars) : '';
   // 输出上限 max_tokens 不再由用户填写（2026-09-23）：它是「单批上限」的从属量（实测 ≈0.2 token/源字符），
   // 交给用户填只会造成困惑；保存时沿用该条目已存值。
@@ -641,7 +641,7 @@ async function saveTranslateProvider() {
   // 输出上限（max_tokens）不再让用户填：它是「单批上限」的从属量——实测「输出 token ≈ 源字符 × 0.2」，
   // 故 14000 字符批次只需约 2800 token。新建条目给 8192（余量 ~2.9 倍），已有条目沿用原值（值不动）。
   const maxTokens = editing?.max_tokens || 8192;
-  // 单批上限：**该模型自己的安全值**（🔬 计算单批上限 回填；留空/0 = 用全局默认）
+  // 单批上限：**该模型自己的安全值**（🔬 自动测一个值 回填；留空/0 = 用全局默认）
   const batchTxt = ($('tpf-batch')?.value || '').trim();
   const batchNum = Number(batchTxt);
   const batchChars = (batchTxt === '' || !Number.isFinite(batchNum) || batchNum <= 0) ? 0 : Math.round(batchNum);
@@ -836,9 +836,8 @@ async function startTranslateProbe() {
     if (statusEl) statusEl.textContent = '请先填写 API Key';
     return;
   }
-  const ok = await askConfirm(`会用「${body.model}」真实翻译最多 5 档文本`
-    + '（3000→48000 字符，累计输入约 0.9~12 万字符，会计入你的用量），可能需要几分钟。'
-    + '现在开始吗？');
+  const ok = await askConfirm(`会用「${body.model}」真实翻译几段文本（先试小的、通过就加码，`
+    + '最多 5 次调用，花少量 token，可能要几分钟）。开始吗？');
   if (!ok) return;
   if (statusEl) statusEl.textContent = '正在启动…';
   if ($('tpf-probe-result')) $('tpf-probe-result').hidden = true;

@@ -689,7 +689,7 @@ def test_translate_output_budget_is_derived_from_batch_limit(store, monkeypatch)
     实测输出 token ≈ 源字符 × 0.2，取 0.4 = 2 倍余量。用户把上限调大 ⇒ 预算自动跟上
     （旧行为：上限调大、预算仍卡在 8192 ⇒ 难懂的截断）。
     """
-    from app.services.llm_service import translate_output_budget, DEFAULT_MAX_OUTPUT_TOKENS
+    from app.services.llm_service import translate_output_budget
     svc = SettingsService(store, app_settings=_make_env_settings())
     svc.save_translation_providers([{
         "id": "t1", "name": "Q", "base_url": "https://api.siliconflow.cn/v1",
@@ -707,11 +707,13 @@ def test_translate_output_budget_is_derived_from_batch_limit(store, monkeypatch)
     # 界面口径（masked=True）看到的仍是用户存的原值
     assert svc.get_translation_providers(masked=True)[0]["max_tokens"] == 8192
 
-    # 纯函数语义：只增不减；两个都为 0 ⇒ 兜底默认
+    # 纯函数语义：只增不减；两个都为 0 ⇒ 按紧凑默认（14000 → 5600），**绝不回落 64000**
+    # （回落 64000 会让 8K 输出的小模型被服务端 400 拒：用户点「自动测一个值」报的错）
     assert translate_output_budget(14000, 8192) == 8192
     assert translate_output_budget(100000, 8192) == 40000
     assert translate_output_budget(1000, 64000) == 64000
-    assert translate_output_budget(0, 0) == DEFAULT_MAX_OUTPUT_TOKENS
+    assert translate_output_budget(0, 0) == 5600
+    assert translate_output_budget(None, None) == 5600
 
 
 # ---------------------------------------- 单批上限：条目自带值优先（2026-09-23 用户要求）

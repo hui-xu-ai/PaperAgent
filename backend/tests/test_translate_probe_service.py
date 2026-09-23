@@ -196,6 +196,48 @@ def test_probe_endpoint_rejects_incomplete_draft(monkeypatch):
         assert e.status_code == 400 and "Base URL" in str(e.detail)
 
 
+def test_probe_endpoint_fills_safe_max_tokens_for_small_model(monkeypatch):
+    """探测请求必须带**与线上同口径**的 max_tokens：缺省会落到 build_ai 的 64000 兜底，
+    而 8K 输出的小模型（Qwen2.5-7B）收到 64000 直接被服务端 400 拒 —— 实测用户报的错。
+    期望：取该条目已存的 8192（不是 64000）；条目不存在时取"按单批上限推导"的安全值。
+    """
+    from app.api import settings as api_settings
+
+    seen: dict = {}
+
+    class _S:
+        @staticmethod
+        def get_translation_providers(masked: bool = False):
+            return [{"id": "translate_0", "name": "千问", "api_key": "sk-x",
+                     "base_url": "https://api.siliconflow.cn/v1",
+                     "model": "Qwen/Qwen2.5-7B-Instruct", "max_tokens": 8192,
+                     "batch_chars": 0, "enabled": True}]
+
+        @staticmethod
+        def get_effective_translate_batch_chars() -> int:
+            return 14000
+
+    class _ProbeSvc:
+        @staticmethod
+        def start(provider=None, via=""):
+            seen["provider"] = provider
+            return {"ok": True}
+
+    monkeypatch.setattr(container, "get_settings_service", lambda: _S())
+    monkeypatch.setattr(container, "get_translate_probe", lambda: _ProbeSvc())
+
+    api_settings.start_translate_probe(api_settings.TranslateProbeModel(
+        id="translate_0", name="千问", base_url="https://api.siliconflow.cn/v1",
+        model="Qwen/Qwen2.5-7B-Instruct", api_key="sk-x"))
+    assert seen["provider"]["max_tokens"] == 8192, seen["provider"]
+
+    # 池里查不到该 id（新增条目还没保存）⇒ 用"单批上限 × 0.4"（14000×0.4=5600），仍不是 64000
+    api_settings.start_translate_probe(api_settings.TranslateProbeModel(
+        id="", name="新模型", base_url="https://api.siliconflow.cn/v1",
+        model="Qwen/Qwen2.5-7B-Instruct", api_key="sk-x"))
+    assert seen["provider"]["max_tokens"] == 5600, seen["provider"]
+
+
 def test_probe_endpoint_resolves_masked_key_from_pool(monkeypatch):
     """表单里显示的是掩码占位 ⇒ 后端按 id 取池里已存的真实 Key（与「测试连接」同一约定）。"""
     from app.api import settings as api_settings
@@ -208,6 +250,10 @@ def test_probe_endpoint_resolves_masked_key_from_pool(monkeypatch):
             return [{"id": "t1", "name": "千问", "api_key": "sk-real-stored",
                      "base_url": "https://api.siliconflow.cn/v1",
                      "model": "Qwen/Qwen2.5-7B-Instruct", "enabled": True}]
+
+        @staticmethod
+        def get_effective_translate_batch_chars() -> int:
+            return 14000
 
     class _ProbeSvc:
         @staticmethod
