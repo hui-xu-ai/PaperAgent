@@ -43,6 +43,26 @@ def test_translate_now_forwards_batch_chars(monkeypatch):
     assert seen["compact"] is False, "无翻译专用 AI ⇒ 主模型路径"
 
 
+def test_translate_now_resets_guard_counters(monkeypatch):
+    """翻译前置必须真的清零 translate 防护计数。
+
+    曾用 `from .llm_service import get_guard`（该名字只在 container 里）⇒ ImportError
+    被 `except: pass` 静默吞掉，reset 从未执行，长文跨篇累计会误拦。
+    """
+    from app.services import container
+    from app.services.llm_service import TokenGuard
+
+    ks, svc = _svc(monkeypatch, 0)
+    guard = TokenGuard()
+    monkeypatch.setattr(container, "get_guard", lambda: guard)
+    guard._calls["translate"] = {"count": 299, "prompt_chars": 2_999_999,
+                                 "prompt_tokens": 0, "completion_tokens": 0}
+    monkeypatch.setattr(ks.kbapi, "translate_paper",
+                        lambda doc, *, compact, batch_chars=None: {"ok": True})
+    svc.translate_now("X.json")
+    assert guard.get_usage("translate")["count"] == 0, "translate_now 应先清零计数"
+
+
 def test_translate_now_passes_zero_when_unset(monkeypatch):
     """没设（0）⇒ 传 0，让 paperkb 用默认（紧凑 14000 / 主模型 12000）。"""
     ks, svc = _svc(monkeypatch, 0)

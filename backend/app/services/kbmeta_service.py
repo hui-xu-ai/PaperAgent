@@ -136,11 +136,11 @@ class KbMetaService:
         """
         self._ensure()
         try:
-            from .llm_service import get_guard
+            from . import container
 
-            get_guard().reset_context("translate")
-        except Exception:  # noqa: BLE001
-            pass
+            container.get_guard().reset_context("translate")
+        except Exception as e:  # noqa: BLE001 - 清零失败不阻塞翻译
+            logger.warning("重置 translate 防护计数失败: %s", e)
         # 检测是否配置了翻译专用 AI → 自动启用紧凑模式
         compact = False
         try:
