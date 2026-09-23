@@ -5,7 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [未发布]
+## [1.4.0] - 2026-09-23
+
+> **升级影响：不会丢数据，无需重新解析任何 PDF；`DATA_FORMAT` 3 → 4（本版新增一条迁移）。**
+>
+> 新增迁移 `0005_meta_score_lit_cols`：把原先住在 `db.py::init_schema` 里"试探式补列"的
+> 两组 `papers_meta` 派生列（AI 评分 2 列 + paperlit 元数据 6 列）**收编进迁移层**，
+> 清掉兼容登记表里那笔"移除条件 = v1.4.0"的债（A1）。**对已有库是纯增量**——列早就被
+> 自愈补上了，迁移只是补台账 + 升格式号；首启照例先 `VACUUM INTO` 备份再迁移。
+>
+> 本版其余改动都在**翻译 / 渲染 / 编译**侧，**历史译文与解析产物不必重跑**：
+> 上下标与公式括号的归一有**渲染层兜底**（重渲染变体即修好），编译预算与提示词的改动
+> 只影响**此后新编译**的文献。
 
 ### Added
 
