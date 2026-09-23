@@ -25,6 +25,7 @@ from .db import KBStore
 from .doi import (dir_to_key, dirname_to_doi, doi_to_dirname, extract_doi_from_text,
                   is_doi, is_md5_dir, make_rid, normalize_doi)
 from .journals import JournalsDB
+from .layout import KB_DOC_NAME, doc_path
 from .models import PaperMeta
 
 logger = logging.getLogger(__name__)
@@ -88,12 +89,36 @@ def shared_doc_json(key: str) -> str:
     store = _need_store()
     roots = store.roots
     from .doc import find_document_in_kb
-    from .resource import find_doc
+    from .resource import find_doc, resources_dir
 
     hit = find_document_in_kb(roots.kb_dir, key, store)
     if hit is None:
+        _warn_kb_dir_without_doc(roots, key, store, resources_dir)
         hit = find_doc(roots.library_dir, key, store, search_root=roots.library_dir)
     return str(hit) if hit is not None else ""
+
+
+def _warn_kb_dir_without_doc(roots, key: str, store, resources_dir) -> None:
+    """[局部] **静默回退要有声音**（2026-09-23）。
+
+    回退解析库本身是设计内的（文献尚未纳入 kb ⇒ kb 目录压根不存在）；但"kb 目录里
+    **已有原文层/编译产物**却读不到定版核心数据文件"是异常——历史上正是这类错配
+    让译文与渲染分叉（文案变体退回英文）。这里只告警不阻断：读侧继续回退解析库，
+    但日志/事件能让人第一时间发现"两侧不同源"。
+    注意：仅导入 bib 的 kb 空壳（P0-B）是合法形态，不在此列。
+    """
+    try:
+        kb_hit = resources_dir(roots.kb_dir, key, store)
+        if kb_hit is None:
+            return
+        looks_real = any((kb_hit / m).exists()
+                         for m in ("en.md", "zh.md", "_note.md", "_wiki.md"))
+        if looks_real and not doc_path(kb_hit, kb=True).exists():
+            logger.warning(
+                "⚠ 知识库目录有产物却缺定版 %s（已回退解析库，两侧可能不同源）: key=%s dir=%s",
+                KB_DOC_NAME, key, kb_hit)
+    except Exception as e:  # noqa: BLE001 - 告警自身失败不影响读取
+        logger.debug("kb 缺定版告警检查失败: %s", e)
 
 
 def canonical_doc_json(key: str, *, prefer_kb: bool = True) -> str:
@@ -217,11 +242,13 @@ def missing_dois(roots: Roots | None = None) -> list[str]:
     roots = roots or _store.roots if _store else None
     if roots is None:
         return []
-    # 1) document.json 的 metadata.doi（library 与 kb 各扫一遍，去重）
-    for base in (roots.library_dir, roots.kb_dir):
+    # 1) 核心数据文件的 metadata.doi（library 与 kb 各扫一遍，去重）
+    from .layout import doc_basename
+
+    for base, is_kb in ((roots.library_dir, False), (roots.kb_dir, True)):
         if not base.exists():
             continue
-        for doc_json in base.rglob("document.json"):
+        for doc_json in base.rglob(doc_basename(kb=is_kb)):
             try:
                 import json
                 data = json.loads(doc_json.read_text(encoding="utf-8", errors="replace"))
@@ -585,7 +612,9 @@ def _kb_paper_compiled(store: KBStore, doi: str) -> bool:
     d = store.roots.kb_dir / doi_to_dirname(doi)
     if not d.is_dir():
         return False
-    markers = ("en.md", "zh.md", "document.json",
+    from .layout import KB_DOC_NAME
+
+    markers = ("en.md", "zh.md", KB_DOC_NAME,
                "_note.md", "_wiki.md", "_relations.md")
     return any((d / m).exists() for m in markers)
 
@@ -996,7 +1025,7 @@ def _kb_dir_title(dir_path) -> str:
             m = re.search(r"^title:\s*(.+)$", head, re.M)
             if m:
                 return m.group(1).strip().strip('"\'')
-        doc = dir_path / "document.json"
+        doc = doc_path(dir_path, kb=True)   # 标题只从 kb 定版读
         if doc.exists():
             data = _json.loads(doc.read_text(encoding="utf-8", errors="replace"))
             meta = (data or {}).get("metadata") or {}
@@ -1156,7 +1185,8 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             "source_files": {
                 "source_pdf": bool(krow.get("source.pdf")),
                 "en_md": bool(krow.get("en.md")),
-                "document_json": bool(krow.get("document.json")),
+                # 状态键（kb_status 契约字段名，非路径构造）
+                "document_json": bool(krow.get("document.json")),  # doc-name-ok
                 "images": bool(krow.get("images")),
             },
             "compiled": compiled,
@@ -1213,7 +1243,8 @@ def kb_list(q: str = "", journal: str = "", compile_status: str = "",
             "source_files": {
                 "source_pdf": bool(krow.get("source.pdf")),
                 "en_md": bool(krow.get("en.md")),
-                "document_json": bool(krow.get("document.json")),
+                # 状态键（kb_status 契约字段名，非路径构造）
+                "document_json": bool(krow.get("document.json")),  # doc-name-ok
                 "images": bool(krow.get("images")),
             },
             "compiled": levels,
@@ -1904,7 +1935,7 @@ def compile_backfill() -> dict:
             if job and job.get("status") == "done":
                 skipped_done.append(doi)
                 continue
-            if not (d / "document.json").exists():
+            if not doc_path(d, kb=True).exists():
                 missing_doc.append(doi)
                 continue
             try:

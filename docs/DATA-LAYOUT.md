@@ -41,6 +41,33 @@ PaperAgent/
 （`cards/` 由 `cards.py` 在首次写卡片时 mkdir）。做迁移/清点/备份时不要假定它存在；
 反过来也不能把它当垃圾清掉。**尚未实现的**：`_topics/`（主题 MOC，见 `KNOWLEDGE-BASE.md` §7）。
 
+### 1.1 核心数据文件名的**唯一来源**（2026-09-23）
+
+`library/<RID>/` 与 `knowledge_base/<RID>/` **各有一份同名**的核心数据文件
+`document.json`（前者=解析产物，后者=**定版**，编译/翻译/复核读写的那份）。
+同名曾让"写的一侧"和"读的一侧"指到不同目录 ⇒ **译文写进 kb、渲染却读 library
+⇒ 中文变体退回英文**（2026-09-23 用户报障，见 CHANGELOG）。
+
+规则（三条一起才成立，缺一条同类 bug 会复发）：
+
+1. **文件名**只在 `packages/paperkb/paperkb/layout.py` 定义（`LIB_DOC_NAME` /
+   `KB_DOC_NAME` + `doc_basename(kb=)` / `doc_path(dir, kb=)`）。产品代码**禁止裸写**该文件名；
+   守卫 `backend/tests/test_doc_name_source.py` 把裸写判为失败，状态键等**非路径**用法
+   必须在该行标注 `# doc-name-ok`。
+2. **取哪一份**只有一个入口：`paperkb.api.shared_doc_json` → `canonical_doc_json` →
+   `translation_target`（**定版 kb 优先 → 解析库兜底**）。渲染/编译/翻译/问答/复核都必须走它；
+   "kb 目录里已有产物却缺定版"会打 warning（不再静默回退）。
+3. **前端不得拼知识库路径**（`papers.js` 曾拼 `knowledge_base/<doi 下划线>/document.json`，
+   目录名不等于该形态时会指向不存在的文件）；传 `doi` 由后端解析。
+
+**若将来真要给某一侧改名**（本规则把改名从"~45 处手术"降级为"改常量 + 一次数据迁移"）：
+① 改 `layout.py` 常量 + 写一次性改名脚本（`migrations/` 现只支持 DB，文件改名照
+`tools/migrate_pdf_names.py` 的 dry-run/`--apply` 模式）；② 引擎侧
+`packages/paperparse/`（`middleware/orchestrator.py` / `middleware/stages.py` /
+`core/p14_pipeline.py` 写的是 library 侧中间产物，不参与两侧二选一，故不在守卫内）同步；
+③ 文档同步：本文件、`docs/KNOWLEDGE-BASE.md`、`docs/USER-MANUAL.md`、`AGENTS.md`；
+④ 按 `docs/VERSIONING.md` 走**破坏性变更**流程（`DATA_FORMAT` +1 + 兼容登记 + 旧库 dry-run）。
+
 ## 2. 五个数据库各放什么（表 → 库）
 
 | 库 | 文件 | 表 |

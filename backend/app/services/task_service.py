@@ -670,9 +670,11 @@ class TaskManager:
                     continue
                 if Path(doc_json).parent.name in names and Path(doc_json).is_file():
                     return self._ensure_library_source_pdf(doc_json, int(p["id"]))
-            # 兜底：只用 document.json（pdf_path 缺失时靠 engine 的 basename 三级搜索）
+            # 兜底：只用核心数据文件（pdf_path 缺失时靠 engine 的 basename 三级搜索）
+            from paperkb.layout import LIB_DOC_NAME
+
             for name in names:
-                doc = lib / name / "document.json"
+                doc = lib / name / LIB_DOC_NAME
                 if doc.is_file():
                     return self._ensure_library_source_pdf(str(doc), 0)
         except Exception as e:  # noqa: BLE001 - 补齐失败不阻塞同步

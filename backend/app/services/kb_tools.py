@@ -302,13 +302,14 @@ def _resolve_doc_json(doi: str, kb=None) -> str:
     from pathlib import Path
 
     from paperkb.doi import doi_to_dirname
+    from paperkb.layout import doc_path
 
     roots = getattr(kb, "roots", None) if kb is not None else None
     if roots is None:
         return ""
     d = doi_to_dirname(doi)
-    for base in (roots.kb_dir, roots.library_dir):
-        cand = Path(base) / d / "document.json"
+    for base, is_kb in ((roots.kb_dir, True), (roots.library_dir, False)):
+        cand = doc_path(Path(base) / d, kb=is_kb)   # 文件名唯一来源（勿裸写）
         if cand.exists():
             return str(cand)
     return ""

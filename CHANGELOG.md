@@ -112,6 +112,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     （HTTP 200）——编译因此每 5 秒 401 一次，直到撞上防护红线。
   - 反向也成立：界面保存供应商会把 Key 写回 `.env`，两边不再分叉。
 
+- **核心数据文件名的单一来源 + 守卫**（2026-09-23，用户决策："改名代价太大，先收敛"）：
+  `library/<RID>/` 与 `knowledge_base/<RID>/` 各有一份**同名** `document.json`，此前有 7 处
+  代码各自手拼这个名字 —— "写的一侧"和"读的一侧"指到不同目录就是静默的错源 bug（本轮两次报障的根子）。
+  - 文件名只在 `packages/paperkb/paperkb/layout.py` 定义（`LIB_DOC_NAME` / `KB_DOC_NAME` +
+    `doc_basename(kb=)` / `doc_path(dir, kb=)`）；`resource.find_doc` 增加"在哪一侧找"参数；
+    所有路径构造改走常量（状态键等非路径用法须标注 `# doc-name-ok`）。
+  - 新增守卫 `backend/tests/test_doc_name_source.py`：产品代码（`packages/paperkb` + `backend`）
+    裸写该文件名即**测试失败**；另断言前端不得自拼知识库路径。
+  - "kb 目录里已有产物却读不到定版"由**静默回退**改为 `warning`（区分"文献尚未入库→回退解析库"
+    这一正常情形；bib-only 空壳不算），让同类错配第一次发生就被看见。
+  - 前端 `papers.js` 不再拼 `knowledge_base/<doi 下划线>/document.json`：改传 `doi`，由后端
+    `shared_doc_json`（定版优先）解析 —— 同时修掉"目录名不等于 DOI 下划线形态（RID/md5 目录）
+    时指向不存在路径"的隐患。
+  - 为什么要收敛而不是直接改名：改名要动 ~45 处引用 + 一条**现迁移机制不支持**的文件迁移
+    （`up(conn)` 拿不到路径、备份不含 kb 目录）+ `DATA_FORMAT` 升级 + 兼容登记；而收敛之后，
+    将来真要改名只需"改 1 行常量 + 一次改名脚本"。清单见 `docs/DATA-LAYOUT.md` §1.1。
+
 ### Fixed
 
 - **重译已入库文献后 `zh.md`/`en_zh.md` 全英文**（2026-09-23 用户实测论文[45]）：

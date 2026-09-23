@@ -83,11 +83,12 @@ def read_document(path: str | Path) -> PaperDoc:
 
 
 def find_document_in_kb(kb_dir: Path, doi: str, store=None) -> Path | None:
-    """在 kb/<资源目录>/ 下找 document.json（原文层四件之一）。
+    """在 kb/<资源目录>/ 下找核心数据文件（原文层四件之一）。
 
     P0-B step4：键不再限于 DOI——RID / 目录名 / md5 目录都能命中
     （无 DOI 文献同样能编译）；`store` 给出时启用映射表与兜底。
+    `kb=True` 让文件名取自 `layout.KB_DOC_NAME`（唯一来源，勿裸写）。
     """
     from .resource import find_doc
 
-    return find_doc(kb_dir, doi, store)
+    return find_doc(kb_dir, doi, store, kb=True)

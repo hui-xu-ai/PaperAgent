@@ -121,21 +121,27 @@ def resources_dir(root_dir, key: str, store=None) -> Path | None:
 
 
 def find_doc(root_dir, key: str, store=None, *, search_root=None,
-             paper_id: int | None = None) -> Path | None:
-    """在 `<root_dir>/<资源目录>/document.json` 里定位文档。
+             paper_id: int | None = None, kb: bool = False) -> Path | None:
+    """在 `<root_dir>/<资源目录>/<核心数据文件>` 里定位文档。
+
+    `kb`：在哪一侧找（文件名由 `layout.doc_basename` 唯一给定；两侧当前同名，
+    见 `layout.py` 的说明——**不要在别处裸写文件名**）。
 
     两级：
     1. 候选目录名精确命中；
-    2. **兜底模糊扫描** `search_root`（通常是 library_dir）下各目录的 document.json，
+    2. **兜底模糊扫描** `search_root`（通常是 library_dir）下各目录的核心数据文件，
        按 `metadata.doi`（同一 DOI 换目录名）、`metadata.pdf_md5`（无 DOI 文献的
        `nd-<指纹12>` 键）或 `paper_id` 反查——覆盖"目录名与键无任何字面关系"的历史数据。
        仅在传入 search_root 时启用（每条目 O(目录数)，几十篇规模可接受）。
     """
     import json
 
+    from .layout import LIB_DOC_NAME, doc_basename
+
     hit = resources_dir(root_dir, key, store)
-    if hit is not None and (hit / "document.json").exists():
-        return hit / "document.json"
+    doc_name = doc_basename(kb=kb)
+    if hit is not None and (hit / doc_name).exists():
+        return hit / doc_name
     if search_root is None or not key:
         return None
     root = Path(search_root)
@@ -143,7 +149,8 @@ def find_doc(root_dir, key: str, store=None, *, search_root=None,
         return None
     fp = key[3:].lower() if key.startswith("nd-") else ""
     for d in sorted(root.iterdir()):
-        doc = d / "document.json"
+        # 模糊扫描的目标始终是解析库（search_root 语义，见 docstring）
+        doc = d / LIB_DOC_NAME
         if not d.is_dir() or not doc.exists():
             continue
         try:

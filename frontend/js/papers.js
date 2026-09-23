@@ -675,11 +675,12 @@ async function importPaperToKb(paperId, withTranslate) {
 
     if (withTranslate && p.status === 'parsed') {
       // 2026-09-19：并行执行翻译+编译（共享全文前缀缓存命中）
-      const docJson = `knowledge_base/${doi.replace(/\//g, '_')}/document.json`;
+      // 2026-09-23：**不再由前端拼 kb 路径**——文件名/目录名的唯一来源在数据层
+      // （`paperkb.layout` + `shared_doc_json`），后端按 doi 解析定版。
       await api('/api/kb-meta/translate-compile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_json: docJson, doi, level: 'L1' })
+        body: JSON.stringify({ doi, level: 'L1' })
       });
     } else {
       // 不翻译时只排队编译

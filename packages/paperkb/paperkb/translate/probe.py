@@ -38,6 +38,7 @@ from typing import Callable
 
 from ..context import context_paragraphs
 from ..doc import read_document
+from ..layout import doc_path
 from .pipeline import (_parse_translation_output, _translate_task_compact,
                        is_refusal_translation)
 
@@ -77,7 +78,8 @@ def collect_english_text(roots, need_chars: int, *, max_docs: int = MAX_SOURCE_D
     paras: list[str] = []
     sources: list[dict] = []
     total = 0
-    for base in (getattr(roots, "kb_dir", None), getattr(roots, "library_dir", None)):
+    for base, is_kb in ((getattr(roots, "kb_dir", None), True),
+                        (getattr(roots, "library_dir", None), False)):
         if total >= need_chars or len(sources) >= max_docs:
             break
         if not base:
@@ -90,7 +92,7 @@ def collect_english_text(roots, need_chars: int, *, max_docs: int = MAX_SOURCE_D
         for d in base_p.iterdir():
             if not d.is_dir() or d.name.startswith((".", "_")):
                 continue          # 跳过 _trash/.cache 等非论文目录
-            f = d / "document.json"
+            f = doc_path(d, kb=is_kb)
             try:
                 cands.append((f.stat().st_size, d))
             except OSError:
@@ -98,7 +100,7 @@ def collect_english_text(roots, need_chars: int, *, max_docs: int = MAX_SOURCE_D
         for _size, d in sorted(cands, key=lambda x: -x[0]):
             if total >= need_chars or len(sources) >= max_docs:
                 break
-            f = d / "document.json"
+            f = doc_path(d, kb=is_kb)
             try:
                 doc = read_document(f)
                 texts = [(p.text_en or "").strip() for p in context_paragraphs(doc)

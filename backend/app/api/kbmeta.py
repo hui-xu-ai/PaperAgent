@@ -378,7 +378,7 @@ def translate(req: TranslateRequest) -> dict:
 
 
 class TranslateCompileRequest(BaseModel):
-    doc_json: str
+    doc_json: str = ""      # 留空则由后端按 doi 解析定版路径（推荐：前端不拼路径）
     doi: str
     level: str = "L1"
 
@@ -396,7 +396,15 @@ async def translate_compile_parallel(req: TranslateCompileRequest) -> dict:
     kbapi = container.get_kbapi()
 
     def _do_translate():
-        return kbapi.translate_now(req.doc_json)
+        # 2026-09-23：路径由**后端**按 doi 解析（`shared_doc_json` = 定版 kb 优先 → 解析库兜底），
+        # 前端不再自己拼 `knowledge_base/<doi 下划线>/document.json`——那样既复刻了"文件名第二来源"，
+        # 又会在目录名不等于 DOI 下划线形态（RID 前缀 / md5 目录）时指向不存在的路径。
+        target = (req.doc_json or "").strip()
+        if not target and req.doi:
+            target = kbapi.shared_doc_json(req.doi) or ""
+        if not target:
+            raise ValueError(f"无法定位文献正文（doi={req.doi}）；请先解析或纳入知识库")
+        return kbapi.translate_now(target)
 
     def _do_compile():
         return kbapi.compile_now(req.doi, req.level)

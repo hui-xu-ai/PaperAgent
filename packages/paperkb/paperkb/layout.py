@@ -35,6 +35,25 @@ PROTECTED_IN_RESOURCE = ("attachments",)
 # 无父资源资料的独立根名（项目根下）
 STANDALONE_ATTACH_ROOT = "attachments"
 
+# ── 资源目录内核心数据文件名（**唯一来源**，产品代码不许再裸写 "document.json"）────────
+# 背景（2026-09-23 用户报障"重译后变体全英文"）：library 与 knowledge_base 两侧各有一份
+# **同名** document.json（前者是解析产物，后者是编译/翻译/复核读写的定版），而代码里有 7 处
+# 各自手拼这个文件名 —— 一旦"写的一侧"和"读的一侧"指到不同目录，就是静默的错源 bug。
+# 收敛到本模块后：① 名字只有一个来源，读代码即知读的是哪一侧；② 将来真要给某侧改名，
+# 只改这里 + 跑一次数据改名脚本（守卫见 backend/tests/test_doc_name_source.py）。
+LIB_DOC_NAME = "document.json"     # library：解析库产物（英文原文 + 元数据，无译文）
+KB_DOC_NAME = "document.json"      # knowledge_base：定版（编译/翻译/复核读写的那一份）
+
+
+def doc_basename(*, kb: bool = False) -> str:
+    """按侧取核心数据文件名：`kb=True` → 知识库定版名，否则解析库名。"""
+    return KB_DOC_NAME if kb else LIB_DOC_NAME
+
+
+def doc_path(dir_path: str | Path, *, kb: bool = False) -> Path:
+    """`<目录>/<核心数据文件>`：`kb=True` 走知识库定版名（与 `doc_basename` 同源）。"""
+    return Path(dir_path) / doc_basename(kb=kb)
+
 
 def _prefix_to_kind() -> dict[str, str]:
     """前缀（不含尾部 `__`）→ kind。**唯一来源 = doi.KIND_PREFIX**（避免两处定义漂移；

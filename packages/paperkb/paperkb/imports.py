@@ -24,6 +24,7 @@ from pathlib import Path
 
 from .config import Roots
 from .doi import doi_to_dirname, extract_doi_from_text, normalize_doi
+from .layout import KB_DOC_NAME, LIB_DOC_NAME, doc_basename, doc_path
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,7 @@ def import_markdown(md_path: str | Path, roots: Roots, *,
     d = roots.library_dir / doi_to_dirname(doi)
     d.mkdir(parents=True, exist_ok=True)
     (d / "en.md").write_text(text, encoding="utf-8")
-    (d / "document.json").write_text(
+    doc_path(d).write_text(                    # library 侧解析产物（LIB_DOC_NAME）
         json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"doi": doi, "dir": str(d), "title": title,
             "paragraphs": len(doc["paragraphs"]),
@@ -193,8 +194,14 @@ def import_markdown(md_path: str | Path, roots: Roots, *,
 # ---------------------------------------------------------------- kb 原文层四件
 
 # kb 原文层四件（D10/D17）：存在才复制；source.pdf/images 可缺
+# 名字取 library 侧（这是**源的清单**；落到 kb 时的文件名由 `_kb_dst_name` 归一）
 _KB_SOURCE_ITEMS = (("source.pdf", False), ("en.md", False),
-                    ("document.json", False), ("images", True))
+                    (LIB_DOC_NAME, False), ("images", True))
+
+
+def _kb_dst_name(name: str) -> str:
+    """复制到 kb 时的目标文件名：解析库名 → 知识库定版名（两侧当前同名，勿裸写）。"""
+    return KB_DOC_NAME if name == LIB_DOC_NAME else name
 
 
 def _is_stale(src: Path, dst: Path) -> bool:
@@ -248,7 +255,7 @@ def sync_source_to_kb(doi: str, roots: Roots, force: bool = False, store=None) -
         s = src / name
         if not s.exists():
             continue
-        t = dst / name
+        t = dst / _kb_dst_name(name)
         if t.exists() and not force:
             if not _is_stale(s, t):
                 skipped.append(name)
@@ -271,7 +278,7 @@ def sync_source_to_kb(doi: str, roots: Roots, force: bool = False, store=None) -
             t.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, t)
     verify = None
-    if (dst / "document.json").exists() and (dst / "en.md").exists():
+    if doc_path(dst, kb=True).exists() and (dst / "en.md").exists():
         verify = verify_kb_doc(doi, roots, base="kb")
     # G1 闸门（2026-09-16 方案 A）：**纳入 kb 后必须"原文层四件齐全"**，否则大声告警。
     # 背景：kb 缺 `source.pdf` 曾是真实用户报障（审计 C2/C8；根因是"谁先建 kb 谁定局"的执行时序），
@@ -281,7 +288,9 @@ def sync_source_to_kb(doi: str, roots: Roots, force: bool = False, store=None) -
     try:
         st = source_status(doi, roots, store=store)
         kb_files = (st or {}).get("kb") or {}
-        missing = [k for k in ("document.json", "en.md", "source.pdf") if not kb_files.get(k)]
+        # 状态键（source_status 的契约字段名，非路径）
+        missing = [k for k in ("document.json", "en.md", "source.pdf")  # doc-name-ok
+                   if not kb_files.get(k)]
     except Exception as e:  # noqa: BLE001 - 闸门自身失败不影响纳入结果
         logger.warning("纳入 kb 完整性检查失败（忽略）: %s", e)
     if missing:
@@ -309,16 +318,17 @@ def source_status(doi: str, roots: Roots, store=None) -> dict:
                                        (names[1] if len(names) > 1 and names[0].startswith("doi-")
                                         else (names[0] if names else ""))))
 
-    def files(base: Path, hit) -> dict:
+    def files(base: Path, hit, *, kb_side: bool) -> dict:
         b = hit if hit is not None else (base / d if d else base / "_none")
+        # 键名是**状态契约**（library/kb 两侧共用同一形状），故不随侧改名
         return {"exists": b.exists(),
                 "source.pdf": (b / "source.pdf").exists(),
                 "en.md": (b / "en.md").exists(),
-                "document.json": (b / "document.json").exists(),
+                "document.json": (b / doc_basename(kb=kb_side)).exists(),  # doc-name-ok
                 "images": (b / "images").is_dir()}
     return {"doi": key, "dir": d,
-            "library": files(roots.library_dir, lib_hit),
-            "kb": files(roots.kb_dir, kb_hit)}
+            "library": files(roots.library_dir, lib_hit, kb_side=False),
+            "kb": files(roots.kb_dir, kb_hit, kb_side=True)}
 
 
 def kb_status(roots: Roots) -> list[dict]:
@@ -336,7 +346,7 @@ def kb_status(roots: Roots) -> list[dict]:
                 "dir": d.name,
                 "source.pdf": (d / "source.pdf").exists(),
                 "en.md": (d / "en.md").exists(),
-                "document.json": (d / "document.json").exists(),
+                "document.json": doc_path(d, kb=True).exists(),  # doc-name-ok：键为状态契约
                 "images": (d / "images").is_dir(),
                 "note": (d / "_note.md").exists(),
                 "wiki": (d / "_wiki.md").exists(),
@@ -359,12 +369,13 @@ def verify_kb_doc(doi: str, roots: Roots, base: str = "kb", store=None) -> dict:
     from .resource import resources_dir
 
     key = (doi or "").strip()
-    base_dir = (roots.kb_dir if base == "kb" else roots.library_dir)
+    kb_side = base == "kb"
+    base_dir = (roots.kb_dir if kb_side else roots.library_dir)
     d = resources_dir(base_dir, key, store) or (base_dir / doi_to_dirname(normalize_doi(key)))
-    dj = d / "document.json"
+    dj = doc_path(d, kb=kb_side)
     em = d / "en.md"
     if not dj.exists() or not em.exists():
-        return {"ok": False, "error": "缺少 document.json 或 en.md",
+        return {"ok": False, "error": f"缺少 {doc_basename(kb=kb_side)} 或 en.md",
                 "expected_count": 0, "found_count": 0, "mismatches": []}
     try:
         data = json.loads(dj.read_text(encoding="utf-8", errors="replace"))

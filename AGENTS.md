@@ -10,6 +10,8 @@
   （版本单一来源 `backend/app/version.py`、`data/manifest.json` 版本戳、**兼容代码只住迁移层**、
   发布前跑 `tools/check_data_compat.py`）；兼容分支必须登记 `docs/COMPAT-REGISTER.md`。
   守卫由 `backend/tests/test_version_contract.py` 强制（ALTER/裸 sqlite 连接越界即失败）。
+  **核心数据文件名单一来源**：`document.json` 只在 `paperkb.layout` 定义（`LIB_DOC_NAME`/`KB_DOC_NAME`），
+  产品代码禁裸写、"取哪一份"只走 `shared_doc_json`/`translation_target`——守卫 `backend/tests/test_doc_name_source.py`（见 `docs/DATA-LAYOUT.md` §1.1）。
 - 记忆系统：`.dsh-memory/`（独立 git，不随代码提交）。**会话开始只读 `HANDOFF.md`（≤80 行，唯一必读）**；
   `INDEX.md` / `SHORT-TERM.md` / `PROJECT.md` 等**按需 grep 定位后再读片段**——禁止开局整读（流水文档已数百行，
   旧口径"读 HANDOFF + INDEX + PROJECT"会让模型两边都读，开局白付数千 token）。检查用 `tools/memory-gate.ps1`。

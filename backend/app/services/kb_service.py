@@ -95,11 +95,15 @@ class KnowledgeBaseService:
             base = base.parent  # 兼容 parse-only 中间层 library/<DOI>/intermediate/
         # en.md / document.json：源在 library 篇目录（document.json 可能位于
         # intermediate/ 中间层，直接用 doc_path 原路径）
+        from paperkb.layout import KB_DOC_NAME, LIB_DOC_NAME
+
         for src in (base / "en.md", doc_path):
             if src.is_file():
+                # 核心数据文件落到 kb 时按**知识库定版名**改名（名字唯一来源=paperkb.layout）
+                dst_name = KB_DOC_NAME if src.name == LIB_DOC_NAME else src.name
                 try:
                     # G13：始终同步 library 最新产物（覆盖旧拷贝，如含 <!-- image--> 的旧 en.md）
-                    self._copy_or_link(src, folder / src.name, copy_mode)
+                    self._copy_or_link(src, folder / dst_name, copy_mode)
                 except OSError:
                     pass
         img_src = base / "images"

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from .config import Roots
 from .doi import doi_to_dirname
+from .layout import doc_path
 
 # 全量扫描上限（与后端 list_papers 同量级；5000 篇量级为轻量扫描）
 _FULL_SCAN = 1_000_000
@@ -67,9 +68,9 @@ def _paper_last_date(roots: Roots, doi: str) -> str:
 
 
 def _translated_paragraphs(roots: Roots, doi: str) -> int:
-    """读 document.json 统计已译段落数（kb 优先，回退 library）。"""
-    for base in (roots.kb_dir, roots.library_dir):
-        p = base / doi_to_dirname(doi) / "document.json"
+    """读核心数据文件统计已译段落数（kb 定版优先，回退 library）。"""
+    for base, is_kb in ((roots.kb_dir, True), (roots.library_dir, False)):
+        p = doc_path(base / doi_to_dirname(doi), kb=is_kb)
         if not p.exists():
             continue
         try:
