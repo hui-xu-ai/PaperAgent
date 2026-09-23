@@ -617,7 +617,7 @@ class EngineService:
             # 放在这里是为了**兜住历史数据**：document.json 里已有的坏形态不必重译就能修好。
             md, _n = normalize_citation_superscripts(md)
             if _n:
-                logger.info("变体渲染：引用上标归一 %d 处（^[[n]] / ^[n] → $^{[n]}$）", _n)
+                logger.info("变体渲染：引用上标归一 %d 处（^[[n]] / ^[n] / [[n]] → $^{[n]}$）", _n)
             # 上标/下标 HTML 标签保留语义（旧实现连标签一起删 ⇒ 上标丢失）
             md = html_script_to_tex(md)
 
@@ -832,7 +832,7 @@ class EngineService:
 
         占位符混在图注/正文开头会破坏引擎图-题注匹配（_fig_key 从开头匹配 Figure n.），
         导致导出 md 缺图片行。清洗后 document.json 干净，检索/渲染/导出全部受益。
-        同一入口顺带归一上下标标记（`^[[n]]` / 裸 `^{...}`）与数学段花括号配平——
+        同一入口顺带归一上下标标记（`^[[n]]` / `[[n]]` / 裸 `^{...}`）与数学段花括号配平——
         三者都在数据层修，en.md / 变体 / 检索 / 问答四处同时受益。
         """
         import re
@@ -865,7 +865,7 @@ class EngineService:
                 #   ④ 检索/问答 四处同时一致；只改 en.md 会让 ③ 全线报不一致。
                 # 也不碰解析引擎产物：`tools/parse_regression.py` 的 en.md 指纹对应引擎原始输出
                 # （本函数是既有的后端清洗步，与"清 `<!-- image -->` 占位符"同类）⇒ 无需重设基线。
-                new, n1 = normalize_citation_superscripts(new)   # `^[[38]]` / `^[38]` → `$^{[38]}$`
+                new, n1 = normalize_citation_superscripts(new)   # `^[[38]]` / `^[38]` / `[[38]]` → `^{[38]}`
                 new, n2 = wrap_bare_scripts(new)                 # 裸 `^{34}` / `^{-1}` → `$...$`
                 # ★2026-09-23（用户报障"中文译文偶发 `$\mathrm{Co(O_{x}/P_{x})$核心` 渲染成红字"）：
                 # **数学段花括号配平**。公式逐字来自英文源文 ⇒ `$...$` 内必须配平；不配平即抄错。
@@ -890,7 +890,7 @@ class EngineService:
                 fig.caption = new
                 changed = True
         if n_script:
-            logger.info("解析产物上下标归一：%d 处（裸 ^{...}/_{...} → $...$；含引用 ^[[n]]）",
+            logger.info("解析产物上下标归一：%d 处（裸 ^{...}/_{...} → $...$；含引用 ^[[n]] / [[n]]）",
                         n_script)
         if n_brace:
             logger.info("解析产物公式配平：%d 个数学段（模型抄写漏/多 `}`，已按结构修复）", n_brace)

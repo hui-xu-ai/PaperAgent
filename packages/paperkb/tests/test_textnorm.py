@@ -85,6 +85,46 @@ def test_suspicious_reports_leftovers():
     assert suspicious_superscripts(left) == ["^[附录A]"]
 
 
+# ------------------------------------------------ ④ 无 `^` 无 `$` 的双括号 `[[66]]`
+# 2026-09-23 用户报障"上标修复被干扰"（实测 kb/10.1002_adma.202407106 中文侧 6 处）。
+# `[[66]]` 落进两套修复的夹缝：上标归一只要 `^[`，阅读器又把 `[[...]]` 当 Obsidian 双链。
+@pytest.mark.parametrize("raw, want", [
+    ("肌肉和脂肪组织。[[66]] 与完全分化细", "肌肉和脂肪组织。^{[66]} 与完全分化细"),
+    ("重要。[[67]] MSCs 的分化", "重要。^{[67]} MSCs 的分化"),
+    ("相关。[[12–14]] 所述", "相关。^{[12–14]} 所述"),          # 短破折号区间
+    ("见[[15,16]]处", "见^{[15,16]}处"),                       # 逗号并列
+])
+def test_normalize_bare_double_brackets(raw, want):
+    """④：`[[66]]`（无插入符）→ `^{[66]}`，随后同一套 wrap 逻辑包 `$` ⇒ 与英文同形。"""
+    from paperkb.textnorm import wrap_bare_scripts
+
+    got, n = normalize_citation_superscripts(raw)
+    assert got == want and n == 1
+    # 全链结果必须与规范形态一致
+    wrapped, _ = wrap_bare_scripts(got)
+    assert "$^{[66]}$" in wrapped or "$^{[67]}$" in wrapped \
+        or "$^{[12–14]}$" in wrapped or "$^{[15,16]}$" in wrapped
+    # 幂等
+    again, n2 = normalize_citation_superscripts(got)
+    assert again == got and n2 == 0
+
+
+@pytest.mark.parametrize("keep", [
+    "[[10.1002_adma.202407106/_note|笔记]]",   # app 自身双链（数字开头的 DOI 目录名）
+    "[[66/_note|笔记]]",                       # 目录名恰好以数字开头
+    "[[66|别名]]",                             # 带别名的双链
+    "[[MATH12]]",                             # labeled 模式占位符（含字母）
+    "[[笔记]]",                                # 中文笔记名
+    "^[见附录]",                               # 真·内联脚注
+    "$^{[[66]]}$",                            # 已在上标花括号内 ⇒ 不套成 $^{^{[66]}}$ 这种非法嵌套
+])
+def test_bare_double_bracket_no_false_positive(keep):
+    """★闸门：app 自己的双链/占位符语法绝不能被当引用改掉。"""
+    got, n = normalize_citation_superscripts("前文" + keep + "后文")
+    assert got == "前文" + keep + "后文", f"{keep!r} 被误改"
+    assert n == 0
+
+
 # ---------------------------------------------------------------- 数学段花括号配平
 # 2026-09-23 用户实测（Qwen 译 adma）：译文里出现 `$\mathrm{Co(O_{x}/P_{x})$核心`，
 # KaTeX（throwOnError:false）渲染成红字。公式逐字来自英文源文 ⇒ `$...$` 内必须配平。

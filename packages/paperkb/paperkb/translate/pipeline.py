@@ -347,7 +347,7 @@ def _apply_translations(data_out: dict, paras: list[dict],
             continue
         out[idx] = result
     if n_sup:
-        logger.info("译文引用上标归一：%d 处（^[[n]] / ^[n] → ^{[n]}，展示层再包 $）", n_sup)
+        logger.info("译文引用上标归一：%d 处（^[[n]] / ^[n] / [[n]] → ^{[n]}，展示层再包 $）", n_sup)
     if n_math:
         logger.info("译文公式括号配平：%d 个数学段（模型抄写漏/多 `}`，已按结构修复）", n_math)
     if leftovers:
