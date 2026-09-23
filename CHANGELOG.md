@@ -114,6 +114,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **重译已入库文献后 `zh.md`/`en_zh.md` 全英文**（2026-09-23 用户实测论文[45]）：
+  `combined_translate` 先调 `translate_now`（内部走 `translation_target`，**定版 = kb 优先**，
+  2026-09-16 方案 A），译文写进 `kb/<DOI>/document.json`；随后却仍按传入路径 `load_document(p)`
+  读 **library** 那份（`text_zh` 恒空）⇒ `render_variant` 取不到中文 ⇒ 两种变体双双退回英文原文。
+  实测该篇 kb `text_zh`=41 段 / library=0；按旧源渲染 37598 字符里仅 9 个汉字（0.0%），
+  按定版 kb 渲染 12076 字符里 7016 个汉字（58.1%）。现在**渲染源 = 翻译写回目标**
+  （`paperkb.api.translation_target`，定位失败退回传入路径），并把 LaTeX 规范化写回**同一份**。
+  只在"重译已入库文献"时暴露：首次导入时 kb 尚无该篇，canonical 落回 library，两者恰好同一份。
+  回归测试 `test_combined_translate_renders_from_canonical_doc`（去掉修复即失败）。
 - **编译失败会无限重试**（2026-09-23 用户实例暴露）：`Compiler.process_next` 只捕
   `CompileError`，LLM 层抛的 `DeepSeekError`/`TokenBudgetExceeded`（401、防护红线等）
   一路穿到 worker 主循环 ⇒ 任务**一直留在 queued**，每 5 秒重试一次、永不放弃：实测刷出

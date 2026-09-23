@@ -6,6 +6,8 @@ import pytest
 
 from conftest import ENGINE_DOC
 
+ZH_MARK = "中文标记"  # 变体渲染断言用（避开正文里可能出现的英文）
+
 
 def test_doc_summary_stable(engine):
     d1 = engine.doc_summary(ENGINE_DOC)
@@ -185,6 +187,55 @@ def test_combined_translate_writes_kb_variants(tmp_path, settings, monkeypatch):
     assert not (out / "10.1002_adma.202407106.md").exists()
     assert not (out / "variants").exists()
     assert r["translate"]["translated"] == 3
+
+
+def test_combined_translate_renders_from_canonical_doc(tmp_path, settings, monkeypatch):
+    """★2026-09-23 回归：渲染源必须 = 翻译写回目标（定版 kb 优先），否则变体退回英文。
+
+    用户报障（论文[45] 重译）：`translate_now` 内部走 `paperkb.api.translation_target`
+    → 定版 = kb 优先，译文落在 `kb/<DOI>/document.json`；而本函数原先照旧
+    `load_document(p)`（library 那份，text_zh 恒空）⇒ `render_variant` 取不到中文
+    ⇒ zh.md / en_zh.md 双双输出英文原文（实测 kb text_zh=41 段 / library=0，
+    zh.md 38632B ≈ en_zh.md 38634B）。首次导入不暴露：那时 kb 尚无该篇，
+    canonical 落回 library，渲染源与写回目标恰好同一份。
+    """
+    import json
+    import shutil
+    from pathlib import Path
+
+    import app.config as cfg
+    import paperkb.api as kbapi
+    from app.services.engine_service import EngineService
+    from app.services import kbmeta_service
+
+    monkeypatch.setattr(cfg, "APP_DATA_DIR", tmp_path)
+
+    lib_dir = Path(settings.engine_work_root) / "10.1002_adma.202407106"
+    (lib_dir / "intermediate").mkdir(parents=True)
+    lib_doc = lib_dir / "intermediate" / "document.json"
+    shutil.copy2(ENGINE_DOC, lib_doc)          # library：纯英文解析产物
+
+    # 定版（kb）：翻译已完成态（每段带中文）；library 那份仍无 text_zh
+    kb_doc = tmp_path / "knowledge_base" / "10.1002_adma.202407106" / "document.json"
+    kb_doc.parent.mkdir(parents=True)
+    data = json.loads(ENGINE_DOC.read_text(encoding="utf-8"))
+    for para in data["paragraphs"]:
+        para["text_zh"] = ZH_MARK + para["para_id"]
+    kb_doc.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(kbapi, "translation_target", lambda p: str(kb_doc))
+
+    class _FakeKbMeta:
+        def translate_now(self, doc_json):
+            assert Path(doc_json) == lib_doc.resolve(), "传入的仍是 library 路径"
+            return {"translated": len(data["paragraphs"])}
+
+    monkeypatch.setattr(kbmeta_service, "get_kbmeta", lambda: _FakeKbMeta())
+
+    r = EngineService(settings).combined_translate(lib_doc)
+    for name in ("zh.md", "en_zh.md"):
+        text = Path(r["variants"][name]).read_text(encoding="utf-8")
+        assert ZH_MARK in text, f"{name} 必须渲染定版（kb）译文，而非 library 的英文原文"
 
 
 def test_combined_translate_injects_authoritative_frontmatter(tmp_path, settings, monkeypatch):

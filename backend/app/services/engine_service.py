@@ -667,19 +667,35 @@ class EngineService:
         logger.info("M5 combined 翻译+总结（paperkb）: %s template=%s", p, template)
         # 1) paperkb 翻译+总结（写回 text_zh/ai_summary；LLM 由注入的 kbmeta 适配）
         tr = self._get_kbmeta().translate_now(p)
-        # 2) 渲染（paperparse 保留段：LaTeX 规范化 + 变体直写 **library**）
+        # 2) 渲染（paperparse 保留段：LaTeX 规范化 + 变体写 kb 定版）
         from paperparse.core.document_builder import load_document, output_dir_name, save_document
         from paperparse.core.latex_normalize import normalize_document
 
-        doc = load_document(p)
+        # 渲染源必须 = 翻译写回目标（否则译文凭空消失、变体退回英文）。
+        # translate_now 内部走 `paperkb.api.translation_target`（定版 = kb 优先，2026-09-16 方案 A）：
+        # 已纳入 kb 的文献，译文写进 kb/<DOI>/document.json；此处若照旧 load_document(p)（library
+        # 那份，text_zh 恒空）⇒ render_variant 取不到中文 ⇒ zh.md/en_zh.md 双双退回英文原文。
+        # 2026-09-23 用户报障实测（论文[45] 重译）：kb text_zh=41 段 / library text_zh=0，
+        # zh.md 38632B ≈ en_zh.md 38634B（真中文应约为双语版的 45%）。
+        # 首次导入时不暴露：那时 kb 尚无该篇，canonical 落回 library，两者恰好同一份。
+        from paperkb.api import translation_target as _canonical
+
+        try:
+            doc_path = _canonical(p) or p
+        except Exception as e:  # noqa: BLE001 - 定位失败退回传入路径（旧行为兜底，绝不丢译文）
+            logger.warning("渲染源定位失败（退回传入路径）: %s", e)
+            doc_path = p
+        if doc_path != p:
+            logger.info("渲染源=定版（kb）: %s（传入 %s）", doc_path, p)
+        doc = load_document(doc_path)
         norm = normalize_document(doc)
-        save_document(doc, p)
+        save_document(doc, doc_path)
         doi_dir = output_dir_name(doc.metadata.doi, doc.metadata.source_pdf)
         paper_dir = _paper_dir(p)
-        # 2026-09-16（方案 A）：变体（译文）写**定版 kb** + 保留 library 一份（双写过渡）。
+        # 2026-09-16（方案 A + R3）：变体（译文）**只写定版 kb**（library 那份的"双写过渡"
+        # 已被 R3 撤销，见下方 `_remove_stale_variants_in_library`）。
         # 依据：kb 是唯一成品区、阅读器读取已改为"定版优先"（`kb_service.read_file`），
         # 只写 library 会让新译文在 kb 里缺位、读侧只能回退中转站（审计 §C5/C12 的残留）。
-        # library 那份暂留：兼容"变体真相源在 library"的旧数据与外部引用，验证无异常后即可撤。
         # 头部**唯一装配入口**：`paperkb.api.variant_frontmatter()`（papers_meta → document.json
         # 字段级兜底 + journals.db 指标）。教训（2026-09-16 用户指出）：先前两处各拼一份——
         #   ① 键形态错：这里传的是**目录名** `doi_dir`，而 paperkb 的键解析只认 RID / 裸 DOI
