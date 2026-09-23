@@ -217,6 +217,37 @@ def test_sanitize_document_normalizes_superscripts(tmp_path, settings):
     assert "$^{[34]}$" in md and "$^{-1}$" in md and "^{[34]}" not in md.replace("$^{[34]}$", "")
 
 
+def test_sanitize_document_balances_math_braces(tmp_path, settings):
+    """★2026-09-23 用户报障"中文里 `$\\mathrm{Co(O_{x}/P_{x})$核心` 渲染成红字"。
+
+    紧凑模式公式由模型自己抄写，偶发漏/多 `}`。公式逐字来自英文源文 ⇒ `$...$` 内必须配平，
+    不配平即抄错。修在**源头**（document.json），en.md/变体/检索/问答四处同时受益。
+    """
+    import json
+
+    from app.services.engine_service import EngineService
+    from paperparse.core.document_builder import load_document
+    from paperparse.core.markdown_render import render_clean
+    from paperkb.textnorm import unbalanced_math_spans
+
+    doc_path = tmp_path / "10.1002_adma.202407106" / "document.json"
+    doc_path.parent.mkdir(parents=True)
+    data = json.loads(ENGINE_DOC.read_text(encoding="utf-8"))
+    data["paragraphs"][0]["text_zh"] = "形成 $\\mathrm{Co(O_{x}/P_{x})$核心 结构。"
+    data["paragraphs"][1]["text_zh"] = "记为 $\\mathrm{Co(O_{x}/P_{x})}@P-LIG}$ 物种。"
+    doc_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    r = EngineService(settings).sanitize_document(doc_path)
+    assert r["changed"] and r["math_balanced"] >= 2, r
+
+    saved = json.loads(doc_path.read_text(encoding="utf-8"))
+    assert saved["paragraphs"][0]["text_zh"] == "形成 $\\mathrm{Co(O_{x}/P_{x})}$核心 结构。"
+    assert saved["paragraphs"][1]["text_zh"] == "记为 $\\mathrm{Co(O_{x}/P_{x})}@P-LIG$ 物种。"
+    # 渲染出的 en.md / 变体同源 ⇒ 一并干净（KaTeX 不再红字）
+    md = render_clean(load_document(str(doc_path)))
+    assert unbalanced_math_spans(md) == []
+
+
 def test_variants_normalize_citation_superscripts(tmp_path):
     """★2026-09-23 用户报障"上下标有的加了 $、有的丢失"：变体渲染必须归一。
 

@@ -606,8 +606,8 @@ class EngineService:
         """
         import re
 
-        from paperkb.textnorm import (html_script_to_tex, normalize_citation_superscripts,
-                                      wrap_bare_scripts)
+        from paperkb.textnorm import (balance_math_braces, html_script_to_tex,
+                                      normalize_citation_superscripts, wrap_bare_scripts)
         from paperparse.core.markdown_render import render_variant
 
         # 2026-09-19: clean HTML tags from variants
@@ -644,6 +644,11 @@ class EngineService:
             md, _w = wrap_bare_scripts(md)
             if _w:
                 logger.info("变体渲染：裸上下标包 $ 共 %d 处", _w)
+            # 公式括号配平（2026-09-23）：模型抄公式漏/多一个 `}` 会让 KaTeX 渲染成红色错误文本。
+            # 放在渲染层是**兜历史数据**：库里已有的坏形态不重译也能正常显示。
+            md, _m = balance_math_braces(md)
+            if _m:
+                logger.info("变体渲染：公式括号配平 %d 个数学段（原文缺/多 `}`）", _m)
             return md
 
         files = {
@@ -827,11 +832,14 @@ class EngineService:
 
         占位符混在图注/正文开头会破坏引擎图-题注匹配（_fig_key 从开头匹配 Figure n.），
         导致导出 md 缺图片行。清洗后 document.json 干净，检索/渲染/导出全部受益。
+        同一入口顺带归一上下标标记（`^[[n]]` / 裸 `^{...}`）与数学段花括号配平——
+        三者都在数据层修，en.md / 变体 / 检索 / 问答四处同时受益。
         """
         import re
         from paperparse.core.document_builder import load_document, save_document
 
-        from paperkb.textnorm import (normalize_citation_superscripts,
+        from paperkb.textnorm import (balance_math_braces,
+                                      normalize_citation_superscripts,
                                       wrap_bare_scripts)
 
         p = Path(document_json).resolve()
@@ -840,6 +848,7 @@ class EngineService:
         pat = re.compile(r"<!--\s*(?:image|img)[\s\-_]*\d*\s*-->", re.IGNORECASE)
         changed = False
         n_script = 0
+        n_brace = 0
         for para in doc.paragraphs:
             for attr in ("text_en", "text_zh"):
                 t = getattr(para, attr, None)
@@ -858,7 +867,12 @@ class EngineService:
                 # （本函数是既有的后端清洗步，与"清 `<!-- image -->` 占位符"同类）⇒ 无需重设基线。
                 new, n1 = normalize_citation_superscripts(new)   # `^[[38]]` / `^[38]` → `$^{[38]}$`
                 new, n2 = wrap_bare_scripts(new)                 # 裸 `^{34}` / `^{-1}` → `$...$`
+                # ★2026-09-23（用户报障"中文译文偶发 `$\mathrm{Co(O_{x}/P_{x})$核心` 渲染成红字"）：
+                # **数学段花括号配平**。公式逐字来自英文源文 ⇒ `$...$` 内必须配平；不配平即抄错。
+                # 放在 wrap_bare_scripts 之后：先补 `$` 界定数学段，再按结构修括号；只动不配平段。
+                new, n3 = balance_math_braces(new)
                 n_script += n1 + n2
+                n_brace += n3
                 if new != t:
                     setattr(para, attr, new)
                     changed = True
@@ -869,16 +883,21 @@ class EngineService:
             new = pat.sub("", cap).strip() if pat.search(cap) else cap
             new, n1 = normalize_citation_superscripts(new)
             new, n2 = wrap_bare_scripts(new)
+            new, n3 = balance_math_braces(new)
             n_script += n1 + n2
+            n_brace += n3
             if new != cap:
                 fig.caption = new
                 changed = True
         if n_script:
             logger.info("解析产物上下标归一：%d 处（裸 ^{...}/_{...} → $...$；含引用 ^[[n]]）",
                         n_script)
+        if n_brace:
+            logger.info("解析产物公式配平：%d 个数学段（模型抄写漏/多 `}`，已按结构修复）", n_brace)
         if changed:
             save_document(doc, p)
-        return {"changed": changed, "path": str(p), "scripts_normalized": n_script}
+        return {"changed": changed, "path": str(p), "scripts_normalized": n_script,
+                "math_balanced": n_brace}
 
     @staticmethod
     def _ensure_figures(md: str, doc) -> str:

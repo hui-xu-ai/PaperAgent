@@ -22,8 +22,9 @@ from pathlib import Path
 
 from ..context import CTX_HEADER, context_paragraphs, paper_context_with_math, with_task
 from ..doc import read_document
-from ..textnorm import (html_script_to_tex, normalize_citation_superscripts,
-                        suspicious_superscripts, wrap_bare_scripts)
+from ..textnorm import (balance_math_braces, html_script_to_tex,
+                        normalize_citation_superscripts, suspicious_superscripts,
+                        wrap_bare_scripts)
 from .fixes import KNOWN_FIXES
 from .latextap import reassemble
 
@@ -313,6 +314,7 @@ def _apply_translations(data_out: dict, paras: list[dict],
     out: dict = {}
     rejected = 0
     n_sup = 0
+    n_math = 0
     leftovers: list[str] = []
     for it in (data_out or {}).get("translations", []) or []:
         pid = it.get("para_id")
@@ -333,6 +335,12 @@ def _apply_translations(data_out: dict, paras: list[dict],
         # 与英文原文（`sanitize_document` 的源头归一）保持同形：公式外的裸上下标一律包 `$`
         result, wrapped = wrap_bare_scripts(result)
         n_sup += fixed + wrapped
+        # 公式括号配平（2026-09-23）：紧凑模式公式是模型**自己抄**的（无占位符回填），
+        # 它会顺手改写公式而漏/多一个 `}`（实测 `$\mathrm{Co(O_{x}/P_{x})$核心`），
+        # KaTeX 会把它渲染成红色错误文本。判据是结构性的：译文里的公式逐字来自英文源文，
+        # `$…$` 内必须配平 ⇒ 不配平即抄错，按结构补/删即可（详见 textnorm 注释）。
+        result, n_brace = balance_math_braces(result)
+        n_math += n_brace
         leftovers.extend(suspicious_superscripts(result))
         if not result.strip() or _is_refusal(result):
             rejected += 1
@@ -340,6 +348,8 @@ def _apply_translations(data_out: dict, paras: list[dict],
         out[idx] = result
     if n_sup:
         logger.info("译文引用上标归一：%d 处（^[[n]] / ^[n] → ^{[n]}，展示层再包 $）", n_sup)
+    if n_math:
+        logger.info("译文公式括号配平：%d 个数学段（模型抄写漏/多 `}`，已按结构修复）", n_math)
     if leftovers:
         # 监测：归一只认"数字/引用分隔符"内容，剩下的可能是真脚注，也可能是模型的新写法
         logger.info("译文仍有方括号上标 %d 处未归一（真脚注或模型新形态）：%s",

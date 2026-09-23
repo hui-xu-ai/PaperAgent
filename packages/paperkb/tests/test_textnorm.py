@@ -83,3 +83,82 @@ def test_suspicious_reports_leftovers():
     left, n = normalize_citation_superscripts("下降^[[38]] 见^[附录A]")
     assert n == 1
     assert suspicious_superscripts(left) == ["^[附录A]"]
+
+
+# ---------------------------------------------------------------- 数学段花括号配平
+# 2026-09-23 用户实测（Qwen 译 adma）：译文里出现 `$\mathrm{Co(O_{x}/P_{x})$核心`，
+# KaTeX（throwOnError:false）渲染成红字。公式逐字来自英文源文 ⇒ `$...$` 内必须配平。
+
+
+@pytest.mark.parametrize("raw, want", [
+    # ★用户实测的坏形态：`\mathrm{` 的收尾 `}` 被模型弄丢（少 `}` → 段尾补齐）
+    (r"$\mathrm{Co(O_{x}/P_{x})$核心", r"$\mathrm{Co(O_{x}/P_{x})}$核心"),
+    # 反向：多一个 `}`（源文两种写法混抄）→ 删掉多余的那个
+    (r"$\mathrm{Co(O_{x}/P_{x})}@P-LIG}$", r"$\mathrm{Co(O_{x}/P_{x})}@P-LIG$"),
+    # `$$...$$` 同样适用
+    (r"$$\frac{a{b}$$", r"$$\frac{a{b}}$$"),
+])
+def test_balance_math_braces_fixes(raw, want):
+    from paperkb.textnorm import balance_math_braces
+
+    got, n = balance_math_braces(raw)
+    assert got == want and n == 1
+    again, n2 = balance_math_braces(got)
+    assert again == got and n2 == 0, "幂等"
+
+
+@pytest.mark.parametrize("keep", [
+    r"$\mathrm{Co(O_{x}/P_{x})}$ 保持",     # 配平不动
+    r"$$E = m c^2$$",                       # 无花括号
+    r"$$\frac{a}{b}$$ 与 $c$",              # 多个配平段并存
+    r"$\{x\}$ 转义",                        # 转义的 \{ \} 是字面量，不参与计数
+    r"$\{x$ 只有转义左括号",                 # 缺的是"真括号"，转义的不补
+    "纯文本没有公式",
+    "",
+])
+def test_balance_math_braces_noop(keep):
+    from paperkb.textnorm import balance_math_braces
+
+    got, n = balance_math_braces(keep)
+    assert got == keep and n == 0, f"{keep!r} 不该被改"
+
+
+def test_balance_math_braces_nested():
+    """嵌套分组（`\\text{}` 里再嵌 `{}`）不能被误当作"多一个"。"""
+    from paperkb.textnorm import balance_math_braces
+
+    t = r"$\text{for all } x \in {1,2}$"
+    got, n = balance_math_braces(t)
+    assert got == t and n == 0
+
+
+@pytest.mark.parametrize("keep", [
+    # `$...$` 是全文配对：两处普通 `$` 之间夹着 `{}` 时，**不像公式就不许动**（宁可漏修）
+    "价格 $100 到 ${200 区间} 与 $300 结束",
+    "散文 $带 {花括号 的 $ 片段",
+])
+def test_balance_math_braces_refuses_non_math(keep):
+    """★闸门：不配平但**看不出是公式**的 `$...$` 段一律不碰（防改坏散文/代码）。"""
+    from paperkb.textnorm import balance_math_braces
+
+    got, n = balance_math_braces(keep)
+    assert got == keep and n == 0
+
+
+def test_balance_math_braces_handles_latex_linebreak():
+    """`\\\\{`（LaTeX 换行 + 真括号）里那个 `{` 是**真括号**，必须参与计数、该补就补。"""
+    from paperkb.textnorm import balance_math_braces
+
+    raw = "$a \\\\{b_{1}$"          # 实际文本：$a \\{b_{1}$ —— `\\` 是换行，`{` 是真括号
+    got, n = balance_math_braces(raw)
+    assert got == "$a \\\\{b_{1}}$" and n == 1
+
+
+def test_unbalanced_math_spans_reports():
+    """监测：配平前能报出坏段，配平后为空（供回归脚本全库体检）。"""
+    from paperkb.textnorm import balance_math_braces, unbalanced_math_spans
+
+    bad = r"前文 $\mathrm{Co(O_{x}/P_{x})$ 后文"
+    assert unbalanced_math_spans(bad) == [r"\mathrm{Co(O_{x}/P_{x})"]
+    good, n = balance_math_braces(bad)
+    assert n == 1 and unbalanced_math_spans(good) == []

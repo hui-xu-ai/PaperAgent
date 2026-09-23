@@ -207,6 +207,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **中文译文里偶发 `$\mathrm{Co(O_{x}/P_{x})$核心` —— 公式少/多一个 `}`，KaTeX 渲染成红字**
+  （2026-09-23 用户报障，实测只出现在中文侧、英文侧干净；用户拍板"直接按结构自动修，
+  LaTeX 公式不可能混进中文文字"）：
+  - **机制**：紧凑翻译模式**没有 `[[MATHn]]` 占位符回填**，段落连同公式整段交给模型，
+    公式由**模型自己抄写**。它会顺手改写公式（本例：句子讲的是 Co(Ox/Px) 核心，它把
+    `@P-LIG}` 删掉却忘了补回 `\mathrm{` 的收尾 `}` ⇒ 少一个 `}`），属**低频随机手滑**，
+    与模型能力相关（复现实验：同一段同一模型两次，0/1 处不配平）。
+  - **判据是结构性的**（可自动修的依据）：译文里的公式**逐字来自英文源文** ⇒ `$...$` 内
+    花括号**必须配平**，不配平只可能是抄错。少 `}` 就在**段尾补齐**、多 `}` 就**删掉多余的
+    那个**；位置由真扫描确定（转义的 `\{` / `\}` 视为字面量，不参与计数），不是拍脑袋插入。
+  - 新增 `paperkb.textnorm.balance_math_braces` / `unbalanced_math_spans`（纯函数、幂等），
+    接入**三处**：① 翻译写回（`translate.pipeline._apply_translations`，数据层即干净）；
+    ② 源头归一（`engine_service.sanitize_document` 的段落 `text_en`/`text_zh` 与图题，
+    `document.json` / `en.md` / 变体 / 检索四处一致）；③ 渲染层兜底
+    （`engine_service._clean_html`，**历史数据不重译**、重渲染即修好）。
+  - 为什么不做更激进的"公式回填"（用源文公式覆盖译文公式）：源文与译文里公式所处的
+    上下文不同（译文可能合并/拆分句式），覆盖会引入语义错位；配平只动"确定是错的"那几处。
+  - **安全闸（防误改散文）**：`$...$` 是**全文**配对，两处普通 `$` 之间若夹着 `{}`（价格写法、
+    代码块）也会"不配平"。所以只对**像公式**的段动手（含 LaTeX 命令 `\xxx` 或 `^{`/`_{`），
+    否则一律不碰——**宁可漏修，不可改坏散文**。真公式必有其一 ⇒ 对真实缺陷零损失。
+  - **取证的坑（记下来免得再踩）**：全库扫描必须**按 JSON 解析** `document.json` 再扫。
+    直接读原始 JSON 文本时，`\left\{` 在文件里是 `\\left\\{`，扫描器的"跳过转义"会把
+    `\\` 当一对吃掉、把后面的 `{` 当**真括号** ⇒ 合法公式被误报（实测 pnas 篇 2 处假阳性）。
+    按 JSON 解析后全库真实缺陷只剩 adma 3 处，且 `en.md` 为 0 ——**正好对上用户"英文不报错、
+    只有中文报错"的观察**。顺手验证：pnas 的 `\left\{ ... \right\}.` 合法段修前修后**逐字节相同**
+    （0 处改动），确认不会碰好公式。
+  - 测试：`test_balance_math_braces_fixes`（含用户实测的两个真实坏形态）、
+    `test_balance_math_braces_noop`（配平不动／无花括号／**转义的 `\{` 不补**）、
+    `test_balance_math_braces_refuses_non_math`（不像公式的 `$...$` 一律不碰）、
+    `test_balance_math_braces_nested`（`\text{...}` 嵌套不误判）、
+    `test_balance_math_braces_handles_latex_linebreak`（`\\{` 里 `{` 算真括号）、幂等、
+    以及数据层端到端 `test_sanitize_document_balances_math_braces`（document.json + en.md 双断言）。
+  - **边界（如实说明）**：修的是"结构不配平"这类可判定的错。若模型抄出**配平但内容错**的
+    公式（例如把 `x` 抄成 `y`），本机制**修不了**、也不该猜——那需要源文回填，见上条取舍。
 - **探测按钮 100% 报错：`KbMetaService.probe_translate_batch() got an unexpected keyword
   argument 'tier_timeout'`**（2026-09-23 用户实测，"自动测一个值"一点就失败）。上一批把
   `tier_timeout` 加到 `paperkb.api.probe_translate_batch`、也改了服务层的调用与**单测里的假
