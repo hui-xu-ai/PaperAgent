@@ -1188,10 +1188,12 @@ body[data-theme="paper"] {  /* 纸质 · 豆绿护眼 */
 .p-branch-ren, .p-branch-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0 3px; border-radius: 4px; }
 .p-branch-ren:hover, .p-branch-del:hover { color: var(--err); background: var(--bg); }
 
-/* ── N4：AI 模型供应商模板弹窗（竖向）── */
-.provider-form.modal-mask { align-items: center; justify-content: center; z-index: 40; }
-.pform-modal { width: 248px; max-width: 92vw; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; }
-.pform-head { font-size: 15px; font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+/* ── N4：AI 模型供应商模板弹窗（竖向）──
+   2026-09-23：弹窗改为**可滚动 + 限高**。探测结果会渲染若干行（每档一行 + 说明），
+   以前内容一长就把底部的「保存」挤出屏幕，且遮罩层不滚动 ⇒ 用户无路可走（实测）。 */
+.provider-form.modal-mask { align-items: center; justify-content: center; z-index: 40; overflow-y: auto; padding: 16px 0; }
+.pform-modal { width: 248px; max-width: 92vw; max-height: 86vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; }
+.pform-head { font-size: 15px; font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; flex-shrink: 0; }
 .pform-row { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
 .pform-row input { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font-size: 12px; background: var(--bg); color: var(--text); }
 .pform-price { border-top: 1px dashed var(--border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -1201,6 +1203,12 @@ body[data-theme="paper"] {  /* 纸质 · 豆绿护眼 */
 .pform-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
 .pform-actions .btn { flex: 0 0 auto; white-space: nowrap; }
 .pform-actions #pf-save { margin-left: auto; }
+/* 探测结果：自身限高内部滚动，绝不把表单按钮顶出屏幕 */
+#tpf-probe-result { max-height: 26vh; overflow-y: auto; }
+#tpf-probe-result > div { margin-top: 6px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; line-height: 1.6; text-align: left; }
+#tpf-probe-result hr { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+#tpf-probe-result details { margin-top: 4px; }
+#tpf-probe-result summary { cursor: pointer; color: var(--muted); }
 /* 实测（2026-09-12）：弹窗仅 248px 宽，测试结果文案一长就把「测试连接」挤成竖排两列字。
    让结果文案独占一行（order:99）并把按钮锁死不收缩。 */
 .pform-actions #pf-test-result { flex: 1 1 100%; order: 99; line-height: 1.5; word-break: break-word; }

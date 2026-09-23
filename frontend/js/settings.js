@@ -768,7 +768,10 @@ function renderProbeResult(res) {
       <hr style="border:none;border-top:1px solid #eee;margin:6px 0">
       ${recLine}
       <div class="muted" style="margin-top:4px">${meta}</div>
-      ${res.corpus_note ? `<div class="muted">${escapeHtml(res.corpus_note)}</div>` : ''}
+      ${(res.hint && res.recommended) || res.corpus_note ? `<details><summary>说明（为什么是这个值）</summary>
+        ${res.recommended ? `<div class="muted">${escapeHtml(res.hint || '')}</div>` : ''}
+        ${res.corpus_note ? `<div class="muted">${escapeHtml(res.corpus_note)}</div>` : ''}
+      </details>` : ''}
     </div>`;
   if (statusEl && !res.recommended) statusEl.textContent = '未测出可用值（见下方说明）';
 }
