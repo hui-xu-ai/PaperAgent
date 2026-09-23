@@ -158,16 +158,20 @@ class KbMetaService:
             batch_chars = 0
         return kbapi.translate_paper(doc_json, compact=compact, batch_chars=batch_chars)
 
-    def probe_translate_batch(self, llm, progress_cb=None) -> dict:
+    def probe_translate_batch(self, llm, progress_cb=None,
+                              tier_timeout: float | None = None) -> dict:
         """探测**某个翻译模型**的安全批次上限（阶梯实测；详见 paperkb.translate.probe）。
 
         与 `translate_now` 的区别：这里用的 llm 是**探测专用实例**（由调用方按激活的翻译模型
         构造），不走 `_KBLLMAdapter` 的线上路由，也不写回任何 document.json；结果只作建议。
 
         2026-09-22 用户要求："点一下自动测出安全上限，别按测试极限填"。
+        2026-09-23：`tier_timeout` 必须透传（= 生产客户端读超时），否则探测用默认额度测出
+        "能返回"的档，在生产上却每批 90s 读超时 ×3 次重试 —— 实测用户报的就是这个。
         """
         self._ensure()
-        return kbapi.probe_translate_batch(llm, progress_cb=progress_cb)
+        return kbapi.probe_translate_batch(llm, progress_cb=progress_cb,
+                                          tier_timeout=tier_timeout)
 
     def _reset_compile_guard(self) -> None:
         """编译前置：按篇清零 `compile` 防护计数（与 translate 同一套做法）。

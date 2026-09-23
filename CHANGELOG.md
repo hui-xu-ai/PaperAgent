@@ -196,6 +196,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **探测按钮 100% 报错：`KbMetaService.probe_translate_batch() got an unexpected keyword
+  argument 'tier_timeout'`**（2026-09-23 用户实测，"自动测一个值"一点就失败）。上一批把
+  `tier_timeout` 加到 `paperkb.api.probe_translate_batch`、也改了服务层的调用与**单测里的假
+  kbapi**，却漏了中间那层真实类 `backend/app/services/kbmeta_service.py:161`
+  （仍是 `(self, llm, progress_cb=None)`）——假对象比真实类宽松，测试全绿而真实链路必炸。
+  现在真实类收下并透传 `tier_timeout`；**新增两条不用假 kbapi 的守卫**
+  （`test_service_works_with_real_kbmeta_probe`：走真实类、只替换最外层 paperkb 函数；
+  `test_service_call_shape_binds_to_real_kbmeta_signature`：用 `inspect.signature().bind`
+  把服务层的调用形状钉在真实签名上）。取证：从 `HEAD` 抽旧签名 + 同一组 kwarg ⇒
+  复现 `TypeError: ... got an unexpected keyword argument 'tier_timeout'`，现行签名 bind 通过。
+  ⚠️ **后端 `reload=False`，需要重启进程才生效。**
 - **`sanitize_document` 丢掉"删占位符"的写回**（2026-09-23 自查发现，回溯到上一条同源改动）：
   重构时把 `<!-- image -->` 占位符的清洗结果只赋给了局部变量、**忘了 `setattr`**（段落与图题两处），
   于是 `changed` 恒为 `True` 而文件其实没变 —— `test_g5_sanitize_idempotent`（二次调用应不再改动）

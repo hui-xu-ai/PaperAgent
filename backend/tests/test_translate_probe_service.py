@@ -272,3 +272,57 @@ def test_probe_endpoint_resolves_masked_key_from_pool(monkeypatch):
     api_settings.start_translate_probe(body)
     assert seen["provider"]["api_key"] == "sk-real-stored"
     assert seen["via"] == "当前编辑的模型"
+
+
+# ---------------------------------------------------------------- 真实门面（不是假 kbapi）
+def test_service_works_with_real_kbmeta_probe(monkeypatch):
+    """服务层 → **真实 KbMetaService** → paperkb 门面（只替换最外层那个函数）。
+
+    2026-09-23 实测 bug（用户报）：`_wire` 里那个假 kbapi 收了 `tier_timeout`，而真实
+    `KbMetaService.probe_translate_batch` 只收 (llm, progress_cb) ⇒ 界面点「自动测一个值」
+    直接 `KbMetaService.probe_translate_batch() got an unexpected keyword argument
+    'tier_timeout'`。防的就是"**假对象比真实类更宽松**"这种掩盖签名漂移的情形，
+    所以本用例故意不放假 kbapi。
+    """
+    from app.services.kbmeta_service import KbMetaService
+    from paperkb import api as kbapi
+
+    s = _Settings(pool=[{"id": "t1", "name": "翻译专用", "api_key": "k",
+                         "base_url": "u", "model": "m"}])
+    _wire(monkeypatch, s)                       # 只换 container/llm_service 的假件
+    monkeypatch.setattr(KbMetaService, "_ensure", lambda self: None)
+    monkeypatch.setattr(container, "get_kbapi", lambda: KbMetaService())
+
+    seen: dict = {}
+
+    def fake_probe(llm, progress_cb=None, tier_timeout=None):
+        seen["tier_timeout"] = tier_timeout
+        return {"model": llm.model, "recommended": 7200, "highest_pass": 12000, "tested": []}
+
+    monkeypatch.setattr(kbapi, "probe_translate_batch", fake_probe)
+
+    svc = TranslateProbeService()
+    svc._run()
+    st = svc.progress()
+    assert st["status"] == "done", st
+    # 透传到位：墙钟 = 生产读超时（否则探测会推荐生产必然超时的批次）
+    assert seen["tier_timeout"] == llm_service.TRANSLATE_TIMEOUT_SEC
+    assert st["result"]["recommended"] == 7200
+
+
+def test_service_call_shape_binds_to_real_kbmeta_signature():
+    """调用形状契约：服务层实际传的 kwarg 必须能 bind 到真实签名上（签名漂移即红）。"""
+    import inspect
+
+    from app.services.kbmeta_service import KbMetaService
+    from paperkb import api as kbapi
+
+    sig = inspect.signature(KbMetaService.probe_translate_batch)
+    sig.bind(object(),                              # self（未绑定方法）
+             object(),                              # llm：探测专用实例（此处只验形状）
+             tier_timeout=llm_service.TRANSLATE_TIMEOUT_SEC,
+             progress_cb=lambda *a: None)           # 与 translate_probe_service 的调用一致
+
+    # 门面层同样要收这两个（两层任一漂移都要红）
+    facade = inspect.signature(kbapi.probe_translate_batch)
+    assert {"tier_timeout", "progress_cb"} <= set(facade.parameters)
