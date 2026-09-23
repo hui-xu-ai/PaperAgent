@@ -182,6 +182,39 @@ def test_rerender_paper_uses_canonical_kb_doc(tmp_path, settings, monkeypatch):
     assert r["kb_dir"] == str(kb_dir)
 
 
+def test_variants_normalize_citation_superscripts(tmp_path):
+    """★2026-09-23 用户报障"上下标有的加了 $、有的丢失"：变体渲染必须归一。
+
+    三种坏形态（实测 kb/10.1016_j.cej.2025.167798）：
+      · `^[[38]]`（模型自造，Obsidian 当内联脚注）→ 应成 `$^{[38]}$`；
+      · `<sup>[21,22]</sup>`（HTML 标签，旧实现连标签删 ⇒ **上标丢失**）→ 应成 `$^{[21,22]}$`；
+      · 已规范的 `$^{[29]}$` 保持不动。
+    """
+    import json
+    import shutil
+    from pathlib import Path
+
+    from app.services.engine_service import EngineService
+    from paperparse.core.document_builder import load_document
+
+    doc_path = tmp_path / "10.1002_adma.202407106" / "document.json"
+    doc_path.parent.mkdir(parents=True)
+    data = json.loads(ENGINE_DOC.read_text(encoding="utf-8"))
+    # 逐段都设（首段常是标题，渲染时会与 H1 去重被跳过）
+    for para in data["paragraphs"]:
+        para["text_zh"] = "分子链断裂而下降。^[[38]] 温度<sup>[21,22]</sup>升高。已是规范$^{[29]}$。"
+    doc_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    doc = load_document(str(doc_path))
+    paths = EngineService._write_kb_variants(doc, tmp_path / "kb", frontmatter="")
+    zh = Path(paths["zh.md"]).read_text(encoding="utf-8")
+
+    assert "$^{[38]}$" in zh, "双层方括号上标应补 $ 成 $^{[38]}$"
+    assert "$^{[21,22]}$" in zh, "HTML <sup> 上标不得丢失，应成 $^{[21,22]}$"
+    assert "$^{[29]}$" in zh, "已规范形态保持不变"
+    assert "^[[38]]" not in zh and "<sup>" not in zh and "^[21,22]" not in zh
+
+
 def test_combined_translate_writes_kb_variants(tmp_path, settings, monkeypatch):
     """变体写入语义（2026-09-16 更新为方案 A：**双写**）。
 

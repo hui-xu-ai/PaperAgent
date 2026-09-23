@@ -22,6 +22,8 @@ from pathlib import Path
 
 from ..context import CTX_HEADER, context_paragraphs, paper_context_with_math, with_task
 from ..doc import read_document
+from ..textnorm import (html_script_to_tex, normalize_citation_superscripts,
+                        suspicious_superscripts)
 from .fixes import KNOWN_FIXES
 from .latextap import reassemble
 
@@ -310,6 +312,8 @@ def _apply_translations(data_out: dict, paras: list[dict],
     """
     out: dict = {}
     rejected = 0
+    n_sup = 0
+    leftovers: list[str] = []
     for it in (data_out or {}).get("translations", []) or []:
         pid = it.get("para_id")
         if not pid or not it.get("zh"):
@@ -321,11 +325,23 @@ def _apply_translations(data_out: dict, paras: list[dict],
         for pat, repl, _note in KNOWN_FIXES:
             result = re.sub(pat, lambda _mm, _r=repl: _r, result)  # lambda 防转义解析
         result = _strip_control(result)
+        # 2026-09-23：**先**把 <sup>/<sub> 转成 TeX 记法再清标签——旧顺序会连标签一起删，
+        # 上标语义直接丢失（用户报障"有的丢失了"）；随后把模型自造的 `^[[38]]` 归一到 `^{[38]}`。
+        result = html_script_to_tex(result)
         result = _strip_html_tags(result)  # 2026-09-19：清理 <sup> 等 HTML 标签
+        result, fixed = normalize_citation_superscripts(result)
+        n_sup += fixed
+        leftovers.extend(suspicious_superscripts(result))
         if not result.strip() or _is_refusal(result):
             rejected += 1
             continue
         out[idx] = result
+    if n_sup:
+        logger.info("译文引用上标归一：%d 处（^[[n]] / ^[n] → ^{[n]}，展示层再包 $）", n_sup)
+    if leftovers:
+        # 监测：归一只认"数字/引用分隔符"内容，剩下的可能是真脚注，也可能是模型的新写法
+        logger.info("译文仍有方括号上标 %d 处未归一（真脚注或模型新形态）：%s",
+                    len(leftovers), leftovers[:3])
     return out, rejected
 
 

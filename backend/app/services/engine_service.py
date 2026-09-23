@@ -605,10 +605,21 @@ class EngineService:
         (D16：六维总结并入 L1 编译 _note.md，summary.md 停生成——避免重复 LLM/文件冗余)
         """
         import re
+
+        from paperkb.textnorm import html_script_to_tex, normalize_citation_superscripts
         from paperparse.core.markdown_render import render_variant
 
         # 2026-09-19: clean HTML tags from variants
         def _clean_html(md):
+            # 2026-09-23（用户报障"上下标有的加了 $、有的丢失"）：渲染前先把**非规范的引用上标**
+            # 归一（`^[[38]]` → `^{[38]}`），随后的"裸 ^{} 包 $"逻辑就会把它统一成 `$^{[38]}$`。
+            # 放在这里是为了**兜住历史数据**：document.json 里已有的坏形态不必重译就能修好。
+            md, _n = normalize_citation_superscripts(md)
+            if _n:
+                logger.info("变体渲染：引用上标归一 %d 处（^[[n]] / ^[n] → $^{[n]}$）", _n)
+            # 上标/下标 HTML 标签保留语义（旧实现连标签一起删 ⇒ 上标丢失）
+            md = html_script_to_tex(md)
+
             def _s(m):
                 inner = m.group(1)
                 if inner.startswith('^{') or inner.startswith('_{'):
