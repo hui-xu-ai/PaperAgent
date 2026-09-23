@@ -758,7 +758,10 @@ class SettingsService:
                 if non_qwen:
                     self._sync_translate_env(non_qwen)
             except Exception as e:  # noqa: BLE001
-                logger.warning("写翻译模型 .env 失败: %s", e)
+                # 带堆栈：这类失败以前只留一行无堆栈的警告，把「文件写了、进程没同步」这类
+                # 半途失败藏起来了（实测：int.strip() 抛错 ⇒ 切换模型"自动跳回"）。
+                logger.warning("写翻译模型 .env 失败（本次运行可能未同步）: %s", e,
+                               exc_info=True)
 
     @staticmethod
     def _clamp_batch_chars(raw) -> int:
@@ -828,19 +831,21 @@ class SettingsService:
                 lines.append(f"TRANSLATE_{idx}_BATCH_CHARS={batch_chars}")
             lines.append(f"TRANSLATE_{idx}_ENABLED={enabled}")
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        # 运行中进程即时生效
+        # 运行中进程即时生效：**必须与文件一致**——池的读取侧（`_env_translation_presets`）走
+        # os.environ，若这里不同步，界面/路由就还按旧值走，表现为"点了切换又自动跳回去"。
+        # ⚠ max_tokens / batch_chars 是 int，必须先 str()（历史 bug：直接 .strip() 抛
+        # AttributeError，被调用方的 except Exception 吞掉 ⇒ 文件改了、进程没改）。
         for idx, p in enumerate(providers):
             for field, suffix in (("base_url", "BASE_URL"), ("model", "MODEL"),
-                                  ("api_key", "API_KEY"), ("max_tokens", "MAX_TOKENS")):
-                val = (p.get(field) or "").strip()
+                                  ("api_key", "API_KEY"), ("max_tokens", "MAX_TOKENS"),
+                                  ("batch_chars", "BATCH_CHARS")):
+                key = f"TRANSLATE_{idx}_{suffix}"
+                val = str(p.get(field) or "").strip()
                 if val:
-                    os.environ[f"TRANSLATE_{idx}_{suffix}"] = val
+                    os.environ[key] = val
+                else:
+                    os.environ.pop(key, None)
             os.environ[f"TRANSLATE_{idx}_ENABLED"] = "1" if p.get("enabled") else "0"
-            batch_chars = self._clamp_batch_chars(p.get("batch_chars"))
-            if batch_chars:
-                os.environ[f"TRANSLATE_{idx}_BATCH_CHARS"] = str(batch_chars)
-            else:
-                os.environ.pop(f"TRANSLATE_{idx}_BATCH_CHARS", None)
 
     def _clear_translate_env(self) -> None:
         """清除 .env 中所有 TRANSLATE_<idx>_ 键。"""

@@ -740,6 +740,40 @@ def test_entry_batch_chars_roundtrip_and_env_sync(store, monkeypatch, tmp_path):
     assert svc.get_translation_providers(masked=False)[0]["batch_chars"] == 0
 
 
+def test_pool_save_syncs_os_environ_for_runtime_switch(store, monkeypatch, tmp_path):
+    """保存池必须把 ENABLED/值同步进 os.environ——池的读取侧走 os.environ，
+    只改文件不改进程 ⇒ 界面/路由还按旧模型走，表现为「点了切换瞬间又跳回去」。
+
+    实测 bug（2026-09-23 用户报）：`_sync_translate_env` 对 int 型 `max_tokens` 直接调
+    `.strip()` 抛 AttributeError，被 `except Exception` 吞掉 ⇒ 文件写了、进程没改，
+    且当时池的读取已改为 `.env` 权威（os.environ 口径）⇒ 切换模型完全失效。
+    """
+    import os
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    svc = SettingsService(store, app_settings=_make_env_settings(), env_sync=True,
+                          env_path=str(env_path))
+    svc.save_translation_providers([
+        {"id": "translate_0", "name": "千问", "base_url": "https://api.siliconflow.cn/v1",
+         "model": "Qwen/Qwen2.5-7B-Instruct", "api_key": "sk-a", "enabled": True,
+         "max_tokens": 8192, "batch_chars": 14000},
+        {"id": "translate_1", "name": "GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4",
+         "model": "glm-4.5-air", "api_key": "sk-b", "enabled": False,
+         "max_tokens": 65536, "batch_chars": 0},
+    ])
+    assert os.environ["TRANSLATE_0_ENABLED"] == "1"        # 激活项
+    assert os.environ["TRANSLATE_1_ENABLED"] == "0"
+    assert os.environ["TRANSLATE_0_MAX_TOKENS"] == "8192"  # int 也要能写进去（历史崩溃点）
+    assert os.environ["TRANSLATE_0_BATCH_CHARS"] == "14000"
+    assert "TRANSLATE_1_BATCH_CHARS" not in os.environ     # 0 = 清键，不留脏值
+    # 读回与刚保存的一致（不再出现"文件已改、进程没改"的错位）
+    pool = svc.get_translation_providers(masked=False)
+    assert [p["model"] for p in pool] == ["Qwen/Qwen2.5-7B-Instruct", "glm-4.5-air"]
+    assert [p["enabled"] for p in pool] == [True, False]
+    assert [p["model"] for p in svc.get_enabled_translation_providers(masked=False)] \
+        == ["Qwen/Qwen2.5-7B-Instruct"]                     # 切换后路由确实换了模型
+
+
 def test_effective_batch_chars_entry_wins_over_global(store, monkeypatch):
     """运行时上限 = 激活条目自带值 → 全局默认（安全冗余是模型属性，条目优先）。"""
     svc = SettingsService(store, app_settings=_make_env_settings())
