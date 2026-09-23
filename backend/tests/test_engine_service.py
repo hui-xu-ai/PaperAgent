@@ -105,10 +105,11 @@ def test_clean_staging(tmp_path, settings):
 
 
 def test_rerender_paper(tmp_path, settings, monkeypatch):
-    """T06 + P0-B（2026-09-12）：重渲染写 **library/<资源目录>/en_zh.md**（翻译真相源）。
+    """T06：**文献尚未纳入 kb** 时，重渲染落 `library/<资源目录>/en_zh.md`（定版=解析库）。
 
-    旧行为写 kb，`knowledge_base/` 与 `library/` 各一份 → 容易读到旧副本；
-    现 kb 侧读取回退到 library（kb_service.read_file 按 mtime 择新）。
+    2026-09-23 起渲染源 = 定版（`translation_target`，kb 优先）。本篇 kb 里没有，
+    定版就是传入的 library 路径 ⇒ 产物落 library（旧行为分支仍成立）；
+    已入 kb 的分支见 `test_rerender_paper_uses_canonical_kb_doc`。
     """
     import shutil
     from pathlib import Path
@@ -129,6 +130,56 @@ def test_rerender_paper(tmp_path, settings, monkeypatch):
     assert paper_md.parent == lib / "10.1002_adma.202407106", "变体落在 library 资源目录"
     text = paper_md.read_text(encoding="utf-8")
     assert "Abstract" in text or "abstract" in text
+
+
+def test_rerender_paper_uses_canonical_kb_doc(tmp_path, settings, monkeypatch):
+    """★2026-09-23 回归（"换模板"那条路）：渲染源 = 定版（kb），产物写回定版目录。
+
+    此前 `rerender_paper` 读传入的 library 路径（无 text_zh ⇒ 渲染出英文）、
+    且写回 library —— 阅读器读 kb，换模板等于没生效。现在：
+      · 读定版 ⇒ 变体含中文；· 写定版所在目录（kb）⇒ 阅读器能看到；· library 无残留。
+    """
+    import json
+    import shutil
+    from pathlib import Path
+
+    import app.config as cfg
+    import paperkb.api as kbapi
+    from app.services.engine_service import EngineService
+    from app.services import kbmeta_service
+
+    monkeypatch.setattr(cfg, "APP_DATA_DIR", tmp_path)
+
+    lib_dir = Path(settings.engine_work_root) / "10.1002_adma.202407106"
+    (lib_dir / "intermediate").mkdir(parents=True)
+    lib_doc = lib_dir / "intermediate" / "document.json"
+    shutil.copy2(ENGINE_DOC, lib_doc)                 # library：纯英文
+    # 历史残留：library 里曾有变体（R3 要求清掉）
+    (lib_dir / "en_zh.md").write_text("stale", encoding="utf-8")
+
+    kb_dir = tmp_path / "knowledge_base" / "10.1002_adma.202407106"
+    kb_dir.mkdir(parents=True, exist_ok=True)
+    data = json.loads(ENGINE_DOC.read_text(encoding="utf-8"))
+    for para in data["paragraphs"]:
+        para["text_zh"] = ZH_MARK + para["para_id"]
+    kb_doc = kb_dir / "document.json"
+    kb_doc.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(kbapi, "translation_target", lambda p: str(kb_doc))
+
+    class _FakeKbMeta:
+        def variant_frontmatter(self, *a, **k):
+            return ""
+
+    monkeypatch.setattr(kbmeta_service, "get_kbmeta", lambda: _FakeKbMeta())
+
+    r = EngineService(settings).rerender_paper(lib_doc, "obsidian_bilingual")
+    paper_md = Path(r["paper_md"])
+    assert paper_md.parent == kb_dir, "产物必须落在定版（kb）目录，否则阅读器看不到"
+    assert ZH_MARK in paper_md.read_text(encoding="utf-8"), \
+        "必须渲染定版里的译文，而不是 library 的英文原文"
+    assert not (lib_dir / "en_zh.md").exists(), "R3：library 不该留变体"
+    assert r["kb_dir"] == str(kb_dir)
 
 
 def test_combined_translate_writes_kb_variants(tmp_path, settings, monkeypatch):

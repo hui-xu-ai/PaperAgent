@@ -131,6 +131,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **"换模板"对已入库文献等于没生效**（2026-09-23，与上一条同一病根）：
+  `rerender_paper` 读**传入路径**（多为 library 那份、`text_zh` 恒空 ⇒ 渲染出**英文**）、
+  且写回 **library** —— 而阅读器读 kb（`kb_service.read_file` 定版优先）⇒ 换模板后看到的
+  内容根本不变。现在渲染源 = **定版**（`translation_target`：kb 优先），产物写**渲染源所在
+  目录**（定版在 kb 就写 kb；`_paper_dir` 兼容 intermediate 中间态），并在写 kb 时清掉
+  library 的历史变体残留（R3）。回归测试 `test_rerender_paper_uses_canonical_kb_doc`
+  （去掉修复即失败）。
 - **重译已入库文献后 `zh.md`/`en_zh.md` 全英文**（2026-09-23 用户实测论文[45]）：
   `combined_translate` 先调 `translate_now`（内部走 `translation_target`，**定版 = kb 优先**，
   2026-09-16 方案 A），译文写进 `kb/<DOI>/document.json`；随后却仍按传入路径 `load_document(p)`

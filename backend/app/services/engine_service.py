@@ -761,18 +761,32 @@ class EngineService:
         return removed
 
     def rerender_paper(self, document_json: str | Path, template: str) -> dict:
-        """按模板重渲染中英对照主产物 `library/<资源目录>/en_zh.md`（不重新翻译）。
+        """按模板重渲染中英对照主产物 `en_zh.md`（不重新翻译）。
 
-        T06：模板切换后重渲染；P0-B（2026-09-12）起变体真相源在 **library**
-        （kb 侧读取回退 + 按 mtime 择新，旧 kb 副本不会遮住新渲染结果）。
+        T06：模板切换后重渲染。
         2026-09-16：头部 frontmatter 与 `combined_translate` **同一装配入口**注入
         （模板已不再自己拼元数据，不注入就等于没有元数据块）。
+        ★2026-09-23 用户报障（与"重译后变体全英文"同一病根）：此前本函数**读传入路径**
+        （多为 library 那份、`text_zh` 恒空 ⇒ 渲染出英文）、**写回 library**——而阅读器
+        读的是 kb（`kb_service.read_file` 定版优先）⇒ 换模板等于没生效。现在：
+          · 渲染源 = **定版**（`translation_target`：kb 优先，与编译/翻译/问答同源）；
+          · 产物写**渲染源所在目录**（定版在 kb 就写 kb；尚未纳入 kb 才落 library）；
+          · 若本次写的是 kb，顺带清掉 library 的历史变体残留（R3：library 只放解析结果）。
         """
         from paperparse.core.markdown_render import render, variant_tags
         from paperparse.core.document_builder import load_document, output_dir_name
 
         p = Path(document_json).resolve()
-        doc = load_document(str(p))
+        try:
+            from paperkb.api import translation_target as _canonical
+
+            src = Path(_canonical(str(p)) or str(p))
+        except Exception as e:  # noqa: BLE001 - 定位失败退回传入路径（旧行为兜底）
+            logger.warning("重渲染源定位失败（退回传入路径）: %s", e)
+            src = p
+        if src != p:
+            logger.info("重渲染源=定版: %s（传入 %s）", src, p)
+        doc = load_document(str(src))
         doi_dir = output_dir_name(doc.metadata.doi, doc.metadata.source_pdf)
         frontmatter = ""
         try:
@@ -784,13 +798,20 @@ class EngineService:
         except Exception as e:  # noqa: BLE001 - 头部装配失败不阻塞重渲染
             logger.warning("重渲染头部装配失败（本次不写 frontmatter）: %s", e)
         md = render(doc, template=template, frontmatter=frontmatter)
-        paper_dir = _paper_dir(p)
-        paper_dir.mkdir(parents=True, exist_ok=True)
-        en_zh = paper_dir / "en_zh.md"
+        # 定版在哪就写哪（kb 里就写 kb，阅读器可见）；`_paper_dir` 兼容 intermediate 中间态
+        out_dir = _paper_dir(src)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        en_zh = out_dir / "en_zh.md"
         en_zh.write_text(md, encoding="utf-8")
+        # R3（library 只放解析结果）：写到 kb 时清掉 library 的历史变体残留
+        paper_dir = _paper_dir(p)
+        if out_dir != paper_dir:
+            try:
+                self._remove_stale_variants_in_library(paper_dir)
+            except Exception as e:  # noqa: BLE001 - 清理失败不影响重渲染结果
+                logger.warning("清理 library 旧译文本失败: %s", e)
         self._remove_stale_doi_files(paper_dir, doi_dir)
-        return {"paper_md": str(en_zh), "kb_dir": str(self._kb_dir_for_library(doi_dir)),
-                "template": template}
+        return {"paper_md": str(en_zh), "kb_dir": str(out_dir), "template": template}
 
     def root_kb(self):
         """便捷获取 kb 服务（未构造注入时返回 None；不 import container）。"""
