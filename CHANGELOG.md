@@ -94,6 +94,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   只是把同一篇译文的各批**分发**给不同模型 ⇒ 风格/术语不一致。
   兜底：`save_translation_providers` 遇到多条 enabled 只保留第一条，其余强制关闭。
 
+### Fixed
+
+- **翻译前置的防护计数清零此前从未执行**（2026-09-23 排查发现）：`translate_now` 里
+  `from .llm_service import get_guard` 是**错的模块路径**（`get_guard` 只存在于 `container`），
+  ImportError 又被 `except Exception: pass` 静默吞掉 ⇒ `reset_context("translate")` 一次都没跑。
+  后果：翻译调用次数在进程生命周期内**跨篇累计**，长文跑到第二三篇就可能撞上
+  「300 次 / 300 万字符」红线被误拦。改为 `container.get_guard()`（与 `task_service` 同源），
+  并把静默 `pass` 换成 `logger.warning`（下次再错会说话）。
+
 ## [1.3.0] - 2026-09-21
 
 > **升级影响：不会丢数据，无需重新解析。**
