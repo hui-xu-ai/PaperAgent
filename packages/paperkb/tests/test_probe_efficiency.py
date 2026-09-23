@@ -102,9 +102,13 @@ class HangLLM:
 
 # ---------------------------------------------------------------- 墙钟 = 生产读超时
 def test_tier_budget_is_the_production_read_timeout():
-    """单档上限**固定等于生产读超时**，不随档位放大（否则会推荐生产必然超时的批次）。"""
-    assert _tier_budget(3000) == TIER_TIMEOUT_SEC == 90.0
-    assert _tier_budget(48000) == TIER_TIMEOUT_SEC, "大档也不许放宽——生产就是固定 90s"
+    """单档上限**固定等于生产读超时**，不随档位放大（否则会推荐生产必然超时的批次）。
+
+    数值本身不写死：真正的同步线是 `backend/tests/test_translate_timeout_contract.py`
+    （跨包比对 `llm_service.TRANSLATE_TIMEOUT_SEC`）。这里只钉"与档位无关"这条性质。
+    """
+    assert _tier_budget(3000) == TIER_TIMEOUT_SEC
+    assert _tier_budget(48000) == TIER_TIMEOUT_SEC, "大档也不许放宽——生产就是固定一个读超时"
 
 
 # ---------------------------------------------------------------- 效率记数

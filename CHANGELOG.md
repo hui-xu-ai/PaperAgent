@@ -68,6 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **翻译（专用翻译模型）的读超时 90s → 150s**（2026-09-23 用户拍板），探测的单档墙钟同步到 150s。
+  两处常量必须同值，由 `backend/tests/test_translate_timeout_contract.py` 守卫：
+  `backend/app/services/llm_service.py.TRANSLATE_TIMEOUT_SEC = 150`、
+  `packages/paperkb/paperkb/translate/probe.py.TIER_TIMEOUT_SEC = 150.0`。
+  - 派生值：探测客户端超时 = 150 + 余量 20 = **170s**（`PROBE_TIMEOUT_SEC`，自动推导）；
+    整轮总预算 5 档 × 90s+余量 → **900s**（= 5 × 150 + 余量，保证 5 档全跑满也走得完阶梯给出结论）。
+  - 影响：单批可译的规模上限随之变大（此前 12000 档 71s 通过、24000 档 113s 超时 ⇒ 90s 下建议值
+    7200）；**建议重启后重新点一次「🔬 自动测一个值」**，用新口径重测当下的模型。
+  - 超时的原始动机（绕过硅基流动免费端点偶发静默挂起）在 150s 下仍成立——挂起的端点不会因为
+    多等 60s 而恢复；提高它换来的是"更大批次仍能译完、少触发超时重试（每次白烧一份输入）"。
+
 - **三级编译提示词升级：从"输出格式说明"改成"审稿人检查清单 + 证据硬规则"**
   （2026-09-23，A/B 实测后落地）。起因是用户问"当前提示词是否足够权威简洁、能不能发挥大模型
   扮演专家阅读/总结/批评文献的能力"——旧提示词把篇幅几乎全给了 JSON 字段名，L2 的"批判"只有

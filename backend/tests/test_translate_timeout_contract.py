@@ -26,6 +26,15 @@ def test_probe_tier_budget_equals_production_read_timeout():
         "改了一处就要同步另一处（见本文件 docstring）")
 
 
+def test_production_read_timeout_is_the_chosen_value():
+    """150s 是 2026-09-23 用户定的值（给思考型模型与大档留余量，此前 90s）。
+
+    钉在这里是为了让"改超时"这件事只在一个地方可见：要再调就改本断言 +
+    `llm_service.TRANSLATE_TIMEOUT_SEC` + `paperkb.translate.probe.TIER_TIMEOUT_SEC`。
+    """
+    assert llm_service.TRANSLATE_TIMEOUT_SEC == 150
+
+
 def test_probe_client_timeout_leaves_room_for_its_own_wall_clock():
     """探测客户端的超时要比墙钟**更大**：让探测自己的墙钟先给结论（判据与文案更明确），
     客户端超时只当传输层兜底。"""
