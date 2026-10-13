@@ -283,9 +283,12 @@ body {
 /* ── O批-4(item5)/O批-5(item3)：PDF 原文阅读 ── */
 .pdf-wrap { display: flex; flex-direction: column; gap: 6px; height: 100%; min-height: 0; }
 .pdf-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 2px 4px; }
-.pdf-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
-.pdf-page { display: flex; justify-content: center; }
-.pdf-page canvas { box-shadow: 0 1px 6px rgba(0,0,0,.18); }
+.pdf-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px; display: flex; flex-direction: column; gap: 10px; align-items: center; position: relative; }
+/* PDF 页容器：尺寸完全由 JS 占位(style.width/height)决定；canvas 绝对定位脱离文档流，
+   故释放(canvas 清空)或渲染都不会撑动 wrap 高度 → scrollHeight 恒定、滚动位置不抖。
+   flex:0 0 auto 关键——.pdf-scroll 是 flex 列，默认 shrink 会把多页压缩到挤进视口。 */
+.pdf-page { position: relative; flex: 0 0 auto; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.18); }
+.pdf-page canvas { position: absolute; top: 0; left: 0; display: block; }
 
 /* ── O批-5：存_qa 按钮置灰态 ── */
 .qa-save-btn.disabled { opacity: .45; cursor: not-allowed; }

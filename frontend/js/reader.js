@@ -1016,6 +1016,17 @@ function bindReaderWikilinks() {
 
 
 // O批-5(item3)：PDF 原文阅读（pdf.js 连续滚动 + 适合宽度 + 缩放 + Ctrl+滚轮缩放，接近浏览器观感）
+/* ══════════ PDF 阅读器（P8 重写：DPR 清晰化 + 懒渲染）══════════
+   旧版一次性把全部页渲染成 canvas、每次缩放全量重绘，且 canvas 未乘 devicePixelRatio
+   → HiDPI 屏模糊、大文件卡顿吃内存。新版：
+   ① 按 dpr(上限2) 渲染，CSS 尺寸不变 → 清晰；
+   ② 只渲染视口±缓冲页，远离页释放 canvas 回收内存（懒渲染/虚拟化）；
+   ③ 缩放/重排锚定「顶部可见页」保持阅读位置；
+   ④ 每次重绘先 cancel 旧 RenderTask 防竞态；
+   ⑤ 代际令牌 pdfViewerGen：切走/重载后旧异步回调不再动 DOM。 */
+let pdfViewerGen = 0;
+let pdfViewerDoc = null;
+
 function renderPdfViewer(box, doi) {
   box.innerHTML = `<div class="pdf-wrap">
     <div class="pdf-toolbar">
@@ -1030,51 +1041,170 @@ function renderPdfViewer(box, doi) {
   if (typeof pdfjsLib === 'undefined') {
     box.innerHTML = '<div class="empty">PDF.js 未加载（vendor/pdfjs 缺失）</div>'; return;
   }
+  const gen = ++pdfViewerGen;
+  if (pdfViewerDoc) { try { pdfViewerDoc.destroy(); } catch (e) {} pdfViewerDoc = null; }
   pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.js';
   const url = '/api/kb/pdf?doi=' + encodeURIComponent(doi);
+  const DPR_CAP = 2;
   pdfjsLib.getDocument(url).promise.then(pdf => {
     const scroll = $('pdf-scroll');
+    if (!scroll || gen !== pdfViewerGen) { try { pdf.destroy(); } catch (e) {} return; }
+    pdfViewerDoc = pdf;
+    const N = pdf.numPages;
     let baseScale = 1.0, fitScale = 1.0, zoom = 1.0;
-    const pagesEl = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
+    const curScale = () => baseScale * zoom;
+    const dpr = () => Math.min(window.devicePixelRatio || 1, DPR_CAP);
+    // 每页占位：wrap 撑出正确高度 → 滚动条/锚定准确；canvas 仅在渲染时有内容
+    const pages = [];
+    for (let i = 0; i < N; i++) {
       const wrap = document.createElement('div');
       wrap.className = 'pdf-page';
+      wrap.dataset.page = String(i + 1);
       const canvas = document.createElement('canvas');
       wrap.appendChild(canvas);
       scroll.appendChild(wrap);
-      pagesEl.push({ wrap, canvas, page: null });
+      pages.push({ wrap, canvas, page: null, w1: 0, h1: 0,
+                   renderedScale: 0, renderedDpr: 0, pendingScale: 0, pendingDpr: 0, task: null });
     }
-    const renderAll = () => {
-      const scale = baseScale * zoom;
-      pagesEl.forEach((pce, i) => {
-        const target = pce.page;
-        const vp = target.getViewport({ scale });
-        pce.canvas.width = vp.width; pce.canvas.height = vp.height;
-        target.render({ canvasContext: pce.canvas.getContext('2d'), viewport: vp });
-      });
+    let d0 = { w: 612, h: 792 };   // 未取页的兜底比例（Letter），首页取到后覆盖
+
+    function setPlaceholder(i) {
+      const p = pages[i], s = curScale();
+      const w = (p.w1 || d0.w) * s, h = (p.h1 || d0.h) * s;
+      p.wrap.style.width = Math.floor(w) + 'px';
+      p.wrap.style.height = Math.floor(h) + 'px';
+    }
+    function relayout() { for (let i = 0; i < N; i++) setPlaceholder(i); }
+
+    function releasePage(i) {
+      const p = pages[i];
+      if (p.task) { try { p.task.cancel(); } catch (e) {} p.task = null; }
+      // 无条件清空：pending 中的页 renderedScale 仍为 0 但 canvas.width 已被 paint 设过，
+      // 只按 renderedScale 判断会漏清 → 滚过的页累积不回收（内存泄漏）。
+      if (p.canvas.width) { p.canvas.width = 0; p.canvas.height = 0; }
+      p.renderedScale = 0; p.renderedDpr = 0; p.pendingScale = 0; p.pendingDpr = 0;
+    }
+
+    function renderPage(i) {
+      const p = pages[i], s = curScale(), d = dpr();
+      if (p.renderedScale === s && p.renderedDpr === d) return;    // 已是当前规格
+      if (p.pendingScale === s && p.pendingDpr === d) return;       // 正在渲染同一规格
+      p.pendingScale = s; p.pendingDpr = d;
+      const paint = (page) => {
+        if (gen !== pdfViewerGen) return;
+        if (!p.w1) { const v1 = page.getViewport({ scale: 1 }); p.w1 = v1.width; p.h1 = v1.height; setPlaceholder(i); }
+        if (p.task) { try { p.task.cancel(); } catch (e) {} }
+        const vpCss = page.getViewport({ scale: s });
+        const vpDev = page.getViewport({ scale: s * d });
+        p.canvas.width = Math.floor(vpCss.width * d);
+        p.canvas.height = Math.floor(vpCss.height * d);
+        p.canvas.style.width = Math.floor(vpCss.width) + 'px';
+        p.canvas.style.height = Math.floor(vpCss.height) + 'px';
+        p.task = page.render({ canvasContext: p.canvas.getContext('2d'), viewport: vpDev });
+        p.task.promise.then(() => {
+          if (gen !== pdfViewerGen) return;
+          p.renderedScale = s; p.renderedDpr = d; p.task = null;
+        }).catch(() => { if (gen === pdfViewerGen) { p.task = null; p.pendingScale = 0; } });
+      };
+      if (p.page) paint(p.page);
+      else pdf.getPage(i + 1).then(pg => {
+        if (gen !== pdfViewerGen) return;
+        p.page = pg; paint(pg);
+      }).catch(() => { if (gen === pdfViewerGen) p.pendingScale = 0; });
+    }
+
+    // 懒渲染（确定性）：由 offsetTop 算「视口 ± 一屏」窗口，进入即渲染、远离即释放。
+    // 页高已恒定（.pdf-page flex:0 0 auto + canvas 绝对定位），offsetTop 可靠。
+    // 不用 IntersectionObserver——合成滚动/无头环境下 IO 投递不稳定，一旦加载抖动期把
+    // 全部页渲染了就再也不投递 release（实测过），窗口会失控。显式在每次滚动/缩放回收。
+    function visibleWindow() {
+      const st = scroll.scrollTop, ch = scroll.clientHeight, buf = ch;
+      let first = -1, last = -1;
+      for (let i = 0; i < N; i++) {
+        const top = pages[i].wrap.offsetTop, h = pages[i].wrap.offsetHeight;
+        if (top + h >= st - buf && top <= st + ch + buf) { if (first < 0) first = i; last = i; }
+      }
+      return { first, last };
+    }
+    function syncRender() {
+      if (gen !== pdfViewerGen) return;
+      const { first, last } = visibleWindow();
+      if (first < 0) return;
+      for (let i = first; i <= last; i++) renderPage(i);
+      for (let i = 0; i < N; i++) if (i < first - 2 || i > last + 2) releasePage(i);   // 远离页回收
+      updatePageInd();
+    }
+
+    function updatePageInd() {
+      const ind = $('pdf-page-ind');
+      if (!ind) return;
+      const st = scroll.scrollTop;                 // 精确取视口顶部所在页
+      let cur = 1;
+      for (let i = 0; i < N; i++) { if (pages[i].wrap.offsetTop <= st + 2) cur = i + 1; else break; }
+      ind.textContent = `第 ${cur} / ${N} 页`;
+    }
+    function updateZoomInd() {
       const ind = $('pdf-zoom-ind');
-      if (ind) ind.textContent = Math.round(scale * 100) + '%';
-    };
-    // 并行取页（保序渲染）
-    Promise.all(Array.from({ length: pdf.numPages }, (_, i) => pdf.getPage(i + 1)))
-      .then(pgs => {
-        pgs.forEach((pg, i) => { pagesEl[i].page = pg; });
-        fitScale = Math.max(0.4, scroll.clientWidth / pgs[0].getViewport({ scale: 1 }).width);
-        baseScale = fitScale;
-        renderAll();
-        const ind = $('pdf-page-ind');
-        if (ind) ind.textContent = `共 ${pdf.numPages} 页`;
-      });
-    const setZoom = (z) => { zoom = Math.min(4, Math.max(0.3, z)); renderAll(); };
-    $('pdf-zoom-in').onclick = () => setZoom(zoom + 0.2);
-    $('pdf-zoom-out').onclick = () => setZoom(zoom - 0.2);
-    $('pdf-fit').onclick = () => { zoom = 1.0; baseScale = fitScale; renderAll(); };
+      if (ind) ind.textContent = Math.round(curScale() * 100) + '%';
+    }
+
+    // 缩放/重排：锚定顶部可见页（offsetTop，需 .pdf-scroll position:relative）保持阅读位置
+    function rescale() {
+      const st = scroll.scrollTop;
+      let ai = 0, aoff = 0;
+      for (let i = 0; i < N; i++) {
+        const t = pages[i].wrap.offsetTop;
+        if (t <= st + 2) { ai = i; aoff = st - t; } else break;
+      }
+      const oldH = pages[ai].wrap.offsetHeight || 1;
+      relayout();
+      const newH = pages[ai].wrap.offsetHeight || 1;
+      scroll.scrollTop = pages[ai].wrap.offsetTop + aoff * (newH / oldH);
+      updateZoomInd();
+      syncRender();
+    }
+    const zoomTo = (z) => { zoom = Math.min(4, Math.max(0.3, z)); rescale(); };
+
+    // 首页驱动初始布局（不再一次性取全部页）
+    pdf.getPage(1).then(p1 => {
+      if (gen !== pdfViewerGen) return;
+      pages[0].page = p1;
+      const v1 = p1.getViewport({ scale: 1 });
+      pages[0].w1 = v1.width; pages[0].h1 = v1.height;
+      d0 = { w: v1.width, h: v1.height };
+      fitScale = Math.max(0.4, scroll.clientWidth / v1.width);
+      baseScale = fitScale; zoom = 1.0;
+      relayout();
+      updateZoomInd();
+      syncRender();                               // 布局已定（relayout 同步设高），直接算首屏窗口
+      // 滚动即同步重算窗口：scroll 事件浏览器本已按帧节流；renderPage/releasePage 均有早退守卫，
+      // 重复调用廉价。不用 rAF——后台标签页/无合成帧环境下 rAF 会被 throttle 导致不释放。
+      scroll.addEventListener('scroll', () => { if (gen === pdfViewerGen) syncRender(); }, { passive: true });
+    }).catch(e => {
+      if (gen === pdfViewerGen) box.innerHTML = '<div class="empty">PDF 首页加载失败：' + escapeHtml(e.message) + '</div>';
+    });
+
+    $('pdf-zoom-in').onclick = () => zoomTo(zoom + 0.2);
+    $('pdf-zoom-out').onclick = () => zoomTo(zoom - 0.2);
+    $('pdf-fit').onclick = () => zoomTo(1.0);
     // Ctrl+滚轮缩放（像浏览器）
     scroll.addEventListener('wheel', (e) => {
-      if (e.ctrlKey) { e.preventDefault(); setZoom(zoom + (e.deltaY < 0 ? 0.15 : -0.15)); }
+      if (e.ctrlKey) { e.preventDefault(); zoomTo(zoom + (e.deltaY < 0 ? 0.15 : -0.15)); }
     }, { passive: false });
+    // 窗口尺寸变化：重算适宽基准并重排（防抖）
+    let rzTimer = null;
+    window.addEventListener('resize', () => {
+      if (gen !== pdfViewerGen) return;
+      clearTimeout(rzTimer);
+      rzTimer = setTimeout(() => {
+        if (gen !== pdfViewerGen || !pages[0].w1) return;
+        fitScale = Math.max(0.4, scroll.clientWidth / pages[0].w1);
+        baseScale = fitScale;
+        rescale();
+      }, 200);
+    });
   }).catch(e => {
-    box.innerHTML = '<div class="empty">PDF 加载失败：' + escapeHtml(e.message) + '</div>';
+    if (gen === pdfViewerGen) box.innerHTML = '<div class="empty">PDF 加载失败：' + escapeHtml(e.message) + '</div>';
   });
 }
 
