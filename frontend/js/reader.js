@@ -1191,6 +1191,30 @@ function renderPdfViewer(box, doi) {
     scroll.addEventListener('wheel', (e) => {
       if (e.ctrlKey) { e.preventDefault(); zoomTo(zoom + (e.deltaY < 0 ? 0.15 : -0.15)); }
     }, { passive: false });
+    // 拖拽平移（hand 工具）：按住左键拖动同时滚横纵两轴，放大后浏览更顺手。
+    // move/up 监听仅在拖动期间挂到 window、松手即摘 → 不跨文档累积泄漏。
+    let panning = false, panX = 0, panY = 0, panSL = 0, panST = 0;
+    const onPanMove = (e) => {
+      if (!panning || gen !== pdfViewerGen) { endPan(); return; }
+      scroll.scrollLeft = panSL - (e.clientX - panX);
+      scroll.scrollTop = panST - (e.clientY - panY);
+    };
+    function endPan() {
+      if (!panning) return;
+      panning = false;
+      scroll.classList.remove('panning');
+      window.removeEventListener('mousemove', onPanMove);
+      window.removeEventListener('mouseup', endPan);
+    }
+    scroll.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || panning) return;
+      panning = true; panX = e.clientX; panY = e.clientY;
+      panSL = scroll.scrollLeft; panST = scroll.scrollTop;
+      scroll.classList.add('panning');
+      window.addEventListener('mousemove', onPanMove);
+      window.addEventListener('mouseup', endPan);
+      e.preventDefault();               // 阻止原生选中/拖影
+    });
     // 窗口尺寸变化：重算适宽基准并重排（防抖）
     let rzTimer = null;
     window.addEventListener('resize', () => {

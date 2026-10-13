@@ -283,11 +283,15 @@ body {
 /* ── O批-4(item5)/O批-5(item3)：PDF 原文阅读 ── */
 .pdf-wrap { display: flex; flex-direction: column; gap: 6px; height: 100%; min-height: 0; }
 .pdf-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 2px 4px; }
-.pdf-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px; display: flex; flex-direction: column; gap: 10px; align-items: center; position: relative; }
+/* 关键：.pdf-scroll 用块级布局(非 flex)——flex+align-items:center 在页宽超过容器(放大)时
+   会把溢出均分到左右，左侧负溢出滚动条到不了(经典 flex 居中溢出陷阱)。块级下页用
+   margin:0 auto 居中，超宽时 auto 边距归零、只向右溢出 → 左右边缘都可滚动到达。
+   cursor:grab + 拖拽平移(hand 工具)见 renderPdfViewer。 */
+.pdf-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px; position: relative; cursor: grab; }
+.pdf-scroll.panning { cursor: grabbing; user-select: none; }
 /* PDF 页容器：尺寸完全由 JS 占位(style.width/height)决定；canvas 绝对定位脱离文档流，
-   故释放(canvas 清空)或渲染都不会撑动 wrap 高度 → scrollHeight 恒定、滚动位置不抖。
-   flex:0 0 auto 关键——.pdf-scroll 是 flex 列，默认 shrink 会把多页压缩到挤进视口。 */
-.pdf-page { position: relative; flex: 0 0 auto; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.18); }
+   故释放(canvas 清空)或渲染都不会撑动 wrap 高度 → scrollHeight 恒定、滚动位置不抖。 */
+.pdf-page { position: relative; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.18); margin: 0 auto 10px; }
 .pdf-page canvas { position: absolute; top: 0; left: 0; display: block; }
 
 /* ── O批-5：存_qa 按钮置灰态 ── */
