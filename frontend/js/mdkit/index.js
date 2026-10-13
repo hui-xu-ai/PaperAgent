@@ -3,6 +3,7 @@
    （阅读器状态 / 全局 api() / 事件日志 / 具体接口路径等），只依赖 vendor 全局
    （marked / katex / hljs）。业务特化通过 createRenderer({ plugins }) 注入。 */
 export { createRenderer } from './core/pipeline.js';
+export { createEditor } from './editor/md-editor.js';
 export { Protector } from './core/protect.js';
 export { escapeHtml } from './core/escape.js';
 export { splitFrontmatter, parseFrontmatterEntries, renderPropPanel } from './features/frontmatter.js';

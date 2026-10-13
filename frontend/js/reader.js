@@ -694,6 +694,12 @@ function bindTabManage() {
   });
 }
 
+let readerEditor = null;  // EasyMDE 编辑器实例(仅编辑态存在);离开编辑态即销毁
+
+function destroyReaderEditor() {
+  if (readerEditor) { try { readerEditor.destroy(); } catch (e) {} readerEditor = null; }
+}
+
 function renderReaderActions() {
   const box = $('reader-actions');
   if (readerState.editing) {
@@ -704,6 +710,9 @@ function renderReaderActions() {
       <button class="btn btn-sm" id="rd-cancel">取消</button>`;
     $('rd-save').addEventListener('click', (e) => guardBtn(e.currentTarget, () => saveReaderEdit(), '保存中…'));
     $('rd-cancel').addEventListener('click', () => {
+      // 取消 = 显式丢弃:连同自动草稿一并清除(草稿仅用于崩溃/误关防丢)
+      if (readerEditor) readerEditor.clearAutosave();
+      destroyReaderEditor();
       readerState.editing = false;
       renderReaderActions();
       $('reader-body').innerHTML = renderMarkdown(readerState.content, readerState.dir);
@@ -715,15 +724,39 @@ function renderReaderActions() {
     $('rd-edit').addEventListener('click', () => {
       readerState.editing = true;
       renderReaderActions();
-      const box = $('reader-body');
-      box.innerHTML = `<textarea class="reader-edit" id="rd-text">${escapeHtml(readerState.content)}</textarea>`;
-      $('rd-text').focus();
+      mountReaderEditor();
     });
   }
 }
 
-async function saveReaderEdit() {
-  const content = $('rd-text').value;
+// 挂载 EasyMDE 编辑器(经 MDKit.createEditor):预览接阅读态同一渲染管线,支持 Ctrl+S 保存、
+// 分屏预览、编辑态高亮、按文档隔离的自动草稿。MDKit 未就绪时兜底为裸 textarea。
+function mountReaderEditor() {
+  const body = $('reader-body');
+  body.innerHTML = `<textarea id="rd-text"></textarea>`;
+  const ta = $('rd-text');
+  const mk = window.MDKit;
+  if (!mk || !mk.createEditor) {
+    ta.className = 'reader-edit';
+    ta.value = readerState.content;
+    ta.focus();
+    readerEditor = { getValue: () => ta.value, clearAutosave: () => {}, destroy: () => {} };
+    return;
+  }
+  readerEditor = mk.createEditor({
+    element: ta,
+    initialValue: readerState.content,
+    baseDir: readerState.dir,
+    source: 'kb',
+    autosaveId: `reader-edit:${readerState.dir}/${readerState.file}`,
+    minHeight: '300px',
+    onSave: (content) => saveReaderEdit(content),
+  });
+  readerEditor.focus();
+}
+
+async function saveReaderEdit(content) {
+  if (content == null) content = readerEditor ? readerEditor.getValue() : ($('rd-text') ? $('rd-text').value : '');
   if (!readerState.dir || !readerState.file) return;
   try {
     await api('/api/kb/file', {
@@ -731,6 +764,8 @@ async function saveReaderEdit() {
       body: JSON.stringify({ path: readerState.dir + '/' + readerState.file, content }),
     });
     readerState.content = content;
+    if (readerEditor) readerEditor.clearAutosave();  // 保存成功 → 清除自动草稿
+    destroyReaderEditor();
     readerState.editing = false;
     renderReaderActions();
     $('reader-body').innerHTML = renderMarkdown(content, readerState.dir);
@@ -738,6 +773,7 @@ async function saveReaderEdit() {
                   message: `已保存 ${readerState.file}（插件自动生成将不再覆盖）` });
   } catch (e) { alert('保存失败：' + e.message); }
 }
+
 
 // O批-5(item3)：PDF 原文阅读（pdf.js 连续滚动 + 适合宽度 + 缩放 + Ctrl+滚轮缩放，接近浏览器观感）
 function renderPdfViewer(box, doi) {
