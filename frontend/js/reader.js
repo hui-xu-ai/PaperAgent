@@ -571,6 +571,7 @@ function isLibImage(path) {
 
 async function loadLibraryFile(path) {
   const box = $('reader-body');
+  suppressScroll();               // P7：抑制切换瞬间旧内容塌陷产生的伪滚动保存
   box.innerHTML = '<div class="empty">加载中…</div>';
   // G6：图片集中标签
   if (path === '__images__') {
@@ -787,6 +788,17 @@ async function saveReaderEdit(content) {
 const SCROLL_POS_KEY = 'reader-scroll-pos';
 let scrollPosMap = null;         // 懒加载：key -> {y, ts}
 let scrollSaveTimer = null;
+// 切换文档瞬间抑制保存：showReaderFolder 先把 readerState.file 改成新文档，随后
+// loadReaderFile 把旧内容替换为「加载中…」→ 旧内容塌陷使 scrollTop 钳到 0 → 触发一次
+// scroll 事件，此时 key 已是新文档 → 会把新文档位置误存为 0（竞态，时好时坏）。
+// 加载起点短暂置位，覆盖这次伪滚动即可。
+let suppressScrollSave = false;
+let suppressScrollTimer = null;
+function suppressScroll(ms) {
+  suppressScrollSave = true;
+  clearTimeout(suppressScrollTimer);
+  suppressScrollTimer = setTimeout(() => { suppressScrollSave = false; }, ms || 400);
+}
 
 function loadScrollPosMap() {
   if (scrollPosMap) return scrollPosMap;
@@ -812,7 +824,7 @@ function readerScrollKey() {
 }
 function validScrollKey(key) { return key && !key.endsWith('::') && !key.endsWith('lib::::'); }
 function saveReaderScroll() {
-  if (readerState.editing) return;              // 编辑态不覆盖阅读位置
+  if (readerState.editing || suppressScrollSave) return;   // 编辑态/切换瞬间不覆盖阅读位置
   const box = $('reader-body');
   if (!box) return;
   const key = readerScrollKey();
@@ -1068,6 +1080,7 @@ function renderPdfViewer(box, doi) {
 
 async function loadReaderFile(dir, file) {
   const box = $('reader-body');
+  suppressScroll();               // P7：抑制切换瞬间旧内容塌陷产生的伪滚动保存
   box.innerHTML = '<div class="empty">加载中…</div>';
   try {
     if (file === '__images__') {
