@@ -1034,6 +1034,7 @@ function renderPdfViewer(box, doi) {
       <span class="muted" id="pdf-zoom-ind">—</span>
       <button class="btn small" id="pdf-zoom-in" title="放大">＋</button>
       <button class="btn small" id="pdf-fit" title="适合宽度">🗔 适宽</button>
+      <button class="btn small" id="pdf-outline-btn" title="书签 / 大纲">🔖 目录</button>
       <button class="btn small" id="pdf-tool" title="拖动平移：关（左键选择文本，中键随时可拖动平移）">🖐 拖动</button>
       <span class="pdf-search">
         <input type="text" id="pdf-q" placeholder="搜索本文…" aria-label="PDF 文内搜索">
@@ -1044,6 +1045,10 @@ function renderPdfViewer(box, doi) {
       <span class="muted" id="pdf-page-ind">加载中…</span>
     </div>
     <div class="pdf-scroll" id="pdf-scroll"></div>
+    <div class="pdf-outline" id="pdf-outline-drawer" style="display:none">
+      <div class="ol-head">目录 / 书签<button class="ol-close" id="pdf-outline-close" title="关闭">×</button></div>
+      <div class="ol-body"></div>
+    </div>
   </div>`;
   if (typeof pdfjsLib === 'undefined') {
     box.innerHTML = '<div class="empty">PDF.js 未加载（vendor/pdfjs 缺失）</div>'; return;
@@ -1308,6 +1313,59 @@ function renderPdfViewer(box, doi) {
       if (next) next.onclick = () => { searchMatches.length ? showMatch(searchIdx + 1) : runSearch(input.value); };
     }
 
+    /* ── 大纲 / 书签（P10c）──
+       pdf.getOutline() 取书签树（可能为 null）；点击解析 dest 到页码：显式数组走
+       getPageIndex(dest[0])、命名目标先 getDestination 再解析；滚到该页并 syncRender。 */
+    let outlineCache = null;
+    async function gotoDest(dest) {
+      if (!dest) return;
+      try {
+        let explicit = dest;
+        if (typeof dest === 'string') explicit = await pdf.getDestination(dest);
+        if (!explicit || !explicit.length) return;
+        const idx = await pdf.getPageIndex(explicit[0]);
+        if (gen !== pdfViewerGen || idx == null || !pages[idx]) return;
+        scroll.scrollTop = Math.max(0, pages[idx].wrap.offsetTop - 8);
+        syncRender();
+      } catch (e) {}
+    }
+    function renderOutlineItems(items, depth, container) {
+      items.forEach(it => {
+        const b = document.createElement('button');
+        b.className = 'ol-item';
+        b.style.paddingLeft = (6 + depth * 13) + 'px';
+        b.textContent = it.title || '(无标题)';
+        b.title = it.title || '';
+        b.onclick = () => gotoDest(it.dest);
+        container.appendChild(b);
+        if (it.items && it.items.length) renderOutlineItems(it.items, depth + 1, container);
+      });
+    }
+    async function toggleOutline() {
+      const drawer = $('pdf-outline-drawer');
+      if (!drawer) return;
+      if (drawer.style.display !== 'none') { drawer.style.display = 'none'; return; }
+      const btn = $('pdf-outline-btn');
+      if (btn) { btn.disabled = true; btn.textContent = '🔖 载入…'; }
+      try { if (outlineCache == null) outlineCache = (await pdf.getOutline()) || []; }
+      catch (e) { outlineCache = []; }
+      if (gen !== pdfViewerGen) return;
+      const body = drawer.querySelector('.ol-body');
+      body.textContent = '';
+      if (!outlineCache.length) body.innerHTML = '<div class="ol-empty">本文档无书签 / 大纲</div>';
+      else renderOutlineItems(outlineCache, 0, body);
+      const tb = box.querySelector('.pdf-toolbar');
+      drawer.style.top = ((tb ? tb.offsetHeight : 0) + 6) + 'px';
+      drawer.style.display = 'block';
+      if (btn) { btn.disabled = false; btn.textContent = '🔖 目录'; }
+    }
+    function bindOutlineUI() {
+      const btn = $('pdf-outline-btn');
+      if (btn) btn.onclick = toggleOutline;
+      const close = $('pdf-outline-close');
+      if (close) close.onclick = () => { const d = $('pdf-outline-drawer'); if (d) d.style.display = 'none'; };
+    }
+
     // 缩放/重排：锚定顶部可见页（offsetTop，需 .pdf-scroll position:relative）保持阅读位置
     function rescale() {
       const st = scroll.scrollTop;
@@ -1360,6 +1418,7 @@ function renderPdfViewer(box, doi) {
         : '拖动平移：关（左键选择文本，中键随时可拖动平移）';
     };
     bindSearchUI();   // P10b：文内搜索
+    bindOutlineUI();  // P10c：书签/大纲
     // Ctrl+滚轮缩放（像浏览器）
     scroll.addEventListener('wheel', (e) => {
       if (e.ctrlKey) { e.preventDefault(); zoomTo(zoom + (e.deltaY < 0 ? 0.15 : -0.15)); }
