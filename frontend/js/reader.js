@@ -722,7 +722,7 @@ function renderReaderActions() {
       renderIntoReader(renderMarkdown(readerState.content, readerState.dir));
     });
   } else {
-    box.innerHTML = `${readerNavStack.length ? `<button class="btn btn-sm" id="rd-back" title="返回上一个双链来源">
+    box.innerHTML = `${readerNavStack.length ? `<button class="btn btn-sm primary" id="rd-back" title="返回上一个双链来源">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
       返回</button>` : ''}
     <button class="btn btn-sm${tocState.open ? ' primary' : ''}" id="rd-toc" title="目录大纲">
@@ -1062,7 +1062,11 @@ function wikilinkMiss(target) {
 let readerNavStack = [];
 function pushReaderNav() {
   if (readerState.source !== 'kb' || !readerState.dir) return;
-  readerNavStack.push({ dir: readerState.dir, file: readerState.file });
+  const cur = { dir: readerState.dir, file: readerState.file };
+  const last = readerNavStack[readerNavStack.length - 1];
+  // 同一次点击若被重复触发(监听重绑等),会连续压入相同项 → 去重,保证一次跳转只入栈一条
+  if (last && last.dir === cur.dir && last.file === cur.file) return;
+  readerNavStack.push(cur);
   if (readerNavStack.length > 50) readerNavStack.shift();   // 上限保护,丢最旧
 }
 function clearReaderNav() {
@@ -1087,7 +1091,8 @@ async function handleWikilinkClick(a) {
 
 function bindReaderWikilinks() {
   const body = $('reader-body');
-  if (!body) return;
+  if (!body || body.dataset.wikilinkBound) return;   // 幂等:防止重绑导致一次点击触发两次跳转/入栈
+  body.dataset.wikilinkBound = '1';
   body.addEventListener('click', (e) => {
     if (readerState.editing) return;              // 编辑态(含预览)不跳转,避免丢弃未保存改动
     const a = e.target.closest('a.wikilink[data-wikilink]');
