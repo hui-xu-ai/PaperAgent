@@ -30,6 +30,12 @@ export const paperDocPlugin = {
       return prot.math(sign + '{' + t + '}', false);
     });
   },
+  // 渲染后:编译产物的段落引用 [Pxxx](para_id,见 paperkb/context.py)变成可点上标芯片。
+  // 悬停提示「原文段落」,点击由 reader.js 读 document.json 弹出该段正文 → 用户能知道引用指什么。
+  postprocess(html) {
+    return html.replace(/\[P(\d{3})\]/g, (m, n) =>
+      `<sup class="para-ref" data-para="P${n}" title="原文段落 P${n} · 点击查看">P${n}</sup>`);
+  },
 };
 
 /* 插件二:kbImagePlugin —— 知识库/文献库图片 API 重写(基础设施布线)。

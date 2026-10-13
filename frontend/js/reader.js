@@ -1027,6 +1027,74 @@ function bindReaderWikilinks() {
 }
 
 
+/* ══════════ 段落引用 [Pxxx] 可点解释(P11)══════════
+   编译产物(_note/_wiki)里的 [Pxxx] 是原文段落 ID(para_id,见 paperkb/context.py 与
+   compile.py 的「结论后附段落 ID」约定);渲染层(md-plugins postprocess)已把它变成
+   .para-ref 上标芯片。这里点击时读该 KB 目录 document.json 的 paragraphs,弹出该段的
+   章节+正文(中文优先),让用户知道引用具体指哪一段原文。 */
+const paraDocCache = {};   // dir -> { paraId -> paragraph } | null(加载失败)
+async function loadParaIndex(dir) {
+  if (dir in paraDocCache) return paraDocCache[dir];
+  try {
+    const r = await api(`/api/kb/file?path=${encodeURIComponent(dir + '/document.json')}`);
+    const doc = typeof r.content === 'string' ? JSON.parse(r.content) : r;
+    const byId = {};
+    (doc.paragraphs || []).forEach(p => { if (p.para_id) byId[p.para_id] = p; });
+    paraDocCache[dir] = byId;
+    return byId;
+  } catch (e) { paraDocCache[dir] = null; return null; }
+}
+function onParaOutside(e) {
+  if (!e.target.closest('#para-pop') && !e.target.closest('.para-ref')) closeParaPopover();
+}
+function onParaEsc(e) { if (e.key === 'Escape') closeParaPopover(); }
+function closeParaPopover() {
+  const p = document.getElementById('para-pop');
+  if (p) p.remove();
+  document.removeEventListener('mousedown', onParaOutside, true);
+  window.removeEventListener('scroll', closeParaPopover, true);
+  document.removeEventListener('keydown', onParaEsc, true);
+}
+function showParaPopover(anchor, para, paraId) {
+  closeParaPopover();
+  const pop = document.createElement('div');
+  pop.className = 'para-pop'; pop.id = 'para-pop';
+  const text = para ? (para.text_zh || para.text_en || '') : '';
+  const section = para ? (para.section || '') : '';
+  pop.innerHTML = `
+    <div class="para-pop-head">
+      <span class="para-pop-id">${escapeHtml(paraId)}</span>
+      <span class="para-pop-sec" title="${escapeHtml(section)}">${escapeHtml(section)}</span>
+      <button class="para-pop-close" title="关闭">×</button>
+    </div>
+    <div class="para-pop-body">${text ? escapeHtml(text) : '<em>未找到该段落原文（document.json 缺失或无此段）</em>'}</div>`;
+  document.body.appendChild(pop);
+  const ar = anchor.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(window.innerWidth - 348, ar.left - 8)) + 'px';
+  pop.style.top = Math.min(window.innerHeight - 220, ar.bottom + 6) + 'px';
+  pop.querySelector('.para-pop-close').onclick = closeParaPopover;
+  setTimeout(() => {
+    document.addEventListener('mousedown', onParaOutside, true);
+    window.addEventListener('scroll', closeParaPopover, true);
+    document.addEventListener('keydown', onParaEsc, true);
+  }, 0);
+}
+function bindParaRefs() {
+  const body = $('reader-body');
+  if (!body) return;
+  body.addEventListener('click', async (e) => {
+    const ref = e.target.closest('.para-ref[data-para]');
+    if (!ref || !body.contains(ref)) return;
+    e.preventDefault(); e.stopPropagation();
+    const paraId = ref.dataset.para;
+    const dir = readerState.dir;
+    if (!dir) return;
+    const byId = await loadParaIndex(dir);
+    showParaPopover(ref, byId ? byId[paraId] : null, paraId);
+  });
+}
+
+
 // O批-5(item3)：PDF 原文阅读（pdf.js 连续滚动 + 适合宽度 + 缩放 + Ctrl+滚轮缩放，接近浏览器观感）
 /* ══════════ PDF 阅读器（P8 重写：DPR 清晰化 + 懒渲染）══════════
    旧版一次性把全部页渲染成 canvas、每次缩放全量重绘，且 canvas 未乘 devicePixelRatio

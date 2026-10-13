@@ -543,6 +543,7 @@ async function boot() {
   bindLightbox();
   bindTabManage();
   bindReaderWikilinks(); // P5b：阅读态 [[双链]] 点击跳转到目标文档
+  bindParaRefs(); // P11：[Pxxx] 段落引用点击弹出原文段落
   bindReaderScroll(); // P7：阅读位置记忆 + 顶部进度条
   bindKbSearch(); // G9/P5-E1：知识库搜索/过滤 + 列表/目录切换
   bindSessionBatch(); // P5-E1：会话批量管理（全选/批量删除/清空已归档）
