@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-10-14
+
+> **升级影响：不会丢数据，无需重新解析任何 PDF；`DATA_FORMAT` 不变（仍为 4）。**
+> 本版为**阅读器体验大版本**（纯前端 + 少量装配），无数据迁移、无后端接口变更。
+
+### Added
+- 阅读位置记忆 + 顶部阅读进度条：切文档/切标签/重开自动回到上次位置（P7）。
+- 阅读态目录大纲抽屉、`[[双链]]` 真跳转、跳转后「← 返回」导航（实心蓝按钮，多级 LIFO，P5/P13）。
+- PDF 阅读器：文内搜索（高亮+上/下条）、大纲书签抽屉、文本层（文字可选可复制）（P10）。
+- `[Pxxx]` 段落引用可点解释：悬浮窗显示该段原文，支持中/英切换、公式渲染（P11/P12）。
+- 编辑态（EasyMDE）进入时定位到当前阅读章节，退出复原阅读位置（P12）。
+
+### Changed
+- Markdown 渲染抽离为独立库 `mdkit`（业务无关），业务插件外置 `md-plugins.js`；编辑器升级 EasyMDE。
+- 阅读/编辑排版统一 Inter 字体与读者字号变量，悬浮窗字体与阅读器一致（P6/P12）。
+
+### Fixed
+- PDF 放大后无法滚到最左缘、HiDPI 模糊、大文件卡顿（DPR 清晰化 + 懒渲染）（P8/P9）。
+- 目录跳转后工具栏消失、切换文档阅读位置被误清零、双链一次点击双压栈等（P7–P13 跟进）。
+
 ## [1.4.0] - 2026-09-23
 
 > **升级影响：不会丢数据，无需重新解析任何 PDF；`DATA_FORMAT` 3 → 4（本版新增一条迁移）。**
