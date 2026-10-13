@@ -1035,6 +1035,12 @@ function renderPdfViewer(box, doi) {
       <button class="btn small" id="pdf-zoom-in" title="放大">＋</button>
       <button class="btn small" id="pdf-fit" title="适合宽度">🗔 适宽</button>
       <button class="btn small" id="pdf-tool" title="拖动平移：关（左键选择文本，中键随时可拖动平移）">🖐 拖动</button>
+      <span class="pdf-search">
+        <input type="text" id="pdf-q" placeholder="搜索本文…" aria-label="PDF 文内搜索">
+        <button class="btn small" id="pdf-q-prev" title="上一处（Shift+Enter）">↑</button>
+        <span class="muted" id="pdf-q-count"></span>
+        <button class="btn small" id="pdf-q-next" title="下一处（Enter）">↓</button>
+      </span>
       <span class="muted" id="pdf-page-ind">加载中…</span>
     </div>
     <div class="pdf-scroll" id="pdf-scroll"></div>
@@ -1181,6 +1187,127 @@ function renderPdfViewer(box, doi) {
       if (ind) ind.textContent = Math.round(curScale() * 100) + '%';
     }
 
+    /* ── 文内搜索（P10b）──
+       全文匹配：逐页 getTextContent 拼成纯文本(缓存)，大小写不敏感找全部命中 →
+       命中列表 [{page,pos}]，prev/next 跳到对应页并滚入视口。高亮：已渲染页的文本层里把
+       命中子串包 <mark class="pdf-hl">、当前处加 .current。跨 text item 的命中会计数但可能
+       不逐字高亮（best-effort，不重造 PDFFindController）。 */
+    let searchQ = '', searchMatches = [], searchIdx = -1;
+    const pageTextCache = {};
+
+    function clearMarks(tl) {
+      tl.querySelectorAll('mark.pdf-hl').forEach(mk => {
+        const parent = mk.parentNode;
+        parent.replaceChild(document.createTextNode(mk.textContent), mk);
+        parent.normalize();
+      });
+    }
+    function highlightSpan(sp, ql, marks) {
+      const txt = sp.textContent, low = txt.toLowerCase();
+      if (!low.includes(ql)) return;
+      const frag = document.createDocumentFragment();
+      let from = 0, idx;
+      while ((idx = low.indexOf(ql, from)) >= 0) {
+        if (idx > from) frag.appendChild(document.createTextNode(txt.slice(from, idx)));
+        const mk = document.createElement('mark');
+        mk.className = 'pdf-hl'; mk.textContent = txt.slice(idx, idx + ql.length);
+        frag.appendChild(mk); marks.push(mk);
+        from = idx + ql.length;
+      }
+      if (from < txt.length) frag.appendChild(document.createTextNode(txt.slice(from)));
+      sp.textContent = ''; sp.appendChild(frag);
+    }
+    // 由 paintText 在文本层渲染完成后调用；也用于翻页后补高亮
+    function applySearchHighlight(i) {
+      const p = pages[i];
+      if (!p || !p.tl) return;
+      clearMarks(p.tl);
+      if (!searchQ) return;
+      const ql = searchQ.toLowerCase(), marks = [];
+      p.tl.querySelectorAll('span').forEach(sp => highlightSpan(sp, ql, marks));
+      const m = searchMatches[searchIdx];
+      if (m && m.page === i && marks.length) {
+        let k = 0;
+        for (const mm of searchMatches) if (mm.page === i && mm.pos < m.pos) k++;
+        marks[Math.min(k, marks.length - 1)].classList.add('current');
+      }
+    }
+    function clearAllHighlights() { for (let i = 0; i < N; i++) if (pages[i].tl) clearMarks(pages[i].tl); }
+    function updateSearchCount() {
+      const el = $('pdf-q-count');
+      if (!el) return;
+      el.textContent = !searchQ ? '' : (searchMatches.length ? `${searchIdx + 1}/${searchMatches.length}` : '0/0');
+    }
+    async function ensurePageText(i) {
+      if (pageTextCache[i] != null) return pageTextCache[i];
+      const pg = pages[i].page || await pdf.getPage(i + 1);
+      pages[i].page = pg;
+      const tc = pages[i].textContent || await pg.getTextContent();
+      pages[i].textContent = tc;
+      pageTextCache[i] = tc.items.map(it => it.str).join('');
+      return pageTextCache[i];
+    }
+    async function buildSearchIndex(q) {
+      const ql = q.toLowerCase(), out = [];
+      for (let i = 0; i < N; i++) {
+        const txt = (await ensurePageText(i)).toLowerCase();
+        if (gen !== pdfViewerGen) return out;
+        let from = 0, idx;
+        while ((idx = txt.indexOf(ql, from)) >= 0) { out.push({ page: i, pos: idx }); from = idx + ql.length; }
+      }
+      return out;
+    }
+    function currentPageIdx() {
+      const st = scroll.scrollTop; let a = 0;
+      for (let i = 0; i < N; i++) { if (pages[i].wrap.offsetTop <= st + 2) a = i; else break; }
+      return a;
+    }
+    function showMatch(idx) {
+      if (!searchMatches.length) return;
+      searchIdx = ((idx % searchMatches.length) + searchMatches.length) % searchMatches.length;
+      const m = searchMatches[searchIdx];
+      scroll.scrollTop = Math.max(0, pages[m.page].wrap.offsetTop - 8);
+      syncRender();                                   // 确保该页渲染（文本层随之生成）
+      applySearchHighlight(m.page);
+      updateSearchCount();
+      const center = () => {
+        if (gen !== pdfViewerGen || searchMatches[searchIdx] !== m) return;
+        applySearchHighlight(m.page);
+        const c = pages[m.page].tl.querySelector('mark.pdf-hl.current');
+        if (c) c.scrollIntoView({ block: 'center' });
+      };
+      if (pages[m.page].tl.querySelector('mark.pdf-hl.current')) center();
+      else setTimeout(center, 450);                   // 文本层异步生成后再定位
+    }
+    async function runSearch(q) {
+      clearAllHighlights();
+      searchQ = q.trim();
+      if (!searchQ) { searchMatches = []; searchIdx = -1; updateSearchCount(); return; }
+      const cnt = $('pdf-q-count'); if (cnt) cnt.textContent = '…';
+      searchMatches = await buildSearchIndex(searchQ);
+      if (gen !== pdfViewerGen) return;
+      if (!searchMatches.length) { searchIdx = -1; updateSearchCount(); return; }
+      const curPage = currentPageIdx();
+      let start = searchMatches.findIndex(mm => mm.page >= curPage);
+      showMatch(start < 0 ? 0 : start);
+    }
+    function bindSearchUI() {
+      const input = $('pdf-q');
+      if (!input) return;
+      let deb = null;
+      input.addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(() => runSearch(input.value), 350); });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (!searchMatches.length) runSearch(input.value);
+          else showMatch(searchIdx + (e.shiftKey ? -1 : 1));
+        } else if (e.key === 'Escape') { input.value = ''; runSearch(''); input.blur(); }
+      });
+      const prev = $('pdf-q-prev'), next = $('pdf-q-next');
+      if (prev) prev.onclick = () => { searchMatches.length ? showMatch(searchIdx - 1) : runSearch(input.value); };
+      if (next) next.onclick = () => { searchMatches.length ? showMatch(searchIdx + 1) : runSearch(input.value); };
+    }
+
     // 缩放/重排：锚定顶部可见页（offsetTop，需 .pdf-scroll position:relative）保持阅读位置
     function rescale() {
       const st = scroll.scrollTop;
@@ -1232,6 +1359,7 @@ function renderPdfViewer(box, doi) {
         ? '拖动平移：开（左键拖动平移；切回可选择文本）'
         : '拖动平移：关（左键选择文本，中键随时可拖动平移）';
     };
+    bindSearchUI();   // P10b：文内搜索
     // Ctrl+滚轮缩放（像浏览器）
     scroll.addEventListener('wheel', (e) => {
       if (e.ctrlKey) { e.preventDefault(); zoomTo(zoom + (e.deltaY < 0 ? 0.15 : -0.15)); }
