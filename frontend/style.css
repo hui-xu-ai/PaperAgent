@@ -287,12 +287,20 @@ body {
    会把溢出均分到左右，左侧负溢出滚动条到不了(经典 flex 居中溢出陷阱)。块级下页用
    margin:0 auto 居中，超宽时 auto 边距归零、只向右溢出 → 左右边缘都可滚动到达。
    cursor:grab + 拖拽平移(hand 工具)见 renderPdfViewer。 */
-.pdf-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px; position: relative; cursor: grab; }
+.pdf-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px; position: relative; }
+.pdf-scroll.pan-mode { cursor: grab; }
 .pdf-scroll.panning { cursor: grabbing; user-select: none; }
-/* PDF 页容器：尺寸完全由 JS 占位(style.width/height)决定；canvas 绝对定位脱离文档流，
-   故释放(canvas 清空)或渲染都不会撑动 wrap 高度 → scrollHeight 恒定、滚动位置不抖。 */
+/* PDF 页容器：尺寸完全由 JS 占位(style.width/height)决定；canvas/文本层均绝对定位脱离文档流，
+   故释放或渲染都不会撑动 wrap 高度 → scrollHeight 恒定、滚动位置不抖。 */
 .pdf-page { position: relative; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.18); margin: 0 auto 10px; }
-.pdf-page canvas { position: absolute; top: 0; left: 0; display: block; }
+.pdf-page canvas { position: absolute; top: 0; left: 0; display: block; z-index: 1; }
+/* 文本层：透明文字精确叠在 canvas 上 → 可选中/复制/搜索高亮；pan 模式下关闭指针事件不挡平移 */
+.textLayer { position: absolute; top: 0; left: 0; z-index: 2; overflow: hidden; line-height: 1; }
+.textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.textLayer ::selection { background: rgba(37,99,235,.35); }
+.pdf-scroll.pan-mode .textLayer { pointer-events: none; }
+.textLayer mark.pdf-hl { background: rgba(255,213,79,.6); color: transparent; border-radius: 2px; }
+.textLayer mark.pdf-hl.current { background: rgba(255,152,0,.85); }
 
 /* ── O批-5：存_qa 按钮置灰态 ── */
 .qa-save-btn.disabled { opacity: .45; cursor: not-allowed; }

@@ -1034,6 +1034,7 @@ function renderPdfViewer(box, doi) {
       <span class="muted" id="pdf-zoom-ind">—</span>
       <button class="btn small" id="pdf-zoom-in" title="放大">＋</button>
       <button class="btn small" id="pdf-fit" title="适合宽度">🗔 适宽</button>
+      <button class="btn small" id="pdf-tool" title="拖动平移：关（左键选择文本，中键随时可拖动平移）">🖐 拖动</button>
       <span class="muted" id="pdf-page-ind">加载中…</span>
     </div>
     <div class="pdf-scroll" id="pdf-scroll"></div>
@@ -1061,10 +1062,14 @@ function renderPdfViewer(box, doi) {
       wrap.className = 'pdf-page';
       wrap.dataset.page = String(i + 1);
       const canvas = document.createElement('canvas');
+      const tl = document.createElement('div');      // 文本层：透明文字叠在 canvas 上，供选中/复制/搜索
+      tl.className = 'textLayer';
       wrap.appendChild(canvas);
+      wrap.appendChild(tl);
       scroll.appendChild(wrap);
-      pages.push({ wrap, canvas, page: null, w1: 0, h1: 0,
-                   renderedScale: 0, renderedDpr: 0, pendingScale: 0, pendingDpr: 0, task: null });
+      pages.push({ wrap, canvas, tl, page: null, w1: 0, h1: 0,
+                   renderedScale: 0, renderedDpr: 0, pendingScale: 0, pendingDpr: 0,
+                   task: null, tlTask: null, textContent: null, textDivs: [] });
     }
     let d0 = { w: 612, h: 792 };   // 未取页的兜底比例（Letter），首页取到后覆盖
 
@@ -1079,9 +1084,12 @@ function renderPdfViewer(box, doi) {
     function releasePage(i) {
       const p = pages[i];
       if (p.task) { try { p.task.cancel(); } catch (e) {} p.task = null; }
+      if (p.tlTask) { try { p.tlTask.cancel(); } catch (e) {} p.tlTask = null; }
       // 无条件清空：pending 中的页 renderedScale 仍为 0 但 canvas.width 已被 paint 设过，
       // 只按 renderedScale 判断会漏清 → 滚过的页累积不回收（内存泄漏）。
       if (p.canvas.width) { p.canvas.width = 0; p.canvas.height = 0; }
+      if (p.tl.firstChild) p.tl.textContent = '';   // 清文本层 DOM；textContent 缓存保留供搜索
+      p.textDivs = [];
       p.renderedScale = 0; p.renderedDpr = 0; p.pendingScale = 0; p.pendingDpr = 0;
     }
 
@@ -1105,6 +1113,31 @@ function renderPdfViewer(box, doi) {
           if (gen !== pdfViewerGen) return;
           p.renderedScale = s; p.renderedDpr = d; p.task = null;
         }).catch(() => { if (gen === pdfViewerGen) { p.task = null; p.pendingScale = 0; } });
+        // 文本层：HTML span 叠在 canvas 上，随 CSS 尺寸(vpCss)定位；--scale-factor 必须=当前
+        // CSS 缩放，否则 renderTextLayer 的 calc(var(--scale-factor)*Npx) 字号算错。
+        p.tl.style.width = Math.floor(vpCss.width) + 'px';
+        p.tl.style.height = Math.floor(vpCss.height) + 'px';
+        p.tl.style.setProperty('--scale-factor', String(s));
+        const paintText = (tc) => {
+          if (gen !== pdfViewerGen) return;
+          if (p.tlTask) { try { p.tlTask.cancel(); } catch (e) {} }
+          p.tl.textContent = '';
+          p.textDivs = [];
+          try {
+            p.tlTask = pdfjsLib.renderTextLayer({ textContentSource: tc, container: p.tl, viewport: vpCss, textDivs: p.textDivs });
+            p.tlTask.promise.then(() => {
+              if (gen !== pdfViewerGen) return;
+              p.tlTask = null;
+              if (typeof applySearchHighlight === 'function') applySearchHighlight(i);
+            }).catch(() => { if (gen === pdfViewerGen) p.tlTask = null; });
+          } catch (e) { p.tlTask = null; }
+        };
+        if (p.textContent) paintText(p.textContent);
+        else page.getTextContent().then(tc => {
+          if (gen !== pdfViewerGen) return;
+          p.textContent = tc;
+          paintText(tc);
+        }).catch(() => {});
       };
       if (p.page) paint(p.page);
       else pdf.getPage(i + 1).then(pg => {
@@ -1187,12 +1220,23 @@ function renderPdfViewer(box, doi) {
     $('pdf-zoom-in').onclick = () => zoomTo(zoom + 0.2);
     $('pdf-zoom-out').onclick = () => zoomTo(zoom - 0.2);
     $('pdf-fit').onclick = () => zoomTo(1.0);
+    // 工具切换：默认「选择」——左键拖拽选字/复制（文本层）；开「拖动」后左键拖拽平移。
+    // 无论哪种模式，中键拖拽始终平移（power user 顺手）。
+    let panMode = false;
+    const toolBtn = $('pdf-tool');
+    if (toolBtn) toolBtn.onclick = () => {
+      panMode = !panMode;
+      toolBtn.classList.toggle('active', panMode);
+      scroll.classList.toggle('pan-mode', panMode);
+      toolBtn.title = panMode
+        ? '拖动平移：开（左键拖动平移；切回可选择文本）'
+        : '拖动平移：关（左键选择文本，中键随时可拖动平移）';
+    };
     // Ctrl+滚轮缩放（像浏览器）
     scroll.addEventListener('wheel', (e) => {
       if (e.ctrlKey) { e.preventDefault(); zoomTo(zoom + (e.deltaY < 0 ? 0.15 : -0.15)); }
     }, { passive: false });
-    // 拖拽平移（hand 工具）：按住左键拖动同时滚横纵两轴，放大后浏览更顺手。
-    // move/up 监听仅在拖动期间挂到 window、松手即摘 → 不跨文档累积泄漏。
+    // 拖拽平移（hand 工具）：按住拖动同时滚横纵两轴。move/up 仅在拖动期间挂 window、松手即摘。
     let panning = false, panX = 0, panY = 0, panSL = 0, panST = 0;
     const onPanMove = (e) => {
       if (!panning || gen !== pdfViewerGen) { endPan(); return; }
@@ -1207,13 +1251,14 @@ function renderPdfViewer(box, doi) {
       window.removeEventListener('mouseup', endPan);
     }
     scroll.addEventListener('mousedown', (e) => {
-      if (e.button !== 0 || panning) return;
+      const wantPan = (e.button === 1) || (e.button === 0 && panMode);
+      if (!wantPan || panning) return;
       panning = true; panX = e.clientX; panY = e.clientY;
       panSL = scroll.scrollLeft; panST = scroll.scrollTop;
       scroll.classList.add('panning');
       window.addEventListener('mousemove', onPanMove);
       window.addEventListener('mouseup', endPan);
-      e.preventDefault();               // 阻止原生选中/拖影
+      e.preventDefault();               // 阻止原生选中/拖影/中键自动滚动
     });
     // 窗口尺寸变化：重算适宽基准并重排（防抖）
     let rzTimer = null;
