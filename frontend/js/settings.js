@@ -1282,6 +1282,8 @@ async function setPaperTemplate(id, tpl) {
 
 /* ══════════ 显示设置（U8/V11：字号/行宽/字体，localStorage 记忆）══════════ */
 const FONT_FAMILIES = {
+  // Inter 拉丁子集本地内置(vendor/inter),英文/数字更精致;中文自动回退系统最优黑体
+  inter: 'Inter, "Source Han Sans SC", "Source Han Sans CN", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif',
   system: 'system-ui, "Segoe UI", "Microsoft YaHei", sans-serif',
   serif: 'Georgia, "Songti SC", "SimSun", serif',
   sans: '"Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif',
@@ -1293,7 +1295,7 @@ const FONT_FAMILIES = {
    注意 `index.html` 下拉里的文案（15px=「特大」、16px=「超大」）只是标签，实际生效值一律取这里；
    旧实现 `localStorage || '13'` 与下拉默认显示第一项(12px)**不一致**（界面显示 12px、实际 13px）。 */
 const DISPLAY_DEFAULTS = {
-  'disp-chat': '15', 'disp-reader': '16', 'disp-margin': '24', 'disp-font': 'system',
+  'disp-chat': '15', 'disp-reader': '16', 'disp-margin': '24', 'disp-font': 'inter',
 };
 
 function displayValue(id) {

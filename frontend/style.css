@@ -503,8 +503,16 @@ details.think-box .think-text { margin-top: 6px; white-space: pre-wrap; word-bre
 .img-cell { margin: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--panel); }
 .img-cell img { width: 100%; height: auto; max-height: 60vh; object-fit: contain; display: block; cursor: zoom-in; background: #fff; }
 .img-cell figcaption { padding: 5px 10px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.md { line-height: 1.65; word-break: break-word; }
-.md h1, .md h2, .md h3, .md h4 { margin: .5em 0 .3em; line-height: 1.3; }
+/* P6b：排版细化——开启字距调整/连字 + Inter 特性开关（cv/ss 视觉更接近 Obsidian），
+   不改字号与行高（用户未抱怨），仅提升字形观感。antialiased 让笔画更干净。 */
+.md {
+  line-height: 1.65; word-break: break-word;
+  font-kerning: normal; font-variant-ligatures: common-ligatures;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+.md h1, .md h2, .md h3, .md h4 { margin: .5em 0 .3em; line-height: 1.3; font-weight: 650; letter-spacing: -.01em; }
 .md h1 { font-size: 1.25rem; } .md h2 { font-size: 1.1rem; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
 .md h3 { font-size: 1rem; }
 .md p { margin: .25em 0; text-align: justify; text-align-last: start; text-indent: 2em; }  /* P2-14：两端对齐 + REWORK：正文首行缩进2字符 */
@@ -596,8 +604,8 @@ details.think-box .think-text { margin-top: 6px; white-space: pre-wrap; word-bre
 .lightbox { position: fixed; inset: 0; background: rgba(10,15,30,.86); z-index: 2000; display: flex; align-items: center; justify-content: center; cursor: zoom-out; overflow: hidden; }
 .lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,.4); transition: transform .06s ease; user-select: none; }
 
-/* 阅读器编辑器（U5） */
-.reader-edit { width: 100%; height: 100%; min-height: 300px; border: 1px solid var(--border-strong); border-radius: 8px; padding: 12px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; line-height: 1.6; resize: vertical; outline: none; }
+/* 阅读器编辑器（U5）—— EasyMDE 未就绪时的兜底裸 textarea；字体与阅读态一致（P6c） */
+.reader-edit { width: 100%; height: 100%; min-height: 300px; border: 1px solid var(--border-strong); border-radius: 8px; padding: 12px; font-family: var(--font-reader); font-size: var(--reader-font); line-height: 1.65; resize: vertical; outline: none; }
 
 /* ══════════ EasyMDE 编辑器主题适配（P4：替换裸 textarea）══════════
    图标为内联 SVG（见 mdkit/editor/md-editor.js），非 Font Awesome；
@@ -617,10 +625,14 @@ details.think-box .think-text { margin-top: 6px; white-space: pre-wrap; word-bre
 .EasyMDEContainer .editor-toolbar button svg { display: block; }
 .EasyMDEContainer .editor-toolbar i.separator { border-left: 1px solid var(--border-strong); margin: 3px 5px; height: 18px; }
 .EasyMDEContainer .CodeMirror {
-  font-family: ui-monospace, Consolas, monospace; font-size: 13px; line-height: 1.6;
+  /* P6c：编辑态正文与阅读态一致（比例字体 Inter + 同字号 + 同行距），消除割裂感 */
+  font-family: var(--font-reader); font-size: var(--reader-font); line-height: 1.65;
   background: var(--panel); color: var(--text);
   border: 1px solid var(--border-strong); border-radius: 0 0 8px 8px; padding: 4px 0;
 }
+/* 仅代码 token 保留等宽（Obsidian/Typora 风格）。CodeMirror 5 markdown 模式把行内 `code`
+   与围栏代码块统一标为 .cm-comment（已浏览器实测），故只此一类即可覆盖。 */
+.EasyMDEContainer .CodeMirror .cm-comment { font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: .92em; }
 .EasyMDEContainer .CodeMirror-cursor { border-left-color: var(--text); }
 .EasyMDEContainer .CodeMirror-selected { background: var(--primary-soft); }
 .EasyMDEContainer .CodeMirror-gutters { background: var(--bg); border-right: 1px solid var(--border); }
@@ -668,13 +680,14 @@ body[data-theme="night"] .EasyMDEContainer .cm-header, body[data-theme="night"] 
 
 /* ══════════ 显示设置（U8/V11）══════════ */
 :root {
-  /* ⚠️ 与 app.js::DISPLAY_DEFAULTS 保持一致（这里是 JS 生效前的兜底值；
-     2026-09-12 用户拍板：会话 15px / 阅读 16px / 页边距窄 24px / 字体系统默认） */
+  /* ⚠️ 与 settings.js::DISPLAY_DEFAULTS 保持一致（这里是 JS 生效前的兜底值；
+     2026-09-12 用户拍板：会话 15px / 阅读 16px / 页边距窄 24px；
+     2026-10-13 默认字体改 Inter：拉丁走本地内置 Inter，中文回退系统黑体） */
   --chat-font: 15px;
   --reader-font: 16px;
   --reader-margin: 24px;   /* P5-FB-点6：页边距=阅读内容左右留白；行宽随阅读器窗口拖拽自适应 */
-  --font-body: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
-  --font-reader: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-body: Inter, "Source Han Sans SC", "Source Han Sans CN", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-reader: Inter, "Source Han Sans SC", "Source Han Sans CN", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 }
 body { font-family: var(--font-body); }
 .md { font-family: var(--font-reader); }
