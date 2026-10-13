@@ -876,6 +876,50 @@ function syncTocBtn() {
 }
 
 
+/* ══════════ 双链真跳转(P5b)══════════
+   [[目标]] 渲染为 <a class="wikilink" data-wikilink="目标">;这里在 #reader-body 上事件
+   委托:解析目标 → 校验 KB 内是否存在 → showReaderFolder 导航。目标两种形态:
+   跨文档 "<DOI目录>/<文件>"、同文档变体 "<文件>"(用当前 readerState.dir)。
+   解析/校验认识 KB 目录与 /api/kb/tree,属业务,不进 mdkit 库。仅 docked 阅读面板。 */
+function resolveWikilinkTarget(target) {
+  if (!target) return null;
+  const slash = target.indexOf('/');
+  let dir, filePart;
+  if (slash >= 0) { dir = target.slice(0, slash); filePart = target.slice(slash + 1); }
+  else { dir = readerState.dir; filePart = target; }
+  if (!dir || !filePart) return null;
+  let file = filePart;
+  if (!/\.(md|pdf)$/i.test(file) && file !== '__images__') file += '.md';
+  return { dir, file };
+}
+
+function wikilinkMiss(target) {
+  appendEvent({ ts: new Date().toLocaleTimeString(), level: 'warn', source: 'kb',
+                message: `双链目标未找到：[[${target}]]` });
+}
+
+async function handleWikilinkClick(a) {
+  const target = a.dataset.wikilink;
+  const nav = resolveWikilinkTarget(target);
+  if (!nav) { wikilinkMiss(target); return; }
+  const set = await ensureKbFileSet(nav.dir);   // 已缓存则瞬时;校验目标文件是否存在
+  if (set && !set.has(nav.file)) { wikilinkMiss(target); return; }
+  showReaderFolder(nav.dir, nav.file);
+}
+
+function bindReaderWikilinks() {
+  const body = $('reader-body');
+  if (!body) return;
+  body.addEventListener('click', (e) => {
+    if (readerState.editing) return;              // 编辑态(含预览)不跳转,避免丢弃未保存改动
+    const a = e.target.closest('a.wikilink[data-wikilink]');
+    if (!a || !body.contains(a)) return;
+    e.preventDefault();
+    handleWikilinkClick(a);
+  });
+}
+
+
 // O批-5(item3)：PDF 原文阅读（pdf.js 连续滚动 + 适合宽度 + 缩放 + Ctrl+滚轮缩放，接近浏览器观感）
 function renderPdfViewer(box, doi) {
   box.innerHTML = `<div class="pdf-wrap">

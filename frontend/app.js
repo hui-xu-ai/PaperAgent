@@ -542,6 +542,7 @@ async function boot() {
   initReviewGate();  // P12F：复核门控汇总条
   bindLightbox();
   bindTabManage();
+  bindReaderWikilinks(); // P5b：阅读态 [[双链]] 点击跳转到目标文档
   bindKbSearch(); // G9/P5-E1：知识库搜索/过滤 + 列表/目录切换
   bindSessionBatch(); // P5-E1：会话批量管理（全选/批量删除/清空已归档）
   $('kbd-close').addEventListener('click', () => { $('kb-detail-modal').style.display = 'none'; });

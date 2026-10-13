@@ -6,6 +6,6 @@ import { escapeHtml } from '../core/escape.js';
 export function renderWikilinks(html) {
   return html.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, name, alias) => {
     const clean = name.replace(/\.md$/, '');
-    return `<a class="wikilink" title="Obsidian 双链: ${escapeHtml(clean)}">${escapeHtml(alias || clean)}</a>`;
+    return `<a class="wikilink" data-wikilink="${escapeHtml(clean)}" title="Obsidian 双链: ${escapeHtml(clean)}">${escapeHtml(alias || clean)}</a>`;
   });
 }
