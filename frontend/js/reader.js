@@ -594,7 +594,7 @@ async function loadLibraryFile(path) {
     }
     const r = await api(`/api/library/file?path=${encodeURIComponent(path)}`);
     const folder = path.split('/')[0]; // library/<DOI>/
-    box.innerHTML = renderMarkdown(r.content, folder, 'lib');
+    renderIntoReader(renderMarkdown(r.content, folder, 'lib'));
   } catch (e) {
     box.innerHTML = `<div class="empty">${escapeHtml(path)} 不可用：${escapeHtml(e.message)}</div>`;
   }
@@ -715,7 +715,7 @@ function renderReaderActions() {
       destroyReaderEditor();
       readerState.editing = false;
       renderReaderActions();
-      $('reader-body').innerHTML = renderMarkdown(readerState.content, readerState.dir);
+      renderIntoReader(renderMarkdown(readerState.content, readerState.dir));
     });
   } else {
     box.innerHTML = `<button class="btn btn-sm${tocState.open ? ' primary' : ''}" id="rd-toc" title="目录大纲">
@@ -773,10 +773,93 @@ async function saveReaderEdit(content) {
     destroyReaderEditor();
     readerState.editing = false;
     renderReaderActions();
-    $('reader-body').innerHTML = renderMarkdown(content, readerState.dir);
+    renderIntoReader(renderMarkdown(content, readerState.dir));
     appendEvent({ ts: new Date().toLocaleTimeString(), level: 'info', source: 'kb',
                   message: `已保存 ${readerState.file}（插件自动生成将不再覆盖）` });
   } catch (e) { alert('保存失败：' + e.message); }
+}
+
+
+/* ══════════ 阅读位置记忆 + 进度条（P7）══════════
+   位置按「文档 key」存 localStorage(reader-scroll-pos)，切回同一文档自动定位；
+   进度条 = #reader-body 已滚动比例。纯前端、零后端依赖；依赖 readerState/$，属业务，
+   不进 mdkit 库。编辑态与 PDF（内层 .pdf-scroll 独立滚动）不记位置。 */
+const SCROLL_POS_KEY = 'reader-scroll-pos';
+let scrollPosMap = null;         // 懒加载：key -> {y, ts}
+let scrollSaveTimer = null;
+
+function loadScrollPosMap() {
+  if (scrollPosMap) return scrollPosMap;
+  try { scrollPosMap = JSON.parse(localStorage.getItem(SCROLL_POS_KEY) || '{}'); }
+  catch (e) { scrollPosMap = {}; }
+  return scrollPosMap;
+}
+function persistScrollPos() {
+  try {
+    const m = loadScrollPosMap();
+    const keys = Object.keys(m);
+    if (keys.length > 60) {   // 只留最近 60 条，防 localStorage 膨胀
+      keys.sort((a, b) => (m[a].ts || 0) - (m[b].ts || 0))
+          .slice(0, keys.length - 60).forEach(k => delete m[k]);
+    }
+    localStorage.setItem(SCROLL_POS_KEY, JSON.stringify(m));
+  } catch (e) {}
+}
+function readerScrollKey() {
+  if (readerState.source === 'lib')
+    return `lib::${readerState.paperId || state.currentPaperId || ''}::${readerState.libFile || ''}`;
+  return `kb::${readerState.dir || ''}::${readerState.file || ''}`;
+}
+function validScrollKey(key) { return key && !key.endsWith('::') && !key.endsWith('lib::::'); }
+function saveReaderScroll() {
+  if (readerState.editing) return;              // 编辑态不覆盖阅读位置
+  const box = $('reader-body');
+  if (!box) return;
+  const key = readerScrollKey();
+  if (!validScrollKey(key)) return;
+  loadScrollPosMap()[key] = { y: box.scrollTop, ts: Date.now() };
+  clearTimeout(scrollSaveTimer);
+  scrollSaveTimer = setTimeout(persistScrollPos, 400);
+}
+function updateReaderProgress() {
+  const box = $('reader-body'), bar = $('reader-progress');
+  if (!box || !bar || !bar.firstElementChild) return;
+  const max = box.scrollHeight - box.clientHeight;
+  if (max <= 4) { bar.classList.remove('on'); bar.firstElementChild.style.width = '0'; return; }
+  bar.classList.add('on');
+  bar.firstElementChild.style.width = Math.min(100, Math.max(0, box.scrollTop / max * 100)).toFixed(2) + '%';
+}
+// 渲染后恢复位置：图片懒加载会撑高内容 → rAF + 延时二次定位（key 未变才生效）
+function restoreReaderScroll(key) {
+  const box = $('reader-body');
+  if (!box) return;
+  const rec = validScrollKey(key) ? loadScrollPosMap()[key] : null;
+  if (!rec || !rec.y) { box.scrollTop = 0; updateReaderProgress(); return; }
+  const apply = () => { if (readerScrollKey() === key) { box.scrollTop = rec.y; updateReaderProgress(); } };
+  apply();
+  requestAnimationFrame(apply);
+  setTimeout(apply, 350);
+}
+// 统一渲染出口：写入 HTML 后恢复位置并刷新进度条
+function renderIntoReader(html) {
+  $('reader-body').innerHTML = html;
+  restoreReaderScroll(readerScrollKey());
+}
+function bindReaderScroll() {
+  const box = $('reader-body');
+  if (!box || box.dataset.scrollBound) return;
+  box.dataset.scrollBound = '1';
+  let ticking = false;
+  box.addEventListener('scroll', () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => { ticking = false; saveReaderScroll(); updateReaderProgress(); });
+  }, { passive: true });
+  let rzTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(rzTimer);
+    rzTimer = setTimeout(updateReaderProgress, 150);
+  });
 }
 
 
@@ -1007,7 +1090,7 @@ async function loadReaderFile(dir, file) {
     }
     const r = await api(`/api/kb/file?path=${encodeURIComponent(dir + '/' + file)}`);
     readerState.content = r.content;
-    box.innerHTML = renderMarkdown(r.content, dir);
+    renderIntoReader(renderMarkdown(r.content, dir));
   } catch (e) {
     box.innerHTML = `<div class="empty">${escapeHtml(file)} 不可用：${escapeHtml(e.message)}</div>`;
   }
