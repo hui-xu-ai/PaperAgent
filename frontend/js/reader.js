@@ -737,7 +737,50 @@ function renderReaderActions() {
 
 // 挂载 EasyMDE 编辑器(经 MDKit.createEditor):预览接阅读态同一渲染管线,支持 Ctrl+S 保存、
 // 分屏预览、编辑态高亮、按文档隔离的自动草稿。MDKit 未就绪时兜底为裸 textarea。
+// 进编辑前记住阅读到的章节标题,编辑器定位到同一处;退出编辑由 P7 阅读位置记忆复原。
+let editAnchorHeading = null;
+// 归一化标题:去 markdown 修饰符与首尾空白、折叠空格、转小写,便于阅读态与源码匹配
+function normHeading(s) {
+  return String(s || '').replace(/[#>*_`~\[\]$\\!]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+// 当前阅读到的章节:reader-body 内最后一个顶部越过视口上沿(留 60px)的 h1-h4
+function currentReadHeading() {
+  const body = $('reader-body');
+  if (!body) return null;
+  const top = body.getBoundingClientRect().top;
+  const heads = body.querySelectorAll('h1,h2,h3,h4');
+  let last = null;
+  heads.forEach(h => { if (h.getBoundingClientRect().top - top <= 60) last = h; });
+  return last ? last.textContent.trim() : null;
+}
+// 在编辑器源码里找到匹配标题行,把光标定位过去,并把主阅读区滚到该章节。
+// 注意:EasyMDE 的 CodeMirror 高度自适应整篇(无内部滚动),真正的滚动容器是 #reader-body,
+// 所以按目标行的「页面坐标」滚动 reader-body,而非调 cm.scrollIntoView。
+function scrollEditorToHeading(emde, heading) {
+  if (!emde || !emde.codemirror || !heading) return;
+  const cm = emde.codemirror;
+  const want = normHeading(heading);
+  if (!want) return;
+  const lines = cm.getValue().split('\n');
+  let idx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^#{1,6}\s+(.*)$/);
+    if (m && normHeading(m[1]) === want) { idx = i; break; }
+  }
+  if (idx < 0) return;
+  cm.setCursor({ line: idx, ch: 0 });
+  // 待 EasyMDE 布局稳定后再按页面坐标滚动(focus 可能先把浏览器滚到光标,这里覆盖它)
+  setTimeout(() => {
+    cm.refresh();
+    const body = $('reader-body');
+    if (!body) return;
+    const cc = cm.charCoords({ line: idx, ch: 0 }, 'page');
+    const br = body.getBoundingClientRect();
+    body.scrollTo({ top: Math.max(0, cc.top - br.top + body.scrollTop - 16) });
+  }, 120);
+}
 function mountReaderEditor() {
+  editAnchorHeading = currentReadHeading();
   const body = $('reader-body');
   body.innerHTML = `<textarea id="rd-text"></textarea>`;
   const ta = $('rd-text');
@@ -759,6 +802,7 @@ function mountReaderEditor() {
     onSave: (content) => saveReaderEdit(content),
   });
   readerEditor.focus();
+  scrollEditorToHeading(readerEditor.easyMDE, editAnchorHeading);
 }
 
 async function saveReaderEdit(content) {
@@ -1051,6 +1095,7 @@ function onParaEsc(e) { if (e.key === 'Escape') closeParaPopover(); }
 function closeParaPopover() {
   const p = document.getElementById('para-pop');
   if (p) p.remove();
+  paraPopState = null;
   const body = $('reader-body');
   if (body) body.removeEventListener('scroll', closeParaPopover);
   document.removeEventListener('mousedown', onParaOutside, true);
@@ -1063,31 +1108,71 @@ function renderParaMd(text) {
   } catch (e) {}
   return '<pre class="para-pop-plain">' + escapeHtml(text) + '</pre>';
 }
-function showParaPopover(anchor, para, paraId) {
+// 弹窗当前状态(段落 + 显示语言),供切换按钮就地刷新,无需重开弹窗
+let paraPopState = null;   // { para, paraId, lang: 'zh' | 'en' }
+function paraPopLangLabel(para, lang) {
+  if (lang === 'en') return (para && para.text_zh) ? '英文原文' : '英文原文 · 无中文译文';
+  return '中文译文';
+}
+function paraPopBodyHtml(para, lang) {
+  const text = para ? (lang === 'en' ? (para.text_en || '') : (para.text_zh || '')) : '';
+  if (text) return renderParaMd(text);
+  return '<em>未找到该段落原文（document.json 缺失或无此段）</em>';
+}
+// 就地刷新弹窗语言:切换正文 + 徽标 + 按钮文案(两种语言都存在时才显示切换按钮)
+function refreshParaPop() {
+  const s = paraPopState;
+  if (!s) return;
+  const pop = document.getElementById('para-pop');
+  if (!pop) return;
+  const both = !!(s.para && s.para.text_zh && s.para.text_en);
+  const langEl = pop.querySelector('.para-pop-lang');
+  if (langEl) {
+    const label = paraPopLangLabel(s.para, s.lang);
+    langEl.textContent = label;
+    langEl.style.display = label ? '' : 'none';
+  }
+  const bodyEl = pop.querySelector('.para-pop-body');
+  if (bodyEl) bodyEl.innerHTML = paraPopBodyHtml(s.para, s.lang);
+  const tog = pop.querySelector('.para-pop-toggle');
+  if (tog) {
+    tog.style.display = both ? '' : 'none';
+    tog.textContent = s.lang === 'zh' ? '看英文' : '看中文';
+  }
+}
+function showParaPopover(anchor, para, paraId, preferLang) {
   closeParaPopover();
+  const hasZh = !!(para && para.text_zh);
+  const hasEn = !!(para && para.text_en);
+  // 初始语言:优先调用方指定;否则中文优先,无中文回退英文
+  let lang = preferLang === 'en' ? 'en' : preferLang === 'zh' ? 'zh' : (hasZh ? 'zh' : 'en');
+  if (lang === 'en' && !hasEn && hasZh) lang = 'zh';
+  if (lang === 'zh' && !hasZh && hasEn) lang = 'en';
+  paraPopState = { para, paraId, lang };
+  const section = para ? (para.section || '') : '';
+  const both = hasZh && hasEn;
   const pop = document.createElement('div');
   pop.className = 'para-pop'; pop.id = 'para-pop';
-  const zh = para ? (para.text_zh || '') : '';
-  const en = para ? (para.text_en || '') : '';
-  const section = para ? (para.section || '') : '';
-  // 无中文译文时明确标注语言,避免读者误以为是中文或困惑
-  let lang = '', bodyHtml;
-  if (zh) { lang = '中文译文'; bodyHtml = renderParaMd(zh); }
-  else if (en) { lang = '英文原文 · 无中文译文'; bodyHtml = renderParaMd(en); }
-  else { bodyHtml = '<em>未找到该段落原文（document.json 缺失或无此段）</em>'; }
   pop.innerHTML = `
     <div class="para-pop-head">
       <span class="para-pop-id">${escapeHtml(paraId)}</span>
-      ${lang ? `<span class="para-pop-lang">${escapeHtml(lang)}</span>` : ''}
+      <span class="para-pop-lang"></span>
       <span class="para-pop-sec" title="${escapeHtml(section)}">${escapeHtml(section)}</span>
+      <button class="para-pop-toggle" title="切换中/英文"${both ? '' : ' style="display:none"'}></button>
       <button class="para-pop-close" title="关闭">×</button>
     </div>
-    <div class="para-pop-body">${bodyHtml}</div>`;
+    <div class="para-pop-body"></div>`;
   document.body.appendChild(pop);
+  refreshParaPop();
   const ar = anchor.getBoundingClientRect();
-  pop.style.left = Math.max(8, Math.min(window.innerWidth - 348, ar.left - 8)) + 'px';
+  pop.style.left = Math.max(8, Math.min(window.innerWidth - 430, ar.left - 8)) + 'px';
   pop.style.top = Math.min(window.innerHeight - 260, ar.bottom + 6) + 'px';
   pop.querySelector('.para-pop-close').onclick = closeParaPopover;
+  pop.querySelector('.para-pop-toggle').onclick = () => {
+    if (!paraPopState) return;
+    paraPopState.lang = paraPopState.lang === 'zh' ? 'en' : 'zh';
+    refreshParaPop();
+  };
   setTimeout(() => {
     document.addEventListener('mousedown', onParaOutside, true);
     // 只在主阅读区滚动时关闭;popover 内部滚动(读长文)不触发 → 不会读一半被关
