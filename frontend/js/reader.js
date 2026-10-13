@@ -458,6 +458,7 @@ function activateReaderPanel(i) {
   ensureReaderPanel();
   if (i < 0 || i >= readerPanels.length) i = 0;
   activeReaderPanel = i;
+  clearReaderNav();                       // 面板切换 = 新阅读上下文,清空双链返回栈
   const p = readerPanels[i];
   readerState.paperId = p.paperId;
   readerState.source = p.source;
@@ -496,6 +497,7 @@ function closeReaderPanel(i) {
 function renderPaperReader(paperId) {
   // T04/G12：解析库来源 → 直接浏览解析/翻译全部产物
   if (readerState.source === 'lib') { loadLibraryIntoDocked(); return; }
+  clearReaderNav();                       // 选中文献 = 新阅读上下文,清空双链返回栈
   api(`/api/kb/paper/${paperId}/folder`).then(r => {
     if (!r.doi_dir) { $('reader-body').innerHTML = '<div class="empty">知识库未生成（翻译完成后自动生成，可切「解析库」浏览原文）</div>'; return; }
     showReaderFolder(r.doi_dir, '_note.md');
@@ -507,6 +509,7 @@ function renderPaperReader(paperId) {
 /* ══════════ T04：停靠阅读器来源切换（知识库 / 解析库）══════════ */
 function setReaderSource(src) {
   readerState.source = src;
+  clearReaderNav();                       // 来源切换(知识库/解析库) = 新上下文,清空返回栈
   document.querySelectorAll('#reader-source .src-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.src === src));
   syncActiveReaderPanel();
@@ -719,12 +722,16 @@ function renderReaderActions() {
       renderIntoReader(renderMarkdown(readerState.content, readerState.dir));
     });
   } else {
-    box.innerHTML = `<button class="btn btn-sm${tocState.open ? ' primary' : ''}" id="rd-toc" title="目录大纲">
+    box.innerHTML = `${readerNavStack.length ? `<button class="btn btn-sm" id="rd-back" title="返回上一个双链来源">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      返回</button>` : ''}
+    <button class="btn btn-sm${tocState.open ? ' primary' : ''}" id="rd-toc" title="目录大纲">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
       目录</button>
     <button class="btn btn-sm" id="rd-edit" title="编辑该笔记">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>
       编辑</button>`;
+    if ($('rd-back')) $('rd-back').addEventListener('click', () => readerNavBack());
     $('rd-toc').addEventListener('click', () => toggleReaderToc());
     $('rd-edit').addEventListener('click', () => {
       closeReaderToc();
@@ -1049,12 +1056,32 @@ function wikilinkMiss(target) {
                 message: `双链目标未找到：[[${target}]]` });
 }
 
+/* 双链跳转历史栈(P13):只在双链跳转前把当前 {dir,file} 入栈,工具栏「← 返回」弹出并回跳;
+   返回后的滚动位置由 P7 阅读位置记忆按文档 key 自动复原,故栈里不存 scrollTop。
+   切换文献/来源/面板时清空(见 clearReaderNav 调用点),避免跨文献回跳到无关文档。 */
+let readerNavStack = [];
+function pushReaderNav() {
+  if (readerState.source !== 'kb' || !readerState.dir) return;
+  readerNavStack.push({ dir: readerState.dir, file: readerState.file });
+  if (readerNavStack.length > 50) readerNavStack.shift();   // 上限保护,丢最旧
+}
+function clearReaderNav() {
+  if (readerNavStack.length) { readerNavStack = []; renderReaderActions(); }
+}
+function readerNavBack() {
+  const prev = readerNavStack.pop();
+  renderReaderActions();               // 立即更新按钮显隐(栈可能已空)
+  if (prev) showReaderFolder(prev.dir, prev.file);
+}
+
 async function handleWikilinkClick(a) {
   const target = a.dataset.wikilink;
   const nav = resolveWikilinkTarget(target);
   if (!nav) { wikilinkMiss(target); return; }
   const set = await ensureKbFileSet(nav.dir);   // 已缓存则瞬时;校验目标文件是否存在
   if (set && !set.has(nav.file)) { wikilinkMiss(target); return; }
+  // 目标就是当前文档(同文档变体已在此)则不入栈,避免"返回"原地打转
+  if (!(nav.dir === readerState.dir && nav.file === readerState.file)) pushReaderNav();
   showReaderFolder(nav.dir, nav.file);
 }
 
