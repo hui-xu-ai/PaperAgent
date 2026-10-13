@@ -10,3 +10,4 @@ export { splitFrontmatter, parseFrontmatterEntries, renderPropPanel } from './fe
 export { transformCallouts } from './features/callout.js';
 export { renderWikilinks } from './features/wikilink.js';
 export { addHeadingAnchors } from './features/anchors.js';
+export { extractToc, renderTocHtml } from './features/toc.js';

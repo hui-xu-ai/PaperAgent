@@ -3,7 +3,7 @@
    window.renderMarkdown(md, baseDir, source)——保持旧签名,reader.js/chat.js/app.js 无感切换。
    同时装配编辑器 createEditor,把预览回调接到同一渲染管线(编辑预览与阅读态一致)。
    插件定义见 ./md-plugins.js(业务知识全部住那里,mdkit/ 保持干净)。 */
-import { createRenderer, createEditor } from './mdkit/index.js';
+import { createRenderer, createEditor, extractToc, renderTocHtml } from './mdkit/index.js';
 import { appPlugins } from './md-plugins.js';
 
 const renderer = createRenderer({ plugins: appPlugins });
@@ -19,7 +19,7 @@ function createAppEditor(opts = {}) {
 }
 
 // 对外:库本体 + 配置好的应用渲染器/编辑器 + 旧签名兼容垫片(供 reader/chat/app 全局调用)
-window.MDKit = { createRenderer, createEditor: createAppEditor, renderer };
+window.MDKit = { createRenderer, createEditor: createAppEditor, renderer, extractToc, renderTocHtml };
 window.renderMarkdown = function (md, baseDir, source) {
   return renderer.render(md, { baseDir, source });
 };

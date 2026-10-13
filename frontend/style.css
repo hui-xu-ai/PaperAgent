@@ -638,6 +638,34 @@ body[data-theme="night"] .EasyMDEContainer .cm-header, body[data-theme="night"] 
 /* 全屏层级要盖过应用其它浮层 */
 .editor-toolbar.fullscreen, .EasyMDEContainer.fullscreen .CodeMirror, .editor-preview-side.fullscreen { z-index: 1500; }
 
+/* ══════════ 阅读态 TOC 大纲抽屉（P5a）══════════
+   绝对定位覆盖阅读区左缘（#reader 是 position:relative 祖先，top 由 JS 对齐 reader-body）；
+   全用 CSS 变量 → 自动适配四套主题。 */
+.reader-toc {
+  position: absolute; left: 0; bottom: 0; width: 248px; z-index: 20;
+  background: var(--panel); border-right: 1px solid var(--border); border-top: 1px solid var(--border);
+  box-shadow: 2px 0 10px rgba(0,0,0,.08); overflow-y: auto;
+}
+.reader-toc .md-toc-head {
+  position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; font-weight: 600; color: var(--muted); padding: 8px 12px;
+  background: var(--panel); border-bottom: 1px solid var(--border); z-index: 1;
+}
+.reader-toc .md-toc-close { border: none; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.reader-toc .md-toc-close:hover { color: var(--text); }
+.reader-toc .md-toc-empty { padding: 12px; color: var(--muted); font-size: 12px; }
+.reader-toc .md-toc-list { list-style: none; margin: 0; padding: 4px 0; }
+.reader-toc .md-toc-item {
+  padding: 4px 12px 4px calc(12px + var(--toc-depth, 0) * 12px);
+  font-size: 12.5px; line-height: 1.5; color: var(--text); cursor: pointer;
+  border-left: 2px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.reader-toc .md-toc-item:hover { background: var(--bg); }
+.reader-toc .md-toc-item.active { color: var(--primary); border-left-color: var(--primary); background: var(--primary-soft); font-weight: 600; }
+.reader-toc .md-toc-text { display: block; overflow: hidden; text-overflow: ellipsis; }
+/* 正文标题留出滚动锚点上边距，点击跳转时不贴顶 */
+.md h1[id], .md h2[id], .md h3[id], .md h4[id] { scroll-margin-top: 8px; }
+
 /* ══════════ 显示设置（U8/V11）══════════ */
 :root {
   /* ⚠️ 与 app.js::DISPLAY_DEFAULTS 保持一致（这里是 JS 生效前的兜底值；

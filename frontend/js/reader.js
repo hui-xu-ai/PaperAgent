@@ -718,10 +718,15 @@ function renderReaderActions() {
       $('reader-body').innerHTML = renderMarkdown(readerState.content, readerState.dir);
     });
   } else {
-    box.innerHTML = `<button class="btn btn-sm" id="rd-edit" title="编辑该笔记">
+    box.innerHTML = `<button class="btn btn-sm${tocState.open ? ' primary' : ''}" id="rd-toc" title="目录大纲">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      目录</button>
+    <button class="btn btn-sm" id="rd-edit" title="编辑该笔记">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>
       编辑</button>`;
+    $('rd-toc').addEventListener('click', () => toggleReaderToc());
     $('rd-edit').addEventListener('click', () => {
+      closeReaderToc();
       readerState.editing = true;
       renderReaderActions();
       mountReaderEditor();
@@ -772,6 +777,102 @@ async function saveReaderEdit(content) {
     appendEvent({ ts: new Date().toLocaleTimeString(), level: 'info', source: 'kb',
                   message: `已保存 ${readerState.file}（插件自动生成将不再覆盖）` });
   } catch (e) { alert('保存失败：' + e.message); }
+}
+
+
+/* ══════════ 阅读态 TOC 大纲(P5a)══════════
+   复用渲染时已注入的 h1-h4 锚点 id:MDKit.extractToc 从 reader-body 的 HTML 提取大纲、
+   MDKit.renderTocHtml 产出结构;这里只做 DOM 挂载 + 点击滚动 + 滚动高亮(scroll-spy)。
+   抽屉绝对定位覆盖在阅读区左缘(#reader 是 position:relative 祖先;top 对齐 reader-body、
+   bottom:0)。内容切换(切 tab/文件、编辑保存)由 MutationObserver 自动重建;布局变化
+   (tab 显隐/窗口缩放)由 ResizeObserver 重新对齐顶部。仅 docked 阅读面板;进入编辑态即关闭。 */
+let tocState = { open: false, el: null, observer: null, resizer: null, spy: null, items: [], headEls: [] };
+
+function toggleReaderToc() { if (tocState.open) closeReaderToc(); else openReaderToc(); }
+
+function openReaderToc() {
+  const reader = $('reader'), body = $('reader-body');
+  if (!reader || !body || tocState.open) return;
+  const el = document.createElement('div');
+  el.className = 'reader-toc';
+  el.id = 'reader-toc';
+  el.style.top = body.offsetTop + 'px';
+  reader.appendChild(el);
+  tocState.el = el; tocState.open = true;
+
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('.md-toc-close')) { closeReaderToc(); return; }
+    const li = e.target.closest('[data-toc-target]');
+    if (!li) return;
+    const h = body.querySelector('[id="' + li.dataset.tocTarget + '"]');
+    if (h) h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  buildReaderToc();
+
+  tocState.observer = new MutationObserver(() => { if (tocState.open) buildReaderToc(); });
+  tocState.observer.observe(body, { childList: true });
+  tocState.resizer = new ResizeObserver(() => { if (tocState.el) tocState.el.style.top = body.offsetTop + 'px'; });
+  tocState.resizer.observe(body);
+  tocState.spy = () => updateTocSpy();
+  body.addEventListener('scroll', tocState.spy, { passive: true });
+  syncTocBtn();
+}
+
+function closeReaderToc() {
+  const body = $('reader-body');
+  if (tocState.observer) { tocState.observer.disconnect(); tocState.observer = null; }
+  if (tocState.resizer) { tocState.resizer.disconnect(); tocState.resizer = null; }
+  if (tocState.spy && body) body.removeEventListener('scroll', tocState.spy);
+  if (tocState.el) { tocState.el.remove(); tocState.el = null; }
+  tocState.open = false; tocState.spy = null; tocState.items = []; tocState.headEls = [];
+  syncTocBtn();
+}
+
+function buildReaderToc() {
+  const body = $('reader-body'), el = tocState.el, mk = window.MDKit;
+  if (!body || !el) return;
+  const items = (mk && mk.extractToc) ? mk.extractToc(body.innerHTML) : [];
+  tocState.items = items;
+  if (!items.length) {
+    el.innerHTML = '<div class="md-toc"><div class="md-toc-head">目录</div><div class="md-toc-empty">本文档无标题大纲</div></div>';
+    addTocCloseBtn(el); tocState.headEls = []; return;
+  }
+  el.innerHTML = mk.renderTocHtml(items);
+  addTocCloseBtn(el);
+  tocState.headEls = items.map(it => body.querySelector('[id="' + it.id + '"]'));
+  updateTocSpy();
+}
+
+function addTocCloseBtn(el) {
+  const head = el.querySelector('.md-toc-head');
+  if (!head || head.querySelector('.md-toc-close')) return;
+  const btn = document.createElement('button');
+  btn.className = 'md-toc-close'; btn.title = '关闭'; btn.textContent = '×';
+  head.appendChild(btn);
+}
+
+// 滚动高亮:取正文顶部上方最近的标题为当前章节(headEls 按文档序,位置单调,越过即停)
+function updateTocSpy() {
+  const body = $('reader-body'), el = tocState.el;
+  if (!body || !el || !tocState.items.length) return;
+  const bodyTop = body.getBoundingClientRect().top;
+  let activeIdx = 0;
+  for (let i = 0; i < tocState.headEls.length; i++) {
+    const h = tocState.headEls[i];
+    if (h && h.getBoundingClientRect().top - bodyTop <= 8) activeIdx = i; else break;
+  }
+  el.querySelectorAll('[data-toc-target]').forEach((li, i) => li.classList.toggle('active', i === activeIdx));
+  const act = el.querySelector('[data-toc-target].active');
+  if (act) {
+    const ar = act.getBoundingClientRect(), er = el.getBoundingClientRect();
+    if (ar.top < er.top || ar.bottom > er.bottom) act.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function syncTocBtn() {
+  const btn = $('rd-toc');
+  if (btn) btn.classList.toggle('primary', tocState.open);
 }
 
 
