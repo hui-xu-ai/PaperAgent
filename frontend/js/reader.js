@@ -883,6 +883,21 @@ function bindReaderScroll() {
    (tab 显隐/窗口缩放)由 ResizeObserver 重新对齐顶部。仅 docked 阅读面板;进入编辑态即关闭。 */
 let tocState = { open: false, el: null, observer: null, resizer: null, spy: null, items: [], headEls: [] };
 
+// 只滚 #reader-body，不用 scrollIntoView——后者会连带滚动所有可滚祖先(含 overflow:hidden 的)，
+// 把阅读区头部/标签推出可视区（实测复现：目录跳转后上方工具栏消失）。
+function scrollReaderBodyTo(target, margin) {
+  const body = $('reader-body');
+  if (!body || !target) return;
+  const top = target.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop - (margin || 8);
+  body.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+}
+// 只滚 TOC 抽屉自身（.reader-toc overflow-y:auto），同理避免 scrollIntoView 牵连祖先
+function scrollDrawerTo(drawer, item) {
+  const er = drawer.getBoundingClientRect(), ar = item.getBoundingClientRect();
+  if (ar.top < er.top) drawer.scrollTop += ar.top - er.top - 4;
+  else if (ar.bottom > er.bottom) drawer.scrollTop += ar.bottom - er.bottom + 4;
+}
+
 function toggleReaderToc() { if (tocState.open) closeReaderToc(); else openReaderToc(); }
 
 function openReaderToc() {
@@ -900,7 +915,7 @@ function openReaderToc() {
     const li = e.target.closest('[data-toc-target]');
     if (!li) return;
     const h = body.querySelector('[id="' + li.dataset.tocTarget + '"]');
-    if (h) h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (h) scrollReaderBodyTo(h, 8);
   });
 
   buildReaderToc();
@@ -959,10 +974,7 @@ function updateTocSpy() {
   }
   el.querySelectorAll('[data-toc-target]').forEach((li, i) => li.classList.toggle('active', i === activeIdx));
   const act = el.querySelector('[data-toc-target].active');
-  if (act) {
-    const ar = act.getBoundingClientRect(), er = el.getBoundingClientRect();
-    if (ar.top < er.top || ar.bottom > er.bottom) act.scrollIntoView({ block: 'nearest' });
-  }
+  if (act) scrollDrawerTo(el, act);
 }
 
 function syncTocBtn() {
