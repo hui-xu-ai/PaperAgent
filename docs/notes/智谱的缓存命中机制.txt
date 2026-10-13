@@ -1,0 +1,123 @@
+基础缓存示例
+
+# 第一次请求 - 建立缓存
+curl --location 'https://open.bigmodel.cn/api/paas/v4/chat/completions' \
+--header 'Authorization: Bearer YOUR_API_KEY' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "glm-5.3",
+    "messages": [
+        {
+            "role": "system",
+            "content": "你是一个专业的数据分析师，擅长解释数据趋势和提供业务洞察。"
+        },
+        {
+            "role": "user",
+            "content": "如何分析用户留存率？"
+        }
+    ]
+}'
+
+
+复用缓存示例
+# 第二次请求 - 复用系统提示词缓存
+curl --location 'https://open.bigmodel.cn/api/paas/v4/chat/completions' \
+--header 'Authorization: Bearer YOUR_API_KEY' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "glm-5.3",
+    "messages": [
+        {
+            "role": "system",
+            "content": "你是一个专业的数据分析师，擅长解释数据趋势和提供业务洞察。"
+        },
+        {
+            "role": "user",
+            "content": "什么是漏斗分析？"
+        }
+    ]
+}'
+
+
+响应包含上下文缓存的 Token 使用信息：
+{
+  "usage": {
+    "prompt_tokens": 1200,
+    "completion_tokens": 300,
+    "total_tokens": 1500,
+    "prompt_tokens_details": {
+      "cached_tokens": 800
+    }
+  }
+}
+
+
+
+最佳实践
+
+系统提示词优化
+
+# 推荐：使用稳定的系统提示词
+system_prompt = """
+你是一个专业的技术顾问，具有以下特点：
+- 深厚的技术背景和丰富的项目经验
+- 能够提供准确、实用的技术建议
+- 善于用简洁明了的语言解释复杂概念
+请根据用户问题提供专业的技术指导。
+"""
+
+文档内容复用
+
+# 推荐：将长文档作为系统消息
+def create_document_based_chat(document_content, user_question):
+    return client.chat.completions.create(
+        model="glm-5.3",
+        messages=[
+            {
+                "role": "system",
+                "content": f"请基于以下文档内容回答用户问题：\n\n{document_content}"
+            },
+            {
+                "role": "user",
+                "content": user_question
+            }
+        ]
+    )
+
+# 多次调用相同文档，系统提示词会被缓存
+questions = ["文档的主要内容是什么？", "有哪些关键要点？", "如何实施这些建议？"]
+for question in questions:
+    response = create_document_based_chat(document_content, question)
+    # 第二次及以后的调用会命中缓存
+
+对话历史管理
+# 推荐：将长文档作为系统消息
+def create_document_based_chat(document_content, user_question):
+    return client.chat.completions.create(
+        model="glm-5.3",
+        messages=[
+            {
+                "role": "system",
+                "content": f"请基于以下文档内容回答用户问题：\n\n{document_content}"
+            },
+            {
+                "role": "user",
+                "content": user_question
+            }
+        ]
+    )
+
+# 多次调用相同文档，系统提示词会被缓存
+questions = ["文档的主要内容是什么？", "有哪些关键要点？", "如何实施这些建议？"]
+for question in questions:
+    response = create_document_based_chat(document_content, question)
+    # 第二次及以后的调用会命中缓存
+
+
+注意事项
+缓存基于内容相似度自动触发，无需手动配置
+完全相同的内容缓存命中率最高
+轻微的格式差异可能影响缓存效果
+缓存有合理的时效性，过期后会重新计算
+
+

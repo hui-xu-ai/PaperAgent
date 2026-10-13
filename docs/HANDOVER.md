@@ -95,3 +95,38 @@ S6 build（rule_engine）→ S7 render → S7.5 AI review）。断点续跑：in
 - 统一架构：M1-M4 完成（paperparse 迁入/HTML 模块合并/门面适配去 shim/rules 单一来源）；M5 文档更新中；
   **M6 HTML 整合待做**（SD 双通道适配器 → `paperparse/html/sd.py`、PyMuPDF 补图、双输出到 `corpus/html/<doi>/`）。
 - 遗留：Web2MD 退役；engine_assets 快照与包资源重复（打包走包资源后快照可撤）；打包实测（spec 已更新待验证）。
+
+## 10. 知识库编译系统（paperkb，2026-09-20 架构）
+
+### 10.1 两级编译链路
+- **L1 `_note.md`**：精简知识卡（one_liner + 六维总结 + concepts + tags），~500 tokens
+- **L2 `_wiki.md`**：深度分析（方法论批判 + 可复现性 + 应用转化），~1300 tokens
+- **L3 `_relations.md`**：概念关系层（概念关系图 + 方法论连接 + 研究趋势），自动触发
+- **L1+L2 合并编译**：一次 API 调用同时产出 L1+L2，节省 50% 全文输入 token
+
+### 10.2 自动升级机制
+- **L1→AI 评分**：编译时 LLM 顺手输出 `ai_value`(0-5) 和 `topic_score`(0-1)，零额外成本
+- **AI 评分→L2**：value_score ≥ 2.5 自动入队 L2（7 维公式：IF/cited/ai_value/topic/year/paper_rank/lib_cited）
+- **L2→L3**：L2 完成后，value_score ≥ 4.0 且 ai_value > 0 → `_maybe_auto_l3()` 自动入队
+- **关键顺序**：AI 评分必须在 `_maybe_auto_l3` 之前保存，否则价值分计算缺少 ai_value 维度
+
+### 10.3 向量索引与检索
+- **KbVectorIndex**（`paperkb/vector.py`）：索引编译结果（_note.md + _wiki.md + concepts）
+- **SiliconFlow bge-m3 embedding**（1024 维），复用 paperlit 的 API key
+- **4 通道混合检索**：概念倒排 + 向量相似度 + 引用关系 + 共被引聚类
+- **配置**：`KbSettings(vector_impl="kb")` 启用向量索引（默认 "noop" 不启用）
+
+### 10.4 筛选状态（kb_list API）
+- `done`：已编译（L1/L2/L3 任一完成）
+- `none`：未编译
+- `failed`：编译失败（有 error 记录）
+- `l1`/`l2`/`l3`：该等级已编译
+- `l2`（特殊含义）：L2 已编译但 L3 未编译，且 value_score ≥ 4.0（可升级 L3）
+
+### 10.5 关键文件
+- `packages/paperkb/paperkb/compile.py`：编译器核心（L1/L2/L3 编译逻辑、自动升级、向量索引）
+- `packages/paperkb/paperkb/api.py`：知识库 API 门面（kb_list/kb_vector_search/compile 等）
+- `packages/paperkb/paperkb/score.py`：7 维价值评分公式
+- `packages/paperkb/paperkb/vector.py`：向量索引实现
+- `backend/app/services/kbmeta_service.py`：paperkb 初始化（注入 Roots + KbSettings + LLM 适配）
+- `backend/app/api/kbmeta.py`：知识库 HTTP API 路由
