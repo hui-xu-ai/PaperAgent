@@ -1051,31 +1051,48 @@ function onParaEsc(e) { if (e.key === 'Escape') closeParaPopover(); }
 function closeParaPopover() {
   const p = document.getElementById('para-pop');
   if (p) p.remove();
+  const body = $('reader-body');
+  if (body) body.removeEventListener('scroll', closeParaPopover);
   document.removeEventListener('mousedown', onParaOutside, true);
-  window.removeEventListener('scroll', closeParaPopover, true);
   document.removeEventListener('keydown', onParaEsc, true);
+}
+// 段落正文是 markdown(含公式/加粗/链接),用阅读态同一管线渲染;失败回退纯文本
+function renderParaMd(text) {
+  try {
+    if (window.renderMarkdown) return window.renderMarkdown(text, readerState.dir || '', 'kb');
+  } catch (e) {}
+  return '<pre class="para-pop-plain">' + escapeHtml(text) + '</pre>';
 }
 function showParaPopover(anchor, para, paraId) {
   closeParaPopover();
   const pop = document.createElement('div');
   pop.className = 'para-pop'; pop.id = 'para-pop';
-  const text = para ? (para.text_zh || para.text_en || '') : '';
+  const zh = para ? (para.text_zh || '') : '';
+  const en = para ? (para.text_en || '') : '';
   const section = para ? (para.section || '') : '';
+  // 无中文译文时明确标注语言,避免读者误以为是中文或困惑
+  let lang = '', bodyHtml;
+  if (zh) { lang = '中文译文'; bodyHtml = renderParaMd(zh); }
+  else if (en) { lang = '英文原文 · 无中文译文'; bodyHtml = renderParaMd(en); }
+  else { bodyHtml = '<em>未找到该段落原文（document.json 缺失或无此段）</em>'; }
   pop.innerHTML = `
     <div class="para-pop-head">
       <span class="para-pop-id">${escapeHtml(paraId)}</span>
+      ${lang ? `<span class="para-pop-lang">${escapeHtml(lang)}</span>` : ''}
       <span class="para-pop-sec" title="${escapeHtml(section)}">${escapeHtml(section)}</span>
       <button class="para-pop-close" title="关闭">×</button>
     </div>
-    <div class="para-pop-body">${text ? escapeHtml(text) : '<em>未找到该段落原文（document.json 缺失或无此段）</em>'}</div>`;
+    <div class="para-pop-body">${bodyHtml}</div>`;
   document.body.appendChild(pop);
   const ar = anchor.getBoundingClientRect();
   pop.style.left = Math.max(8, Math.min(window.innerWidth - 348, ar.left - 8)) + 'px';
-  pop.style.top = Math.min(window.innerHeight - 220, ar.bottom + 6) + 'px';
+  pop.style.top = Math.min(window.innerHeight - 260, ar.bottom + 6) + 'px';
   pop.querySelector('.para-pop-close').onclick = closeParaPopover;
   setTimeout(() => {
     document.addEventListener('mousedown', onParaOutside, true);
-    window.addEventListener('scroll', closeParaPopover, true);
+    // 只在主阅读区滚动时关闭;popover 内部滚动(读长文)不触发 → 不会读一半被关
+    const body = $('reader-body');
+    if (body) body.addEventListener('scroll', closeParaPopover, { passive: true });
     document.addEventListener('keydown', onParaEsc, true);
   }, 0);
 }
